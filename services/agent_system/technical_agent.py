@@ -1,18 +1,25 @@
-# Role: Evaluates price action, patterns, and indicator signals.
-import os, anthropic
-
-MODEL = "claude-sonnet-4-6"
+"""Technical analysis agent — rule-based signal from price indicators."""
 
 class TechnicalAgent:
-    def __init__(self):
-        self.client = anthropic.Anthropic(api_key=os.getenv('ANTHROPIC_API_KEY', ''))
-        self.role = 'Evaluates price action, patterns, and indicator signals.'
-
     def analyze(self, context: dict) -> dict:
-        prompt = f'You are a crypto trading agent. Role: {self.role}\n\nContext:\n{context}\n\nProvide your analysis as JSON with keys: signal, confidence, reasoning.'
-        response = self.client.messages.create(
-            model=MODEL,
-            max_tokens=1024,
-            messages=[{'role': 'user', 'content': prompt}]
-        )
-        return {'agent': 'technical_agent', 'response': response.content[0].text}
+        f = context.get("features", {})
+        rsi = float(f.get("rsi_14", 50))
+        macd_hist = float(f.get("macd_hist", 0))
+        adx = float(f.get("adx_14", 0))
+        bb_pos = float(f.get("bb_position", 0.5))
+        stoch_k = float(f.get("stoch_k", 50))
+        mom_5 = float(f.get("mom_5", 0))
+
+        score = 0.0
+        score += (50 - rsi) / 50                   # RSI mean reversion
+        score += macd_hist * 5                       # MACD direction
+        score += (0.5 - bb_pos) * 0.5              # BB position
+        score += (50 - stoch_k) / 100               # Stochastic
+        score += mom_5 / 10                          # Momentum
+        if adx > 25:                                 # Strong trend — amplify
+            score *= 1.2
+
+        confidence = min(abs(score), 1.0)
+        signal = "long" if score > 0.2 else ("short" if score < -0.2 else "flat")
+        return {"agent": "technical_agent", "signal": signal, "confidence": confidence,
+                "reasoning": {"rsi": rsi, "macd": macd_hist, "adx": adx}}

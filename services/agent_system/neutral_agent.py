@@ -1,18 +1,15 @@
-# Role: Provides balanced/ranging-market perspective.
-import os, anthropic
-
-MODEL = "claude-sonnet-4-6"
+"""Neutral agent — detects ranging/uncertain markets and votes HOLD."""
 
 class NeutralAgent:
-    def __init__(self):
-        self.client = anthropic.Anthropic(api_key=os.getenv('ANTHROPIC_API_KEY', ''))
-        self.role = 'Provides balanced/ranging-market perspective.'
-
     def analyze(self, context: dict) -> dict:
-        prompt = f'You are a crypto trading agent. Role: {self.role}\n\nContext:\n{context}\n\nProvide your analysis as JSON with keys: signal, confidence, reasoning.'
-        response = self.client.messages.create(
-            model=MODEL,
-            max_tokens=1024,
-            messages=[{'role': 'user', 'content': prompt}]
-        )
-        return {'agent': 'neutral_agent', 'response': response.content[0].text}
+        f = context.get("features", {})
+        adx = float(f.get("adx_14", 0))
+        bb_squeeze = float(f.get("bb_squeeze", 2))
+        crisis_level = int(context.get("crisis_level", 0))
+
+        # Low ADX = no trend, tight BB = compression = uncertain
+        if adx < 20 or bb_squeeze < 0.5 or crisis_level >= 3:
+            return {"agent": "neutral_agent", "signal": "flat", "confidence": 0.75,
+                    "reasoning": {"adx": adx, "bb_squeeze": bb_squeeze, "crisis": crisis_level}}
+        return {"agent": "neutral_agent", "signal": "flat", "confidence": 0.25,
+                "reasoning": {"adx": adx}}
