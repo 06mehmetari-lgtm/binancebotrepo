@@ -66,7 +66,7 @@ async def main():
 
     log.info("Listening for closed trades...")
     async for message in pubsub.listen():
-        if message["type"] != "message":
+        if message is None or message["type"] != "message":
             continue
         try:
             trade_data = json.loads(message["data"])
