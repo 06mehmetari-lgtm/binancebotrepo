@@ -1,0 +1,58 @@
+════════════════════════════════════════════════════
+SUNUCUYA DEPLOY — ADIM ADIM TALİMAT
+Sunucu: 194.163.181.39 | root
+════════════════════════════════════════════════════
+
+YÖNTEM 1: Tek tıkla (Windows)
+──────────────────────────────
+deploy_to_server.bat dosyasına çift tıkla.
+Şifre sorduğunda: q20u9C8jkBdflu4Y58zfuQ5
+
+YÖNTEM 2: PowerShell ile manuel
+────────────────────────────────
+# Adım 1 — setup scriptini gönder ve çalıştır:
+scp setup_server.sh root@194.163.181.39:/root/
+ssh root@194.163.181.39 "bash /root/setup_server.sh"
+
+# Adım 2 — projeyi gönder:
+scp -r C:\Users\mehmetesra\Desktop\binancebot\prometheus root@194.163.181.39:/opt/
+
+# Adım 3 — sunucuda .env düzenle:
+ssh root@194.163.181.39
+cd /opt/prometheus
+cp .env.example .env
+nano .env
+# ↑ API key'lerini gir, kaydet (Ctrl+X, Y, Enter)
+
+# Adım 4 — servisleri başlat:
+docker compose up -d
+
+# Adım 5 — durumu kontrol et:
+prom-status
+
+════════════════════════════════════════════════════
+ERIŞIM ADRESLERİ
+════════════════════════════════════════════════════
+Dashboard : http://194.163.181.39:3000
+Grafana   : http://194.163.181.39:3001  (admin / GRAFANA_PASSWORD)
+Prometheus: http://194.163.181.39:9090
+
+════════════════════════════════════════════════════
+KURULUMDAN SONRA GÜVENLİK (ÖNEMLİ)
+════════════════════════════════════════════════════
+1. Şifreyi değiştir:
+   ssh root@194.163.181.39
+   passwd
+
+2. SSH key ekle (şifresiz giriş):
+   ssh-keygen -t ed25519 -C "prometheus"
+   ssh-copy-id root@194.163.181.39
+
+3. Şifreli girişi kapat (key eklendikten sonra):
+   nano /etc/ssh/sshd_config
+   → PasswordAuthentication no
+   systemctl reload sshd
+
+4. Düzenli yedek al:
+   docker exec prometheus_postgres pg_dump -U prometheus prometheus_trading > backup.sql
+════════════════════════════════════════════════════

@@ -1,0 +1,4 @@
+qdrant-client==1.9.1
+sentence-transformers==3.0.1
+redis==5.0.4
+numpy==1.26.4

@@ -1,0 +1,26 @@
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  - job_name: services
+    static_configs:
+      - targets:
+          - data_ingestion:8000
+          - sentiment:8001
+          - macro:8002
+          - feature_engine:8003
+          - context_engine:8004
+          - neat_evolution:8005
+          - rl_agent:8006
+          - agent_system:8007
+          - signal_engine:8008
+          - immunity_system:8009
+          - oms:8010
+          - shadow_system:8011
+          - autopsy:8012
+          - rag_memory:8013
+          - scenario_engine:8014

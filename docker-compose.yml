@@ -1,0 +1,344 @@
+version: '3.9'
+
+networks:
+  prometheus_net:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  timescale_data:
+  redis_data:
+  qdrant_data:
+  grafana_data:
+  prometheus_data:
+
+services:
+
+  # ═══════════════════════════════════════
+  # VERİTABANLARI
+  # ═══════════════════════════════════════
+  postgres:
+    image: postgres:16-alpine
+    container_name: prometheus_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: prometheus_trading
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./infrastructure/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "5432:5432"
+    networks:
+      - prometheus_net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  timescaledb:
+    image: timescale/timescaledb:latest-pg16
+    container_name: prometheus_timescale
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: prometheus_timeseries
+      POSTGRES_USER: ${TIMESCALE_USER}
+      POSTGRES_PASSWORD: ${TIMESCALE_PASSWORD}
+    volumes:
+      - timescale_data:/var/lib/postgresql/data
+      - ./infrastructure/timescale/init.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "5433:5432"
+    networks:
+      - prometheus_net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${TIMESCALE_USER}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: prometheus_redis
+    restart: unless-stopped
+    command: >
+      redis-server
+      --requirepass ${REDIS_PASSWORD}
+      --maxmemory 2gb
+      --maxmemory-policy allkeys-lru
+      --appendonly yes
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    networks:
+      - prometheus_net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: prometheus_qdrant
+    restart: unless-stopped
+    volumes:
+      - qdrant_data:/qdrant/storage
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    networks:
+      - prometheus_net
+
+  # ═══════════════════════════════════════
+  # UYGULAMA SERVİSLERİ
+  # ═══════════════════════════════════════
+  data_ingestion:
+    build: ./services/data_ingestion
+    container_name: prometheus_data
+    restart: unless-stopped
+    environment:
+      - BINANCE_API_KEY=${BINANCE_API_KEY}
+      - BINANCE_SECRET=${BINANCE_SECRET}
+      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379
+      - TIMESCALE_URL=postgresql://${TIMESCALE_USER}:${TIMESCALE_PASSWORD}@timescaledb:5432/prometheus_timeseries
+      - SYMBOLS=${TRADING_SYMBOLS}
+    depends_on:
+      redis:
+        condition: service_healthy
+      timescaledb:
+        condition: service_healthy
+    networks:
+      - prometheus_net
+
+  sentiment:
+    build: ./services/sentiment
+    container_name: prometheus_sentiment
+    restart: unless-stopped
+    environment:
+      - REDDIT_CLIENT_ID=${REDDIT_CLIENT_ID}
+      - REDDIT_CLIENT_SECRET=${REDDIT_CLIENT_SECRET}
+      - CRYPTOPANIC_KEY=${CRYPTOPANIC_KEY}
+      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379
+      - POSTGRES_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/prometheus_trading
+    depends_on:
+      - redis
+      - postgres
+    networks:
+      - prometheus_net
+
+  macro:
+    build: ./services/macro
+    container_name: prometheus_macro
+    restart: unless-stopped
+    environment:
+      - FRED_API_KEY=${FRED_API_KEY}
+      - ETHERSCAN_KEY=${ETHERSCAN_KEY}
+      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379
+    depends_on:
+      - redis
+    networks:
+      - prometheus_net
+
+  feature_engine:
+    build: ./services/feature_engine
+    container_name: prometheus_features
+    restart: unless-stopped
+    environment:
+      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379
+      - TIMESCALE_URL=postgresql://${TIMESCALE_USER}:${TIMESCALE_PASSWORD}@timescaledb:5432/prometheus_timeseries
+      - POSTGRES_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/prometheus_trading
+    depends_on:
+      - redis
+      - timescaledb
+    networks:
+      - prometheus_net
+
+  context_engine:
+    build: ./services/context_engine
+    container_name: prometheus_context
+    restart: unless-stopped
+    environment:
+      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379
+      - POSTGRES_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/prometheus_trading
+    depends_on:
+      - redis
+      - postgres
+    networks:
+      - prometheus_net
+
+  neat_evolution:
+    build: ./services/neat_evolution
+    container_name: prometheus_neat
+    restart: unless-stopped
+    environment:
+      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379
+      - POSTGRES_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/prometheus_trading
+      - TIMESCALE_URL=postgresql://${TIMESCALE_USER}:${TIMESCALE_PASSWORD}@timescaledb:5432/prometheus_timeseries
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 4G
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - prometheus_net
+
+  rl_agent:
+    build: ./services/rl_agent
+    container_name: prometheus_rl
+    restart: unless-stopped
+    environment:
+      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379
+      - POSTGRES_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/prometheus_trading
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 4G
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - prometheus_net
+
+  agent_system:
+    build: ./services/agent_system
+    container_name: prometheus_agents
+    restart: unless-stopped
+    environment:
+      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379
+      - POSTGRES_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/prometheus_trading
+      - QDRANT_URL=http://qdrant:6333
+    depends_on:
+      - redis
+      - postgres
+      - qdrant
+    networks:
+      - prometheus_net
+
+  immunity_system:
+    build: ./services/immunity_system
+    container_name: prometheus_immunity
+    restart: unless-stopped
+    environment:
+      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379
+      - POSTGRES_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/prometheus_trading
+    networks:
+      - prometheus_net
+
+  oms:
+    build: ./services/oms
+    container_name: prometheus_oms
+    restart: unless-stopped
+    environment:
+      - BINANCE_API_KEY=${BINANCE_API_KEY}
+      - BINANCE_SECRET=${BINANCE_SECRET}
+      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379
+      - POSTGRES_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/prometheus_trading
+      - DRY_RUN=${DRY_RUN:-true}
+    depends_on:
+      - immunity_system
+      - redis
+      - postgres
+    networks:
+      - prometheus_net
+
+  shadow_system:
+    build: ./services/shadow_system
+    container_name: prometheus_shadow
+    restart: unless-stopped
+    environment:
+      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379
+      - POSTGRES_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/prometheus_trading
+    depends_on:
+      - redis
+      - postgres
+    networks:
+      - prometheus_net
+
+  autopsy:
+    build: ./services/autopsy
+    container_name: prometheus_autopsy
+    restart: unless-stopped
+    environment:
+      - POSTGRES_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/prometheus_trading
+      - QDRANT_URL=http://qdrant:6333
+    depends_on:
+      - postgres
+      - qdrant
+    networks:
+      - prometheus_net
+
+  rag_memory:
+    build: ./services/rag_memory
+    container_name: prometheus_rag
+    restart: unless-stopped
+    environment:
+      - QDRANT_URL=http://qdrant:6333
+      - POSTGRES_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/prometheus_trading
+    depends_on:
+      - qdrant
+      - postgres
+    networks:
+      - prometheus_net
+
+  scenario_engine:
+    build: ./services/scenario_engine
+    container_name: prometheus_scenarios
+    restart: unless-stopped
+    environment:
+      - POSTGRES_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/prometheus_trading
+      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379
+    depends_on:
+      - postgres
+    networks:
+      - prometheus_net
+
+  # ═══════════════════════════════════════
+  # MONİTORİNG
+  # ═══════════════════════════════════════
+  prometheus_monitor:
+    image: prom/prometheus:latest
+    container_name: prometheus_monitor
+    restart: unless-stopped
+    volumes:
+      - ./infrastructure/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+    networks:
+      - prometheus_net
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: prometheus_grafana
+    restart: unless-stopped
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD}
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./infrastructure/grafana/dashboards:/etc/grafana/provisioning/dashboards
+    ports:
+      - "3001:3000"
+    networks:
+      - prometheus_net
+
+  # ═══════════════════════════════════════
+  # DASHBOARD
+  # ═══════════════════════════════════════
+  dashboard:
+    build: ./services/dashboard
+    container_name: prometheus_dashboard
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
+    networks:
+      - prometheus_net

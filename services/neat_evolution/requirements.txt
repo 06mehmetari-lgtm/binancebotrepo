@@ -1,0 +1,4 @@
+neat-python==0.92
+numpy==1.26.4
+redis==5.0.4
+psycopg2-binary==2.9.9
