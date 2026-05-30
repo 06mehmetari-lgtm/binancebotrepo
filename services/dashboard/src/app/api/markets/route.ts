@@ -28,7 +28,7 @@ export async function GET() {
     }
     const results = await pipeline.exec()
 
-    const markets = []
+    const markets: Record<string, unknown>[] = []
     const half = symbols.length
 
     for (let i = 0; i < symbols.length; i++) {
