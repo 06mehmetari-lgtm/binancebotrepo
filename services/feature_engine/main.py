@@ -17,8 +17,30 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname
 log = logging.getLogger(__name__)
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379")
-SYMBOLS_RAW = os.getenv("SYMBOLS", "BTCUSDT,ETHUSDT,BNBUSDT")
-SYMBOLS = [s.strip() for s in SYMBOLS_RAW.split(",") if s.strip()]
+SYMBOLS_RAW = os.getenv("SYMBOLS", "AUTO")
+TOP_N = int(os.getenv("TOP_SYMBOLS", "100"))
+
+
+def _resolve_symbols() -> list[str]:
+    if SYMBOLS_RAW.strip().upper() == "AUTO":
+        try:
+            url = "https://fapi.binance.com/fapi/v1/ticker/24hr"
+            with urllib.request.urlopen(url, timeout=10) as r:
+                tickers = json.loads(r.read())
+            ranked = sorted(
+                [t for t in tickers if t["symbol"].endswith("USDT")],
+                key=lambda x: float(x.get("quoteVolume", 0)), reverse=True
+            )
+            syms = [t["symbol"] for t in ranked[:TOP_N]]
+            log.info(f"AUTO symbol discovery: {len(syms)} symbols")
+            return syms
+        except Exception as e:
+            log.warning(f"AUTO discovery failed: {e}, using fallback")
+            return ["BTCUSDT", "ETHUSDT", "BNBUSDT"]
+    return [s.strip() for s in SYMBOLS_RAW.split(",") if s.strip()]
+
+
+SYMBOLS = _resolve_symbols()
 
 price_builder = PriceFeatureBuilder()
 ob_builder = OrderBookFeatureBuilder()
