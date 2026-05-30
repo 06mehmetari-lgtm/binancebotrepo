@@ -4,27 +4,37 @@ import { useEffect, useState } from 'react'
 interface Market { symbol: string; rsi_14: number; direction: string; confidence: number; regime: string; crisis_level: number; kelly_fraction: number; drift_status: string }
 interface Signal { symbol: string; direction: string; confidence: number; regime: string; crisis_level: number; drift_status: string; kelly_fraction: number }
 interface Shadow { shadow_id: string; sharpe: number; win_rate: number; trades: number; return: number; promotion_ready: boolean; max_drawdown: number }
-interface Status { active_symbol_count: number; total_signals: number; avg_confidence: number; best_genome_fitness: number; fear_greed: { value: number; classification: string }; macro_vix: number; 'ws:status': { status: string } }
+interface Status { active_symbol_count: number; total_signals: number; avg_confidence: number; best_genome_fitness: number; fear_greed: { value: number; classification: string }; macro_vix: number; 'ws:status': { status: string }; shadow: { leaderboard: Shadow[] } }
 
-const DRIFT_COLOR: Record<string, string> = { STABLE: 'text-green-400', WARNING: 'text-yellow-400', DRIFTING: 'text-orange-400', SHOCK: 'text-red-400' }
-const DIR_STYLE: Record<string, string> = { long: 'text-green-400 bg-green-900/30', short: 'text-red-400 bg-red-900/30', flat: 'text-gray-400 bg-gray-800' }
+const DRIFT_COLOR: Record<string, string> = { STABLE: 'text-green-400', WARNING: 'text-yellow-400', DRIFTING: 'text-orange-400', SHOCK: 'text-red-500 animate-pulse' }
+const DIR_STYLE: Record<string, string> = { long: 'text-green-400 bg-green-900/30 border border-green-800/50', short: 'text-red-400 bg-red-900/30 border border-red-800/50', flat: 'text-gray-500 bg-gray-800/50 border border-gray-700/50' }
 const REGIME_COLOR: Record<string, string> = { trending_up: 'text-green-400', trending_down: 'text-red-400', ranging: 'text-blue-400', volatile: 'text-yellow-400' }
-const CRISIS_COLOR = ['text-green-400', 'text-yellow-400', 'text-orange-400', 'text-red-400', 'text-red-400 animate-pulse']
 
 function rsiTileColor(rsi: number) {
-  if (rsi < 30) return 'bg-blue-900/60 border-blue-700'
-  if (rsi < 45) return 'bg-green-900/50 border-green-800'
-  if (rsi < 55) return 'bg-gray-800 border-gray-700'
-  if (rsi < 70) return 'bg-orange-900/50 border-orange-800'
-  return 'bg-red-900/60 border-red-700'
+  if (rsi < 30) return 'bg-blue-950/80 border-blue-700/60 hover:border-blue-500'
+  if (rsi < 45) return 'bg-green-950/70 border-green-800/60 hover:border-green-600'
+  if (rsi < 55) return 'bg-gray-800/80 border-gray-700/60 hover:border-gray-500'
+  if (rsi < 70) return 'bg-orange-950/70 border-orange-800/60 hover:border-orange-600'
+  return 'bg-red-950/80 border-red-700/60 hover:border-red-500'
 }
 
-function StatCard({ label, value, sub, color }: { label: string; value: string; sub?: string; color: string }) {
+function rsiTextColor(rsi: number) {
+  if (rsi < 30) return 'text-blue-300'
+  if (rsi < 45) return 'text-green-300'
+  if (rsi < 55) return 'text-gray-300'
+  if (rsi < 70) return 'text-orange-300'
+  return 'text-red-300'
+}
+
+function StatCard({ label, value, sub, color, dot }: { label: string; value: string; sub?: string; color: string; dot?: string }) {
   return (
-    <div className="bg-gray-900 border border-gray-800 rounded-lg p-4">
-      <p className="text-gray-500 text-xs uppercase tracking-wider mb-1">{label}</p>
-      <p className={`text-xl font-bold ${color}`}>{value}</p>
-      {sub && <p className="text-xs text-gray-500 mt-0.5">{sub}</p>}
+    <div className="bg-gray-900 border border-gray-800 rounded-lg p-3.5 flex flex-col gap-1">
+      <p className="text-gray-500 text-xs uppercase tracking-wider flex items-center gap-1.5">
+        {dot && <span className={`inline-block w-1.5 h-1.5 rounded-full ${dot}`} />}
+        {label}
+      </p>
+      <p className={`text-xl font-bold leading-tight ${color}`}>{value}</p>
+      {sub && <p className="text-xs text-gray-500">{sub}</p>}
     </div>
   )
 }
@@ -34,10 +44,10 @@ function ConfidenceBar({ value }: { value: number }) {
   const color = pct >= 80 ? 'bg-green-500' : pct >= 65 ? 'bg-orange-500' : 'bg-yellow-600'
   return (
     <div className="flex items-center gap-2">
-      <div className="w-20 h-2 bg-gray-800 rounded-full overflow-hidden">
-        <div className={`h-full rounded-full ${color}`} style={{ width: `${pct}%` }} />
+      <div className="w-20 h-1.5 bg-gray-800 rounded-full overflow-hidden">
+        <div className={`h-full rounded-full transition-all ${color}`} style={{ width: `${pct}%` }} />
       </div>
-      <span className="text-xs text-gray-300">{pct}%</span>
+      <span className="text-xs text-gray-300 tabular-nums">{pct}%</span>
     </div>
   )
 }
@@ -48,6 +58,7 @@ export default function Home() {
   const [shadow, setShadow] = useState<Shadow[]>([])
   const [status, setStatus] = useState<Partial<Status>>({})
   const [loading, setLoading] = useState(true)
+  const [lastUpdate, setLastUpdate] = useState('')
 
   const fetchAll = async () => {
     try {
@@ -61,56 +72,75 @@ export default function Home() {
       setSignals(Array.isArray(s) ? s : [])
       setShadow(Array.isArray(sh) ? sh : [])
       setStatus(st || {})
-    } catch { /* retry */ } finally { setLoading(false) }
+      setLastUpdate(new Date().toLocaleTimeString())
+    } catch { /* retry on next tick */ } finally { setLoading(false) }
   }
 
   useEffect(() => { fetchAll(); const t = setInterval(fetchAll, 5000); return () => clearInterval(t) }, [])
 
-  if (loading) return <div className="text-gray-400 text-center mt-20 text-sm">Connecting to Prometheus...</div>
+  if (loading) return (
+    <div className="flex items-center justify-center mt-32 gap-3 text-gray-500">
+      <span className="animate-spin text-orange-400">⚡</span>
+      <span className="text-sm">Connecting to Prometheus...</span>
+    </div>
+  )
 
-  const wsStatus = status['ws:status']?.status || 'UNKNOWN'
+  const wsStatus = status['ws:status']?.status ?? 'UNKNOWN'
   const wsColor = wsStatus === 'CONNECTED' ? 'text-green-400' : 'text-red-400'
+  const wsDot = wsStatus === 'CONNECTED' ? 'bg-green-400 animate-pulse' : 'bg-red-500'
   const activeSignals = signals.filter(s => s.direction !== 'flat')
   const topOpps = [...activeSignals].sort((a, b) => b.confidence - a.confidence).slice(0, 10)
   const heatmapSymbols = markets.slice(0, 30)
+  const shadowData = shadow.length ? shadow : (status.shadow?.leaderboard ?? [])
+  const vixVal = status.macro_vix ?? 0
 
   return (
-    <div className="space-y-6">
-      <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
-        <StatCard label="WebSocket" value={wsStatus} color={wsColor} />
-        <StatCard label="Active Symbols" value={String(status.active_symbol_count ?? markets.length)} color="text-blue-400" />
-        <StatCard label="Active Signals" value={String(activeSignals.length)} color="text-orange-400" />
-        <StatCard label="Best Genome" value={status.best_genome_fitness?.toFixed(4) ?? '—'} color="text-purple-400" />
-        <StatCard label="Fear & Greed" value={String(status.fear_greed?.value ?? '—')} sub={status.fear_greed?.classification} color="text-yellow-400" />
-        <StatCard label="VIX" value={status.macro_vix?.toFixed(1) ?? '—'} color={status.macro_vix && status.macro_vix > 40 ? 'text-red-400' : 'text-green-400'} />
+    <div className="space-y-5">
+      <div className="flex items-center justify-between">
+        <h1 className="text-white font-bold text-base">Overview</h1>
+        <span className="text-xs text-gray-600">{lastUpdate ? `Updated ${lastUpdate}` : ''} · 5s refresh</span>
       </div>
 
-      <div className="bg-gray-900 rounded-lg border border-gray-800 p-4">
-        <h2 className="text-orange-400 font-semibold mb-3 text-sm uppercase tracking-wider">Top Opportunities</h2>
-        {topOpps.length === 0 ? <p className="text-gray-500 text-sm">No active signals</p> : (
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2.5">
+        <StatCard label="WebSocket" value={wsStatus} color={wsColor} dot={wsDot} />
+        <StatCard label="Active Symbols" value={String(status.active_symbol_count ?? markets.length)} color="text-blue-400" />
+        <StatCard label="Active Signals" value={String(activeSignals.length)} sub={`of ${signals.length} total`} color="text-orange-400" />
+        <StatCard label="Best Genome" value={status.best_genome_fitness?.toFixed(4) ?? '—'} color="text-purple-400" />
+        <StatCard label="Fear & Greed" value={String(status.fear_greed?.value ?? '—')} sub={status.fear_greed?.classification} color="text-yellow-400" />
+        <StatCard label="VIX" value={vixVal ? vixVal.toFixed(1) : '—'} sub={vixVal > 40 ? 'EXTREME' : vixVal > 25 ? 'ELEVATED' : 'NORMAL'} color={vixVal > 40 ? 'text-red-400 animate-pulse' : vixVal > 25 ? 'text-orange-400' : 'text-green-400'} />
+      </div>
+
+      <div className="bg-gray-900 rounded-lg border border-gray-800 overflow-hidden">
+        <div className="px-4 py-3 border-b border-gray-800 flex items-center justify-between">
+          <h2 className="text-orange-400 font-semibold text-sm uppercase tracking-wider">Top Opportunities</h2>
+          <span className="text-xs text-gray-600">{topOpps.length} signals</span>
+        </div>
+        {topOpps.length === 0 ? (
+          <p className="text-gray-500 text-sm p-4">No active signals — market may be in flat regime</p>
+        ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
-              <thead><tr className="text-gray-500 border-b border-gray-800 text-xs">
-                <th className="text-left py-2 pr-4">Symbol</th>
-                <th className="text-left py-2 pr-4">Direction</th>
-                <th className="text-left py-2 pr-4">Confidence</th>
-                <th className="text-left py-2 pr-4">RSI</th>
-                <th className="text-left py-2 pr-4">Regime</th>
-                <th className="text-left py-2 pr-4">Kelly%</th>
-                <th className="text-left py-2">Drift</th>
+              <thead><tr className="text-gray-500 border-b border-gray-800/60 text-xs bg-gray-900/60">
+                <th className="text-left px-4 py-2">Symbol</th>
+                <th className="text-left px-4 py-2">Direction</th>
+                <th className="text-left px-4 py-2">Confidence</th>
+                <th className="text-left px-4 py-2">RSI</th>
+                <th className="text-left px-4 py-2">Regime</th>
+                <th className="text-left px-4 py-2">Kelly%</th>
+                <th className="text-left px-4 py-2">Drift</th>
               </tr></thead>
               <tbody>
                 {topOpps.map(sig => {
                   const mkt = markets.find(m => m.symbol === sig.symbol)
                   return (
-                    <tr key={sig.symbol} className="border-b border-gray-800/40 hover:bg-gray-800/30">
-                      <td className="py-2 pr-4 font-semibold text-white">{sig.symbol}</td>
-                      <td className="py-2 pr-4"><span className={`px-2 py-0.5 rounded text-xs font-bold ${DIR_STYLE[sig.direction]}`}>{sig.direction.toUpperCase()}</span></td>
-                      <td className="py-2 pr-4"><ConfidenceBar value={sig.confidence} /></td>
-                      <td className="py-2 pr-4 text-gray-300">{mkt?.rsi_14?.toFixed(1) ?? '—'}</td>
-                      <td className={`py-2 pr-4 text-xs ${REGIME_COLOR[sig.regime] || 'text-gray-400'}`}>{sig.regime}</td>
-                      <td className="py-2 pr-4 text-gray-300">{((sig.kelly_fraction ?? 0) * 100).toFixed(1)}%</td>
-                      <td className={`py-2 text-xs ${DRIFT_COLOR[sig.drift_status] || 'text-gray-400'}`}>{sig.drift_status}</td>
+                    <tr key={sig.symbol} className="border-b border-gray-800/40 hover:bg-gray-800/20 transition-colors">
+                      <td className="px-4 py-2.5 font-bold text-white">{sig.symbol}</td>
+                      <td className="px-4 py-2.5"><span className={`px-2 py-0.5 rounded text-xs font-bold ${DIR_STYLE[sig.direction]}`}>{sig.direction.toUpperCase()}</span></td>
+                      <td className="px-4 py-2.5"><ConfidenceBar value={sig.confidence} /></td>
+                      <td className={`px-4 py-2.5 font-mono text-xs ${rsiTextColor(mkt?.rsi_14 ?? 50)}`}>{mkt?.rsi_14?.toFixed(1) ?? '—'}</td>
+                      <td className={`px-4 py-2.5 text-xs ${REGIME_COLOR[sig.regime] ?? 'text-gray-400'}`}>{sig.regime ?? '—'}</td>
+                      <td className="px-4 py-2.5 text-gray-300 text-xs">{((sig.kelly_fraction ?? 0) * 100).toFixed(1)}%</td>
+                      <td className={`px-4 py-2.5 text-xs font-semibold ${DRIFT_COLOR[sig.drift_status] ?? 'text-gray-400'}`}>{sig.drift_status}</td>
                     </tr>
                   )
                 })}
@@ -120,42 +150,59 @@ export default function Home() {
         )}
       </div>
 
-      <div className="bg-gray-900 rounded-lg border border-gray-800 p-4">
-        <h2 className="text-blue-400 font-semibold mb-3 text-sm uppercase tracking-wider">Market Heatmap — RSI</h2>
-        <div className="grid grid-cols-5 sm:grid-cols-8 md:grid-cols-10 gap-1.5">
+      <div className="bg-gray-900 rounded-lg border border-gray-800 overflow-hidden">
+        <div className="px-4 py-3 border-b border-gray-800 flex items-center justify-between">
+          <h2 className="text-blue-400 font-semibold text-sm uppercase tracking-wider">Market Heatmap — RSI</h2>
+          <div className="flex items-center gap-3 text-xs text-gray-600">
+            <span className="text-blue-400">■</span> Oversold
+            <span className="text-green-400">■</span> Bullish
+            <span className="text-gray-400">■</span> Neutral
+            <span className="text-orange-400">■</span> Bearish
+            <span className="text-red-400">■</span> Overbought
+          </div>
+        </div>
+        <div className="p-3 grid grid-cols-5 sm:grid-cols-8 md:grid-cols-10 lg:grid-cols-15 gap-1.5">
           {heatmapSymbols.map(m => (
-            <div key={m.symbol} className={`border rounded p-1.5 text-center cursor-default ${rsiTileColor(m.rsi_14)}`}>
-              <p className="text-xs font-semibold text-white truncate">{m.symbol.replace('USDT', '')}</p>
-              <p className="text-xs text-gray-300">{m.rsi_14?.toFixed(0)}</p>
-              <p className="text-xs">{m.direction === 'long' ? '▲' : m.direction === 'short' ? '▼' : '—'}</p>
+            <div key={m.symbol} className={`border rounded p-1.5 text-center cursor-default transition-all ${rsiTileColor(m.rsi_14)}`}>
+              <p className="text-xs font-bold text-white truncate leading-tight">{m.symbol.replace('USDT', '')}</p>
+              <p className={`text-xs font-mono ${rsiTextColor(m.rsi_14)}`}>{m.rsi_14?.toFixed(0) ?? '—'}</p>
+              <p className="text-xs leading-none mt-0.5">{m.direction === 'long' ? '▲' : m.direction === 'short' ? '▼' : <span className="text-gray-600">–</span>}</p>
             </div>
           ))}
+          {heatmapSymbols.length === 0 && <p className="col-span-10 text-gray-500 text-sm py-4 text-center">Loading market data...</p>}
         </div>
       </div>
 
-      <div className="bg-gray-900 rounded-lg border border-gray-800 p-4">
-        <h2 className="text-purple-400 font-semibold mb-3 text-sm uppercase tracking-wider">Shadow Leaderboard</h2>
-        {shadow.length === 0 ? <p className="text-gray-500 text-sm">Shadow system warming up...</p> : (
+      <div className="bg-gray-900 rounded-lg border border-gray-800 overflow-hidden">
+        <div className="px-4 py-3 border-b border-gray-800">
+          <h2 className="text-purple-400 font-semibold text-sm uppercase tracking-wider">Shadow Leaderboard</h2>
+        </div>
+        {shadowData.length === 0 ? (
+          <p className="text-gray-500 text-sm p-4">Shadow system warming up — requires 100 trades to evaluate...</p>
+        ) : (
           <table className="w-full text-sm">
-            <thead><tr className="text-gray-500 border-b border-gray-800 text-xs">
-              <th className="text-left py-2 pr-4">Universe</th>
-              <th className="text-left py-2 pr-4">Sharpe</th>
-              <th className="text-left py-2 pr-4">Win Rate</th>
-              <th className="text-left py-2 pr-4">Trades</th>
-              <th className="text-left py-2 pr-4">Return</th>
-              <th className="text-left py-2">Status</th>
+            <thead><tr className="text-gray-500 border-b border-gray-800 text-xs bg-gray-900/60">
+              <th className="text-left px-4 py-2">Universe</th>
+              <th className="text-left px-4 py-2">Sharpe</th>
+              <th className="text-left px-4 py-2">Win Rate</th>
+              <th className="text-left px-4 py-2">Trades</th>
+              <th className="text-left px-4 py-2">Return</th>
+              <th className="text-left px-4 py-2">Max DD</th>
+              <th className="text-left px-4 py-2">Status</th>
             </tr></thead>
             <tbody>
-              {shadow.map(s => (
-                <tr key={s.shadow_id} className="border-b border-gray-800/40">
-                  <td className="py-2 pr-4 font-semibold">{s.shadow_id}</td>
-                  <td className={`py-2 pr-4 ${s.sharpe >= 1.5 ? 'text-green-400' : 'text-gray-300'}`}>{s.sharpe?.toFixed(2)}</td>
-                  <td className={`py-2 pr-4 ${s.win_rate >= 0.52 ? 'text-green-400' : 'text-gray-300'}`}>{((s.win_rate ?? 0) * 100).toFixed(1)}%</td>
-                  <td className="py-2 pr-4 text-gray-300">{s.trades}</td>
-                  <td className={`py-2 pr-4 ${(s.return ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>{((s.return ?? 0) * 100).toFixed(2)}%</td>
-                  <td className="py-2">{s.promotion_ready
-                    ? <span className="bg-yellow-500/20 text-yellow-400 px-2 py-0.5 rounded text-xs font-bold">READY</span>
-                    : <span className="text-gray-500 text-xs">Training</span>}
+              {shadowData.map(s => (
+                <tr key={s.shadow_id} className="border-b border-gray-800/40 hover:bg-gray-800/20">
+                  <td className="px-4 py-2.5 font-semibold text-white">{s.shadow_id}</td>
+                  <td className={`px-4 py-2.5 font-mono ${s.sharpe >= 1.5 ? 'text-green-400' : s.sharpe >= 1.0 ? 'text-yellow-400' : 'text-gray-400'}`}>{s.sharpe?.toFixed(2) ?? '—'}</td>
+                  <td className={`px-4 py-2.5 font-mono ${s.win_rate >= 0.52 ? 'text-green-400' : 'text-gray-400'}`}>{((s.win_rate ?? 0) * 100).toFixed(1)}%</td>
+                  <td className="px-4 py-2.5 text-gray-300">{s.trades}</td>
+                  <td className={`px-4 py-2.5 font-mono ${(s.return ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>{((s.return ?? 0) * 100).toFixed(2)}%</td>
+                  <td className={`px-4 py-2.5 font-mono ${(s.max_drawdown ?? 0) < 0.1 ? 'text-green-400' : 'text-red-400'}`}>{((s.max_drawdown ?? 0) * 100).toFixed(1)}%</td>
+                  <td className="px-4 py-2.5">
+                    {s.promotion_ready
+                      ? <span className="bg-yellow-500/20 text-yellow-400 border border-yellow-500/40 px-2 py-0.5 rounded text-xs font-bold">READY</span>
+                      : <span className="text-gray-600 text-xs">Training</span>}
                   </td>
                 </tr>
               ))}
