@@ -1,25 +1,30 @@
-import os
+import logging
 from qdrant_client import QdrantClient
-from qdrant_client.models import VectorParams, Distance, PointStruct
+from qdrant_client.models import Distance, VectorParams, PointStruct
 
-QDRANT_HOST = os.getenv("QDRANT_HOST", "qdrant")
-QDRANT_PORT = int(os.getenv("QDRANT_PORT", 6333))
-VECTOR_DIM = 384
+logger = logging.getLogger(__name__)
+
 
 class QdrantManager:
-    def __init__(self):
-        self.client = QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT)
+    def __init__(self, qdrant_url: str):
+        self.client = QdrantClient(url=qdrant_url)
 
-    def create_collection(self, name: str):
-        existing = [c.name for c in self.client.get_collections().collections]
-        if name not in existing:
+    def ensure_collection(self, name: str, vector_size: int = 384):
+        try:
+            self.client.get_collection(name)
+        except Exception:
             self.client.create_collection(
                 collection_name=name,
-                vectors_config=VectorParams(size=VECTOR_DIM, distance=Distance.COSINE),
+                vectors_config=VectorParams(size=vector_size, distance=Distance.COSINE),
             )
+            logger.info(f"Created Qdrant collection: {name}")
 
     def upsert(self, collection: str, point_id: int, vector: list[float], payload: dict):
         self.client.upsert(
             collection_name=collection,
             points=[PointStruct(id=point_id, vector=vector, payload=payload)]
         )
+
+    def search(self, collection: str, vector: list[float], limit: int = 5) -> list[dict]:
+        results = self.client.search(collection_name=collection, query_vector=vector, limit=limit)
+        return [{"score": r.score, "payload": r.payload} for r in results]

@@ -1,5 +1,5 @@
-anthropic==0.28.0
-kafka-python==2.0.2
+anthropic>=0.28.0
 redis==5.0.4
 qdrant-client==1.9.1
 numpy==1.26.4
+asyncpg==0.29.0

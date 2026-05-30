@@ -2,4 +2,5 @@ fredapi==0.5.2
 yfinance==0.2.40
 web3==6.18.0
 aiohttp==3.9.5
-kafka-python==2.0.2
+redis==5.0.4
+asyncpg==0.29.0

@@ -150,7 +150,7 @@ scenario_engine  (crisis scenario backtesting)
 | `grafana` | Dashboards | 3001 |
 | `dashboard` | Next.js trading UI | 3000 |
 
-**Note:** Several `requirements.txt` files and the Makefile `infra` target reference Kafka/Zookeeper, but no Kafka service exists in `docker-compose.yml`. The `data_ingestion` service's `BinanceWebSocket` currently tries to connect to `kafka:9092`. This is a known gap — either add a Kafka service to `docker-compose.yml` or replace the Kafka producer with direct Redis/TimescaleDB writes.
+**Kafka removed:** All services previously had `kafka-python` dependencies. These have been replaced with Redis pub/sub and direct Redis key writes. `kafka-python` is no longer in any `requirements.txt` and there is no Kafka service in `docker-compose.yml`.
 
 ### PostgreSQL Schema (database: `prometheus_trading`)
 

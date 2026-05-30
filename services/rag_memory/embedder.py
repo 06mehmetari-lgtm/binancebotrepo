@@ -1,19 +1,29 @@
-from sentence_transformers import SentenceTransformer
 import numpy as np
 
-MODEL_NAME = "all-MiniLM-L6-v2"
-_model = None
 
-def get_model() -> SentenceTransformer:
-    global _model
-    if _model is None:
-        _model = SentenceTransformer(MODEL_NAME)
-    return _model
+class Embedder:
+    """Lightweight embedder using sentence-transformers if available, otherwise hash-based fallback."""
 
-def embed(text: str) -> list[float]:
-    vec = get_model().encode(text, normalize_embeddings=True)
-    return vec.tolist()
+    def __init__(self):
+        self._model = None
+        self._load_model()
 
-def embed_batch(texts: list[str]) -> list[list[float]]:
-    vecs = get_model().encode(texts, normalize_embeddings=True, batch_size=32)
-    return vecs.tolist()
+    def _load_model(self):
+        try:
+            from sentence_transformers import SentenceTransformer
+            self._model = SentenceTransformer("all-MiniLM-L6-v2")
+        except Exception:
+            self._model = None
+
+    def embed(self, text: str) -> list[float]:
+        if self._model:
+            vec = self._model.encode(text, normalize_embeddings=True)
+            return vec.tolist()
+        # Hash-based fallback: deterministic but not semantic
+        arr = np.zeros(384)
+        for i, ch in enumerate(text[:384]):
+            arr[i % 384] += ord(ch) / 1000.0
+        norm = np.linalg.norm(arr)
+        if norm > 0:
+            arr = arr / norm
+        return arr.tolist()
