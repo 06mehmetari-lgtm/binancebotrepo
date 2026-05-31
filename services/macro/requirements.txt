@@ -1,5 +1,5 @@
 fredapi==0.5.2
-yfinance==0.2.40
+yfinance>=0.2.50
 aiohttp==3.9.5
 redis==5.0.4
 asyncpg==0.29.0
