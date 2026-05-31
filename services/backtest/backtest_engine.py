@@ -1,8 +1,10 @@
 """
 Core backtesting engine.
-Uses the same signal logic as signal_generator.py (technical fallback).
-Exit strategy: ATR-based stop-loss + take-profit, max hold 48 bars.
+Uses strict multi-confirmation signal logic to reduce overtrading.
+
+Exit strategy: 2.0x ATR stop-loss, 3.5x ATR take-profit (R:R ≈ 1:1.75)
 Fees: 0.05% taker × 2 = 0.10% round trip.
+Cooldown: 12-bar wait after any exit before re-entering same symbol.
 """
 import logging
 import numpy as np
@@ -10,20 +12,22 @@ import pandas as pd
 
 log = logging.getLogger(__name__)
 
-TAKER_FEE = 0.0005       # 0.05% per side (Binance taker)
-ROUND_TRIP = TAKER_FEE * 2   # 0.10% total cost per trade
+TAKER_FEE = 0.0005
+ROUND_TRIP = TAKER_FEE * 2
 
 
 class BacktestEngine:
     def __init__(
         self,
         initial_capital: float = 10_000,
-        position_pct: float = 0.05,      # 5% per trade (immunity limit)
-        max_positions: int = 3,           # immunity: max 3 concurrent
-        atr_sl_mult: float = 1.5,         # stop loss = 1.5 × ATR
-        atr_tp_mult: float = 2.5,         # take profit = 2.5 × ATR  (1.67 R:R)
-        max_hold_bars: int = 48,          # time-exit after 48h
-        confidence_threshold: float = 0.60,
+        position_pct: float = 0.05,
+        max_positions: int = 3,
+        atr_sl_mult: float = 2.0,        # wider stop — avoids noise exits
+        atr_tp_mult: float = 3.5,        # better R:R (1:1.75)
+        max_hold_bars: int = 72,          # 72h max hold
+        confidence_threshold: float = 0.72,  # strict filter
+        min_margin: float = 0.10,         # long score must beat short score by ≥10%
+        cooldown_bars: int = 12,          # 12h wait after any exit
     ):
         self.initial_capital = initial_capital
         self.position_pct = position_pct
@@ -32,10 +36,8 @@ class BacktestEngine:
         self.atr_tp_mult = atr_tp_mult
         self.max_hold_bars = max_hold_bars
         self.confidence_threshold = confidence_threshold
-
-    # ──────────────────────────────────────────────────────────────────────────
-    # Feature computation
-    # ──────────────────────────────────────────────────────────────────────────
+        self.min_margin = min_margin
+        self.cooldown_bars = cooldown_bars
 
     def _build_features(self, df: pd.DataFrame) -> pd.DataFrame:
         close = df["close"]
@@ -58,6 +60,7 @@ class BacktestEngine:
         macd_line = ema12 - ema26
         macd_sig = macd_line.ewm(span=9, adjust=False).mean()
         df["macd_hist"] = macd_line - macd_sig
+        df["macd_delta"] = df["macd_hist"].diff()  # histogram direction
 
         # ATR(14)
         tr = pd.concat([
@@ -67,7 +70,10 @@ class BacktestEngine:
         ], axis=1).max(axis=1)
         df["atr"] = tr.ewm(com=13, adjust=False).mean()
 
-        # Bollinger Bands (20,2)
+        # ATR as % of price (normalised volatility)
+        df["atr_pct"] = df["atr"] / close
+
+        # Bollinger Bands(20, 2σ)
         bb_mid = close.rolling(20).mean()
         bb_std = close.rolling(20).std()
         bb_upper = bb_mid + 2 * bb_std
@@ -86,121 +92,142 @@ class BacktestEngine:
         dm_m = dm_m.where(dm_m > dm_p, 0)
         di_p = 100 * dm_p.ewm(com=13, adjust=False).mean() / df["atr"].replace(0, np.nan)
         di_m = 100 * dm_m.ewm(com=13, adjust=False).mean() / df["atr"].replace(0, np.nan)
-        dx = (100 * (di_p - di_m).abs() / (di_p + di_m).replace(0, np.nan))
+        dx = 100 * (di_p - di_m).abs() / (di_p + di_m).replace(0, np.nan)
         df["adx"] = dx.ewm(com=13, adjust=False).mean()
 
-        # Stochastic %K(14)
+        # Stochastic %K(14) and direction
         low14 = low.rolling(14).min()
         high14 = high.rolling(14).max()
         df["stoch_k"] = 100 * (close - low14) / (high14 - low14).replace(0, np.nan)
+        df["stoch_delta"] = df["stoch_k"].diff()
 
-        # Volume ratio
+        # Volume ratio (vs 20-bar MA)
         df["vol_ratio"] = volume / volume.rolling(20).mean().replace(0, np.nan)
 
-        # 2-bar momentum
-        df["mom2"] = close - close.shift(2)
+        # 2-bar and 5-bar momentum
+        df["mom2"] = close.pct_change(2)
+        df["mom5"] = close.pct_change(5)
 
         return df
 
-    # ──────────────────────────────────────────────────────────────────────────
-    # Signal scoring — same philosophy as signal_generator.py technical fallback
-    # ──────────────────────────────────────────────────────────────────────────
-
     def _score_long(self, r: dict) -> float:
+        """
+        Score [0..1] for LONG entry. Requires multiple confirming factors.
+        Target: fewer but higher-quality signals.
+        """
         score = 0.0
-        rsi = r.get("rsi", 50) or 50
-        macd = r.get("macd_hist", 0) or 0
-        bb = r.get("bb_pos", 0.5) or 0.5
-        adx = r.get("adx", 0) or 0
-        ema20 = r.get("ema20", 0) or 0
-        ema50 = r.get("ema50", 0) or 0
-        close = r.get("close", 0) or 0
-        ema200 = r.get("ema200", 0) or 0
-        vol = r.get("vol_ratio", 1) or 1
-        stoch = r.get("stoch_k", 50) or 50
-        mom2 = r.get("mom2", 0) or 0
+        rsi      = r.get("rsi", 50) or 50
+        macd     = r.get("macd_hist", 0) or 0
+        m_delta  = r.get("macd_delta", 0) or 0
+        bb       = r.get("bb_pos", 0.5) or 0.5
+        adx      = r.get("adx", 20) or 20
+        ema20    = r.get("ema20", 0) or 0
+        ema50    = r.get("ema50", 0) or 0
+        ema200   = r.get("ema200", 0) or 0
+        close    = r.get("close", 0) or 0
+        vol      = r.get("vol_ratio", 1) or 1
+        stoch    = r.get("stoch_k", 50) or 50
+        s_delta  = r.get("stoch_delta", 0) or 0
+        mom2     = r.get("mom2", 0) or 0
+        mom5     = r.get("mom5", 0) or 0
 
-        # RSI oversold
-        if rsi < 28:   score += 0.22
-        elif rsi < 35: score += 0.14
-        elif rsi < 42: score += 0.06
+        # ── RSI — strong oversold required ──────────────────────────────────
+        if rsi < 28:    score += 0.25
+        elif rsi < 35:  score += 0.12
+        # No points for RSI > 35 (neutral or overbought is not a long signal)
 
-        # MACD momentum turning up
-        if macd > 0: score += 0.18
+        # ── MACD — must be turning UP (histogram crossing or accelerating) ──
+        if macd > 0 and m_delta > 0:    score += 0.22  # positive and increasing
+        elif macd < 0 and m_delta > 0:  score += 0.10  # negative but turning up (early reversal)
 
-        # Bollinger — price near lower band
-        if bb < 0.15:   score += 0.18
-        elif bb < 0.25: score += 0.10
-        elif bb < 0.35: score += 0.04
+        # ── Bollinger — price compressed near lower band ─────────────────────
+        if bb < 0.10:    score += 0.22  # extreme lower band
+        elif bb < 0.20:  score += 0.12
+        elif bb < 0.30:  score += 0.04
 
-        # EMA trend alignment
-        if ema20 > 0 and ema50 > 0 and ema20 > ema50: score += 0.12
-        if close > 0 and ema200 > 0 and close > ema200: score += 0.08
+        # ── EMA trend alignment ───────────────────────────────────────────────
+        full_bullish = (ema20 > 0 and ema50 > 0 and ema200 > 0
+                        and ema20 > ema50 and ema50 > ema200)
+        if full_bullish:
+            score += 0.15
+        elif ema20 > 0 and ema50 > 0 and ema20 > ema50:
+            score += 0.07
 
-        # Stochastic oversold
-        if stoch < 20:   score += 0.10
-        elif stoch < 35: score += 0.05
+        if close > 0 and ema200 > 0 and close > ema200:
+            score += 0.06
 
-        # Volume surge
-        if vol > 1.5:   score += 0.10
-        elif vol > 1.2: score += 0.05
+        # ── Stochastic — oversold and turning up ─────────────────────────────
+        if stoch < 15 and s_delta > 0:   score += 0.14
+        elif stoch < 25:                  score += 0.06
 
-        # 2-bar momentum
-        if mom2 > 0: score += 0.04
+        # ── Volume surge — confirms the move ─────────────────────────────────
+        if vol > 2.0:    score += 0.10
+        elif vol > 1.5:  score += 0.05
 
-        # ADX modifier
-        if adx < 15:   score *= 0.55   # choppy — penalise
-        elif adx > 25: score *= 1.12   # strong trend — amplify
+        # ── Momentum confirmation ─────────────────────────────────────────────
+        if mom2 > 0 and mom5 < 0:  score += 0.04  # short-term bounce in downtrend
+        elif mom2 > 0:             score += 0.02
+
+        # ── ADX filter — penalise choppy / reward trending ───────────────────
+        if adx < 20:    score *= 0.40   # strong penalty for ranging market
+        elif adx > 30:  score *= 1.18   # clear trend confirmation
 
         return min(float(score), 1.0)
 
     def _score_short(self, r: dict) -> float:
+        """Score [0..1] for SHORT entry. Mirror of _score_long."""
         score = 0.0
-        rsi = r.get("rsi", 50) or 50
-        macd = r.get("macd_hist", 0) or 0
-        bb = r.get("bb_pos", 0.5) or 0.5
-        adx = r.get("adx", 0) or 0
-        ema20 = r.get("ema20", 0) or 0
-        ema50 = r.get("ema50", 0) or 0
-        close = r.get("close", 0) or 0
-        ema200 = r.get("ema200", 0) or 0
-        vol = r.get("vol_ratio", 1) or 1
-        stoch = r.get("stoch_k", 50) or 50
-        mom2 = r.get("mom2", 0) or 0
+        rsi      = r.get("rsi", 50) or 50
+        macd     = r.get("macd_hist", 0) or 0
+        m_delta  = r.get("macd_delta", 0) or 0
+        bb       = r.get("bb_pos", 0.5) or 0.5
+        adx      = r.get("adx", 20) or 20
+        ema20    = r.get("ema20", 0) or 0
+        ema50    = r.get("ema50", 0) or 0
+        ema200   = r.get("ema200", 0) or 0
+        close    = r.get("close", 0) or 0
+        vol      = r.get("vol_ratio", 1) or 1
+        stoch    = r.get("stoch_k", 50) or 50
+        s_delta  = r.get("stoch_delta", 0) or 0
+        mom2     = r.get("mom2", 0) or 0
+        mom5     = r.get("mom5", 0) or 0
 
-        if rsi > 72:   score += 0.22
-        elif rsi > 65: score += 0.14
-        elif rsi > 58: score += 0.06
+        if rsi > 72:    score += 0.25
+        elif rsi > 65:  score += 0.12
 
-        if macd < 0: score += 0.18
+        if macd < 0 and m_delta < 0:    score += 0.22
+        elif macd > 0 and m_delta < 0:  score += 0.10
 
-        if bb > 0.85:   score += 0.18
-        elif bb > 0.75: score += 0.10
-        elif bb > 0.65: score += 0.04
+        if bb > 0.90:    score += 0.22
+        elif bb > 0.80:  score += 0.12
+        elif bb > 0.70:  score += 0.04
 
-        if ema20 > 0 and ema50 > 0 and ema20 < ema50: score += 0.12
-        if close > 0 and ema200 > 0 and close < ema200: score += 0.08
+        full_bearish = (ema20 > 0 and ema50 > 0 and ema200 > 0
+                        and ema20 < ema50 and ema50 < ema200)
+        if full_bearish:
+            score += 0.15
+        elif ema20 > 0 and ema50 > 0 and ema20 < ema50:
+            score += 0.07
 
-        if stoch > 80:   score += 0.10
-        elif stoch > 65: score += 0.05
+        if close > 0 and ema200 > 0 and close < ema200:
+            score += 0.06
 
-        if vol > 1.5:   score += 0.10
-        elif vol > 1.2: score += 0.05
+        if stoch > 85 and s_delta < 0:   score += 0.14
+        elif stoch > 75:                  score += 0.06
 
-        if mom2 < 0: score += 0.04
+        if vol > 2.0:    score += 0.10
+        elif vol > 1.5:  score += 0.05
 
-        if adx < 15:   score *= 0.55
-        elif adx > 25: score *= 1.12
+        if mom2 < 0 and mom5 > 0:  score += 0.04
+        elif mom2 < 0:             score += 0.02
+
+        if adx < 20:    score *= 0.40
+        elif adx > 30:  score *= 1.18
 
         return min(float(score), 1.0)
 
-    # ──────────────────────────────────────────────────────────────────────────
-    # Trade simulation
-    # ──────────────────────────────────────────────────────────────────────────
-
     def run(self, symbol: str, klines: list) -> dict:
         if len(klines) < 250:
-            log.warning(f"[{symbol}] Only {len(klines)} bars — skipping")
             return {}
 
         cols = ["open_time", "open", "high", "low", "close", "volume",
@@ -212,7 +239,8 @@ class BacktestEngine:
         df = df.set_index("ts").sort_index()
 
         df = self._build_features(df)
-        required = ["rsi", "macd_hist", "atr", "adx", "bb_pos", "ema200", "vol_ratio"]
+        required = ["rsi", "macd_hist", "macd_delta", "atr", "adx",
+                    "bb_pos", "ema200", "vol_ratio", "stoch_k"]
         df = df.dropna(subset=required)
 
         if len(df) < 100:
@@ -225,7 +253,8 @@ class BacktestEngine:
         equity: list[float] = [capital]
         monthly_equity: dict[str, float] = {}
         trades: list[dict] = []
-        open_pos: list[dict] = []   # list of position dicts
+        open_pos: list[dict] = []
+        last_exit_bar: int = -999  # cooldown tracking
 
         for i in range(1, n - 1):
             row = rows.iloc[i]
@@ -243,12 +272,9 @@ class BacktestEngine:
                 if direction == "long":
                     sl = entry - self.atr_sl_mult * atr
                     tp = entry + self.atr_tp_mult * atr
-                    bar_low = float(rd["low"])
-                    bar_high = float(rd["high"])
-
-                    if bar_low <= sl:
+                    if float(rd["low"]) <= sl:
                         exit_p, reason = sl, "stop_loss"
-                    elif bar_high >= tp:
+                    elif float(rd["high"]) >= tp:
                         exit_p, reason = tp, "take_profit"
                     elif bar_age >= self.max_hold_bars:
                         exit_p, reason = float(rd["close"]), "time_exit"
@@ -256,15 +282,12 @@ class BacktestEngine:
                         still_open.append(pos)
                         continue
                     raw_pnl = (exit_p - entry) / entry
-                else:  # short
+                else:
                     sl = entry + self.atr_sl_mult * atr
                     tp = entry - self.atr_tp_mult * atr
-                    bar_high = float(rd["high"])
-                    bar_low = float(rd["low"])
-
-                    if bar_high >= sl:
+                    if float(rd["high"]) >= sl:
                         exit_p, reason = sl, "stop_loss"
-                    elif bar_low <= tp:
+                    elif float(rd["low"]) <= tp:
                         exit_p, reason = tp, "take_profit"
                     elif bar_age >= self.max_hold_bars:
                         exit_p, reason = float(rd["close"]), "time_exit"
@@ -275,6 +298,7 @@ class BacktestEngine:
 
                 net_pnl = raw_pnl - ROUND_TRIP
                 capital *= (1 + net_pnl * pos["size_pct"])
+                last_exit_bar = i
                 trades.append({
                     "direction": direction,
                     "entry": round(entry, 6),
@@ -289,9 +313,12 @@ class BacktestEngine:
             open_pos = still_open
             equity.append(capital)
 
-            # Monthly snapshot
             month_key = str(row["ts"])[:7]
             monthly_equity[month_key] = capital
+
+            # ── Cooldown check ─────────────────────────────────────────────
+            if i - last_exit_bar < self.cooldown_bars:
+                continue
 
             # ── Open new positions ─────────────────────────────────────────
             if len(open_pos) >= self.max_positions:
@@ -302,9 +329,12 @@ class BacktestEngine:
 
             direction = None
             confidence = 0.0
-            if l_score >= self.confidence_threshold and l_score > s_score:
+
+            if (l_score >= self.confidence_threshold
+                    and l_score > s_score + self.min_margin):
                 direction, confidence = "long", l_score
-            elif s_score >= self.confidence_threshold and s_score > l_score:
+            elif (s_score >= self.confidence_threshold
+                    and s_score > l_score + self.min_margin):
                 direction, confidence = "short", s_score
 
             if direction is None:
@@ -346,10 +376,6 @@ class BacktestEngine:
 
         return self._calculate_metrics(symbol, trades, equity, monthly_equity)
 
-    # ──────────────────────────────────────────────────────────────────────────
-    # Metrics
-    # ──────────────────────────────────────────────────────────────────────────
-
     def _calculate_metrics(
         self,
         symbol: str,
@@ -383,7 +409,6 @@ class BacktestEngine:
             r = t.get("exit_reason", "other")
             exit_reasons[r] = exit_reasons.get(r, 0) + 1
 
-        # Monthly returns
         months = sorted(monthly_equity.keys())
         monthly_returns: list[dict] = []
         prev_val = self.initial_capital
@@ -407,8 +432,12 @@ class BacktestEngine:
             "final_capital": round(equity[-1], 2),
             "long_trades": len(longs),
             "short_trades": len(shorts),
-            "long_win_rate_pct": round(len([t for t in longs if t["pnl_pct"] > 0]) / len(longs) * 100 if longs else 0, 1),
-            "short_win_rate_pct": round(len([t for t in shorts if t["pnl_pct"] > 0]) / len(shorts) * 100 if shorts else 0, 1),
+            "long_win_rate_pct": round(
+                len([t for t in longs if t["pnl_pct"] > 0]) / len(longs) * 100 if longs else 0, 1
+            ),
+            "short_win_rate_pct": round(
+                len([t for t in shorts if t["pnl_pct"] > 0]) / len(shorts) * 100 if shorts else 0, 1
+            ),
             "avg_bars_held": round(float(np.mean([t["bars_held"] for t in trades])), 1),
             "exit_reasons": exit_reasons,
             "monthly_returns": monthly_returns,
