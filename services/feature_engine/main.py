@@ -58,17 +58,20 @@ def _resolve_symbols_from_env() -> list[str]:
 
 async def discover_symbols_from_redis(redis: aioredis.Redis) -> list[str]:
     """Discover all symbols that data_ingestion is actively streaming into Redis."""
+    def _decode(key: bytes | str) -> str:
+        return key.decode() if isinstance(key, bytes) else key
+
     # data_ingestion writes binance:kline:{symbol.lower()} for every subscribed symbol
     kline_keys = await redis.keys("binance:kline:*")
     if kline_keys:
-        symbols = sorted(k.replace("binance:kline:", "").upper() for k in kline_keys)
+        symbols = sorted(_decode(k).replace("binance:kline:", "").upper() for k in kline_keys)
         log.info(f"Redis symbol discovery: {len(symbols)} symbols from binance:kline:* keys")
         return symbols
 
-    # Fallback: check orderbook keys
+    # Fallback: orderbook keys (written by data_ingestion for all depth stream symbols)
     ob_keys = await redis.keys("binance:ob:*")
     if ob_keys:
-        symbols = sorted(k.replace("binance:ob:", "").upper() for k in ob_keys)
+        symbols = sorted(_decode(k).replace("binance:ob:", "").upper() for k in ob_keys)
         log.info(f"Redis symbol discovery (OB): {len(symbols)} symbols from binance:ob:* keys")
         return symbols
 
