@@ -50,7 +50,7 @@ async def run_debate_for_symbol(redis: aioredis.Redis, symbol: str):
         for v in result.all_votes
     ]
 
-    await redis.set(f"agents:verdicts:{symbol}", json.dumps(votes_payload), ex=60)
+    await redis.set(f"agents:verdicts:{symbol}", json.dumps(votes_payload), ex=180)
 
     # Also store final verdict for signal engine
     verdict = {
@@ -62,7 +62,7 @@ async def run_debate_for_symbol(redis: aioredis.Redis, symbol: str):
         "vote_count": len(result.all_votes),
         "timestamp": time.time(),
     }
-    await redis.set(f"agents:verdict:{symbol}", json.dumps(verdict), ex=60)
+    await redis.set(f"agents:verdict:{symbol}", json.dumps(verdict), ex=180)
     await redis.publish(f"ch:agents:{symbol}", symbol)
 
     if result.final_signal != "flat":
@@ -88,6 +88,15 @@ async def main():
 
     active_set: set[str] = set()
     last_refresh = 0.0
+    # Limit concurrent debates to avoid overwhelming Groq/Ollama rate limits
+    _sem = asyncio.Semaphore(20)
+
+    async def _debate_one(symbol: str):
+        async with _sem:
+            try:
+                await run_debate_for_symbol(redis, symbol)
+            except Exception as e:
+                log.error(f"Debate error for {symbol}: {e}")
 
     async def debate_loop():
         nonlocal active_set, last_refresh
@@ -100,11 +109,7 @@ async def main():
                     log.info(f"agent_system: {len(active_set)} symbols discovered")
                 last_refresh = now
 
-            for symbol in list(active_set):
-                try:
-                    await run_debate_for_symbol(redis, symbol)
-                except Exception as e:
-                    log.error(f"Debate error for {symbol}: {e}")
+            await asyncio.gather(*[_debate_one(s) for s in list(active_set)])
             await asyncio.sleep(10)
 
     await asyncio.gather(debate_loop(), weight_update_loop(redis))

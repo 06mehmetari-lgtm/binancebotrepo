@@ -105,6 +105,8 @@ function timeAgo(ts: number | null): string {
   return `${Math.floor(sec / 3600)}h ago`
 }
 
+const PAGE_SIZE = 50
+
 export default function ScannerPage() {
   const [data, setData] = useState<Partial<ScannerData>>({})
   const [activity, setActivity] = useState<ActivityEvent[]>([])
@@ -113,6 +115,7 @@ export default function ScannerPage() {
   const [filterDir, setFilterDir] = useState<'all' | 'long' | 'short' | 'active'>('all')
   const [tick, setTick] = useState(0)
   const [lastUpdate, setLastUpdate] = useState('')
+  const [page, setPage] = useState(0)
   const intervalRef = useRef<ReturnType<typeof setInterval>>()
   const activityRef = useRef<HTMLDivElement>(null)
 
@@ -147,6 +150,8 @@ export default function ScannerPage() {
     if (filterDir === 'active') return c.direction !== 'flat'
     return true
   })
+  const totalPages = Math.ceil(coins.length / PAGE_SIZE)
+  const pagedCoins = coins.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE)
 
   const wsOk = data.ws_status?.status === 'CONNECTED'
 
@@ -241,7 +246,7 @@ export default function ScannerPage() {
              `SHORT (${data.short_count ?? 0})`}
           </button>
         ))}
-        <span className="ml-auto text-xs text-gray-600">{coins.length} sonuç</span>
+        <span className="ml-auto text-xs text-gray-600">{coins.length} sonuç {totalPages > 1 ? `· s.${page+1}/${totalPages}` : ''}</span>
       </div>
 
       {/* Main table */}
@@ -262,7 +267,7 @@ export default function ScannerPage() {
               </tr>
             </thead>
             <tbody>
-              {coins.length === 0 ? (
+              {pagedCoins.length === 0 ? (
                 <tr>
                   <td colSpan={9} className="text-center py-12 text-gray-500">
                     {data.total === 0
@@ -270,7 +275,7 @@ export default function ScannerPage() {
                       : 'Filtreyle eşleşen coin bulunamadı'}
                   </td>
                 </tr>
-              ) : coins.map(c => (
+              ) : pagedCoins.map(c => (
                 <tr key={c.symbol}
                   className={`border-b border-gray-800/40 hover:bg-gray-800/25 transition-colors ${
                     c.direction === 'long' ? 'bg-green-950/10' :
@@ -318,6 +323,32 @@ export default function ScannerPage() {
           </table>
         </div>
       </div>
+
+      {/* Pagination */}
+      {totalPages > 1 && (
+        <div className="flex items-center justify-between text-xs">
+          <span className="text-gray-500">{coins.length} coin · sayfa {page + 1} / {totalPages}</span>
+          <div className="flex items-center gap-1">
+            <button onClick={() => setPage(0)} disabled={page === 0}
+              className="px-2 py-1 rounded bg-gray-800 text-gray-400 disabled:opacity-30 hover:bg-gray-700">«</button>
+            <button onClick={() => setPage(p => Math.max(0, p - 1))} disabled={page === 0}
+              className="px-2 py-1 rounded bg-gray-800 text-gray-400 disabled:opacity-30 hover:bg-gray-700">‹</button>
+            {Array.from({ length: Math.min(7, totalPages) }, (_, i) => {
+              const p = Math.max(0, Math.min(totalPages - 7, page - 3)) + i
+              return (
+                <button key={p} onClick={() => setPage(p)}
+                  className={`px-2 py-1 rounded text-xs ${p === page ? 'bg-green-700 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}>
+                  {p + 1}
+                </button>
+              )
+            })}
+            <button onClick={() => setPage(p => Math.min(totalPages - 1, p + 1))} disabled={page >= totalPages - 1}
+              className="px-2 py-1 rounded bg-gray-800 text-gray-400 disabled:opacity-30 hover:bg-gray-700">›</button>
+            <button onClick={() => setPage(totalPages - 1)} disabled={page >= totalPages - 1}
+              className="px-2 py-1 rounded bg-gray-800 text-gray-400 disabled:opacity-30 hover:bg-gray-700">»</button>
+          </div>
+        </div>
+      )}
 
       {/* Activity Feed */}
       <div className="bg-gray-900 rounded-lg border border-gray-800 overflow-hidden">

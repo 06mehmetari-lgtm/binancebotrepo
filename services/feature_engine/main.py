@@ -200,28 +200,33 @@ async def main():
     active_set: set[str] = set(active_symbols)
     last_refresh = time.time()
 
+    BATCH = 50  # concurrent symbols per gather call
+    FEAT_TTL = 300  # seconds — longer TTL to handle large symbol sets
+
+    async def _process(symbol: str):
+        try:
+            await update_ohlcv(redis, symbol)
+            features = await compute_features(redis, symbol)
+            if features:
+                await redis.set(f"features:latest:{symbol}", json.dumps(features), ex=FEAT_TTL)
+                await redis.publish(f"ch:features:{symbol}", symbol)
+        except Exception as e:
+            log.error(f"Feature error [{symbol}]: {e}")
+
     while True:
-        # Periodically re-discover to pick up any symbols added after startup
         if time.time() - last_refresh > SYMBOL_REFRESH_INTERVAL:
             new_symbols = await discover_symbols_from_redis(redis)
             if new_symbols:
                 added = set(new_symbols) - active_set
                 if added:
-                    log.info(f"New symbols discovered: {added}")
+                    log.info(f"New symbols discovered: {len(added)}")
                     await bootstrap_klines(list(added))
                 active_set = set(new_symbols)
             last_refresh = time.time()
 
-        for symbol in list(active_set):
-            await update_ohlcv(redis, symbol)
-            features = await compute_features(redis, symbol)
-            if features:
-                await redis.set(
-                    f"features:latest:{symbol}",
-                    json.dumps(features),
-                    ex=120
-                )
-                await redis.publish(f"ch:features:{symbol}", symbol)
+        symbols_list = list(active_set)
+        for i in range(0, len(symbols_list), BATCH):
+            await asyncio.gather(*[_process(s) for s in symbols_list[i:i + BATCH]])
 
         await asyncio.sleep(1)
 

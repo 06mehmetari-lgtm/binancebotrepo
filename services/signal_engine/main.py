@@ -14,8 +14,10 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname
 log = logging.getLogger(__name__)
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379")
-SYMBOL_REFRESH_INTERVAL = 300   # re-scan Redis every 5 minutes
-ACTIVITY_MAX = 200              # keep last 200 events in activity feed
+SYMBOL_REFRESH_INTERVAL = 300
+ACTIVITY_MAX = 500
+BATCH_SIZE = 50  # concurrent symbols per gather call
+SIG_TTL = 120   # seconds
 
 generator = SignalGenerator()
 kelly = KellyCalculator()
@@ -125,30 +127,33 @@ async def main():
         signal_count = 0
         all_sigs: list[dict] = []
 
-        for symbol in list(active_set):
+        async def _gen(symbol: str):
             try:
                 sig = await generate_signal(redis, symbol)
                 if sig is not None:
-                    await redis.set(f"signal:latest:{symbol}", json.dumps(sig), ex=90)
+                    await redis.set(f"signal:latest:{symbol}", json.dumps(sig), ex=SIG_TTL)
                     await redis.publish(f"ch:signal:{symbol}", symbol)
                     all_sigs.append(sig)
-                    if sig["direction"] != "flat" and sig.get("is_valid"):
-                        signal_count += 1
-                        log.info(
-                            f"[{symbol}] {sig['direction'].upper()} "
-                            f"conf={sig['confidence']:.2f} src={sig['source']}"
-                        )
-                        await push_activity(redis, {
-                            "type": "signal",
-                            "symbol": symbol,
-                            "direction": sig["direction"],
-                            "confidence": sig["confidence"],
-                            "source": sig["source"],
-                            "rsi": sig.get("rsi"),
-                            "regime": sig.get("regime"),
-                        })
             except Exception as e:
                 log.error(f"Signal error for {symbol}: {e}")
+
+        symbols_list = list(active_set)
+        for i in range(0, len(symbols_list), BATCH_SIZE):
+            await asyncio.gather(*[_gen(s) for s in symbols_list[i:i + BATCH_SIZE]])
+
+        for sig in all_sigs:
+            if sig["direction"] != "flat" and sig.get("is_valid"):
+                signal_count += 1
+                log.info(f"[{sig['symbol']}] {sig['direction'].upper()} conf={sig['confidence']:.2f} src={sig['source']}")
+                await push_activity(redis, {
+                    "type": "signal",
+                    "symbol": sig["symbol"],
+                    "direction": sig["direction"],
+                    "confidence": sig["confidence"],
+                    "source": sig["source"],
+                    "rsi": sig.get("rsi"),
+                    "regime": sig.get("regime"),
+                })
 
         cycle += 1
         if cycle % 12 == 0:  # every ~60 seconds

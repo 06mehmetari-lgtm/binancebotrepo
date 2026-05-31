@@ -107,11 +107,14 @@ function SignalCard({ sig }: { sig: Signal }) {
   )
 }
 
+const PAGE_SIZE = 30
+
 export default function SignalsPage() {
   const [allSignals, setAllSignals] = useState<Signal[]>([])
   const [loading, setLoading] = useState(true)
   const [lastUpdate, setLastUpdate] = useState('')
   const [showFlat, setShowFlat] = useState(false)
+  const [page, setPage] = useState(0)
 
   const fetchData = async () => {
     try {
@@ -131,6 +134,8 @@ export default function SignalsPage() {
   const shortCount = active.filter(s => s.direction === 'short').length
 
   const displayed = showFlat ? allSignals : active
+  const totalPages = Math.ceil(displayed.length / PAGE_SIZE)
+  const paged = displayed.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE)
 
   if (loading) return (
     <div className="flex items-center justify-center mt-32 gap-3 text-gray-500">
@@ -184,9 +189,23 @@ export default function SignalsPage() {
           <p className="text-gray-600 text-xs mt-1">The signal engine suppresses all signals below 60% confidence</p>
         </div>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
-          {displayed.map(sig => <SignalCard key={sig.symbol} sig={sig} />)}
-        </div>
+        <>
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+            {paged.map(sig => <SignalCard key={sig.symbol} sig={sig} />)}
+          </div>
+          {totalPages > 1 && (
+            <div className="flex items-center justify-between text-xs mt-2">
+              <span className="text-gray-500">{displayed.length} sinyal · sayfa {page + 1}/{totalPages}</span>
+              <div className="flex items-center gap-1">
+                <button onClick={() => setPage(p => Math.max(0, p - 1))} disabled={page === 0}
+                  className="px-3 py-1.5 rounded bg-gray-800 text-gray-400 disabled:opacity-30 hover:bg-gray-700">‹ Önceki</button>
+                <span className="px-2 text-gray-600">{page + 1} / {totalPages}</span>
+                <button onClick={() => setPage(p => Math.min(totalPages - 1, p + 1))} disabled={page >= totalPages - 1}
+                  className="px-3 py-1.5 rounded bg-gray-800 text-gray-400 disabled:opacity-30 hover:bg-gray-700">Sonraki ›</button>
+              </div>
+            </div>
+          )}
+        </>
       )}
     </div>
   )

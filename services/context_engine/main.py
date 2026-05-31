@@ -93,6 +93,33 @@ async def main():
 
     symbols: list[str] = []
     last_refresh = 0.0
+    BATCH = 50
+    CTX_TTL = 300
+
+    async def _process(symbol: str):
+        try:
+            ctx = await compute_context(redis, symbol)
+            if not ctx:
+                return
+            await redis.set(f"context:latest:{symbol}", json.dumps(ctx), ex=CTX_TTL)
+            await redis.publish(f"ch:context:{symbol}", symbol)
+            new_regime = ctx.get("regime", "unknown")
+            old_regime = LAST_REGIME.get(symbol)
+            if old_regime and old_regime != new_regime and new_regime != "unknown":
+                LAST_REGIME[symbol] = new_regime
+                await redis.lpush("activity:feed", json.dumps({
+                    "type": "regime_change",
+                    "time": time.time(),
+                    "symbol": symbol,
+                    "regime": new_regime,
+                    "prev_regime": old_regime,
+                    "crisis_level": ctx.get("crisis_level", 0),
+                }))
+                await redis.ltrim("activity:feed", 0, 499)
+            elif not old_regime:
+                LAST_REGIME[symbol] = new_regime
+        except Exception as e:
+            log.error(f"Context error [{symbol}]: {e}")
 
     while True:
         now = time.time()
@@ -101,28 +128,8 @@ async def main():
             last_refresh = now
             log.info(f"context_engine tracking {len(symbols)} symbols")
 
-        for symbol in symbols:
-            ctx = await compute_context(redis, symbol)
-            if ctx:
-                await redis.set(f"context:latest:{symbol}", json.dumps(ctx), ex=120)
-                await redis.publish(f"ch:context:{symbol}", symbol)
-                # Push regime change to activity feed
-                new_regime = ctx.get("regime", "unknown")
-                old_regime = LAST_REGIME.get(symbol)
-                if old_regime and old_regime != new_regime and new_regime != "unknown":
-                    LAST_REGIME[symbol] = new_regime
-                    event = json.dumps({
-                        "type": "regime_change",
-                        "time": time.time(),
-                        "symbol": symbol,
-                        "regime": new_regime,
-                        "prev_regime": old_regime,
-                        "crisis_level": ctx.get("crisis_level", 0),
-                    })
-                    await redis.lpush("activity:feed", event)
-                    await redis.ltrim("activity:feed", 0, 199)
-                elif not old_regime:
-                    LAST_REGIME[symbol] = new_regime
+        for i in range(0, len(symbols), BATCH):
+            await asyncio.gather(*[_process(s) for s in symbols[i:i + BATCH]])
         await asyncio.sleep(2)
 
 

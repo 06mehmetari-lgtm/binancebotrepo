@@ -15,6 +15,8 @@ log = logging.getLogger(__name__)
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379")
 POSTGRES_URL = os.getenv("POSTGRES_URL", "")
 TIMESCALE_URL = os.getenv("TIMESCALE_URL", "")
+NEAT_MAX_SYMBOLS = int(os.getenv("NEAT_MAX_SYMBOLS", "150"))
+NEAT_CONCURRENCY = int(os.getenv("NEAT_CONCURRENCY", "4"))
 
 
 async def discover_symbols(redis: aioredis.Redis) -> list[str]:
@@ -30,25 +32,32 @@ GENERATIONS = 30
 
 
 async def evolution_cycle(redis: aioredis.Redis, gm: GenomeManager):
-    symbols = await discover_symbols(redis)
-    log.info(f"neat_evolution cycle: {len(symbols)} symbols")
-    for symbol in symbols:
-        log.info(f"Starting NEAT evolution: {symbol}")
-        engine = NEATTradingEngine(db_url=TIMESCALE_URL or None, symbol=symbol)
-        await engine.load_training_data()
-        try:
-            result = await asyncio.get_event_loop().run_in_executor(
-                None, engine.run, GENERATIONS
-            )
-            result["symbol"] = symbol
-            await redis.set(f"neat:best_genome:{symbol}", json.dumps(result), ex=86400)
-            await redis.lpush("neat:evolution_log", json.dumps(result))
-            await redis.ltrim("neat:evolution_log", 0, 99)
-            if POSTGRES_URL:
-                await gm.save(result)
-            log.info(f"NEAT [{symbol}] fitness={result['fitness']:.4f} nodes={result['nodes']}")
-        except Exception as e:
-            log.error(f"NEAT error [{symbol}]: {e}")
+    all_symbols = await discover_symbols(redis)
+    # Limit to top N to keep evolution tractable
+    symbols = all_symbols[:NEAT_MAX_SYMBOLS]
+    log.info(f"neat_evolution: {len(symbols)}/{len(all_symbols)} symbols, {NEAT_CONCURRENCY} parallel workers")
+
+    sem = asyncio.Semaphore(NEAT_CONCURRENCY)
+
+    async def evolve_one(symbol: str):
+        async with sem:
+            engine = NEATTradingEngine(db_url=TIMESCALE_URL or None, symbol=symbol)
+            await engine.load_training_data()
+            try:
+                result = await asyncio.get_event_loop().run_in_executor(
+                    None, engine.run, GENERATIONS
+                )
+                result["symbol"] = symbol
+                await redis.set(f"neat:best_genome:{symbol}", json.dumps(result), ex=86400)
+                await redis.lpush("neat:evolution_log", json.dumps(result))
+                await redis.ltrim("neat:evolution_log", 0, 999)
+                if POSTGRES_URL:
+                    await gm.save(result)
+                log.info(f"NEAT [{symbol}] fitness={result['fitness']:.4f} nodes={result['nodes']}")
+            except Exception as e:
+                log.error(f"NEAT error [{symbol}]: {e}")
+
+    await asyncio.gather(*[evolve_one(s) for s in symbols])
 
 
 async def main():

@@ -93,6 +93,8 @@ function LSBadge({ z }: { z: number }) {
   return <span className={`font-mono tabular-nums text-xs ${color}`}>{pct > 0 ? '+' : ''}{pct} <span className="text-gray-600 text-[10px]">{label}</span></span>
 }
 
+const PAGE_SIZE = 50
+
 export default function MarketsPage() {
   const [markets, setMarkets] = useState<Market[]>([])
   const [loading, setLoading] = useState(true)
@@ -101,6 +103,7 @@ export default function MarketsPage() {
   const [sortDesc, setSortDesc] = useState(true)
   const [showCrypto, setShowCrypto] = useState(false)
   const [lastUpdate, setLastUpdate] = useState('')
+  const [page, setPage] = useState(0)
 
   const fetchData = async () => {
     try {
@@ -123,10 +126,17 @@ export default function MarketsPage() {
       })
   }, [markets, search, sortKey, sortDesc])
 
+  const totalPages = Math.ceil(filtered.length / PAGE_SIZE)
+  const paged = filtered.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE)
+
   const toggleSort = (key: SortKey) => {
     if (sortKey === key) setSortDesc(d => !d)
     else { setSortKey(key); setSortDesc(true) }
+    setPage(0)
   }
+
+  // Reset page when search changes
+  const handleSearch = (v: string) => { setSearch(v); setPage(0) }
 
   const longCount = markets.filter(m => m.direction === 'long').length
   const shortCount = markets.filter(m => m.direction === 'short').length
@@ -157,7 +167,7 @@ export default function MarketsPage() {
 
       <div className="flex flex-wrap gap-2 items-center">
         <input
-          value={search} onChange={e => setSearch(e.target.value)}
+          value={search} onChange={e => handleSearch(e.target.value)}
           placeholder="Filter symbol..."
           className="bg-gray-900 border border-gray-700 rounded px-3 py-1.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-orange-500 w-44 transition-colors"
         />
@@ -218,10 +228,10 @@ export default function MarketsPage() {
             </tr>
           </thead>
           <tbody>
-            {filtered.length === 0 && (
+            {paged.length === 0 && (
               <tr><td colSpan={showCrypto ? 16 : 12} className="text-center text-gray-500 py-8">No markets match your filter</td></tr>
             )}
-            {filtered.map(m => {
+            {paged.map(m => {
               const dir = m.direction ?? 'flat'
               const conf = (m.confidence ?? 0) * 100
               return (
@@ -288,6 +298,31 @@ export default function MarketsPage() {
           </tbody>
         </table>
       </div>
+
+      {totalPages > 1 && (
+        <div className="flex items-center justify-between text-xs">
+          <span className="text-gray-500">{filtered.length} coin · sayfa {page + 1}/{totalPages}</span>
+          <div className="flex items-center gap-1">
+            <button onClick={() => setPage(0)} disabled={page === 0}
+              className="px-2 py-1 rounded bg-gray-800 text-gray-400 disabled:opacity-30 hover:bg-gray-700">«</button>
+            <button onClick={() => setPage(p => Math.max(0, p - 1))} disabled={page === 0}
+              className="px-2 py-1 rounded bg-gray-800 text-gray-400 disabled:opacity-30 hover:bg-gray-700">‹</button>
+            {Array.from({ length: Math.min(7, totalPages) }, (_, i) => {
+              const p = Math.max(0, Math.min(totalPages - 7, page - 3)) + i
+              return (
+                <button key={p} onClick={() => setPage(p)}
+                  className={`px-2 py-1 rounded text-xs ${p === page ? 'bg-orange-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}>
+                  {p + 1}
+                </button>
+              )
+            })}
+            <button onClick={() => setPage(p => Math.min(totalPages - 1, p + 1))} disabled={page >= totalPages - 1}
+              className="px-2 py-1 rounded bg-gray-800 text-gray-400 disabled:opacity-30 hover:bg-gray-700">›</button>
+            <button onClick={() => setPage(totalPages - 1)} disabled={page >= totalPages - 1}
+              className="px-2 py-1 rounded bg-gray-800 text-gray-400 disabled:opacity-30 hover:bg-gray-700">»</button>
+          </div>
+        </div>
+      )}
 
       <div className="flex flex-wrap gap-4 text-xs text-gray-600">
         <span>RSI: <span className="text-blue-400">◼</span> &lt;30 oversold · <span className="text-green-400">◼</span> 30–45 · <span className="text-gray-400">◼</span> 45–55 · <span className="text-orange-400">◼</span> 55–70 · <span className="text-red-400">◼</span> &gt;70 overbought</span>
