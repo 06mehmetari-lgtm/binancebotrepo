@@ -37,6 +37,7 @@ async def evolution_cycle(redis: aioredis.Redis, gm: GenomeManager):
     symbols = all_symbols[:NEAT_MAX_SYMBOLS]
     log.info(f"neat_evolution: {len(symbols)}/{len(all_symbols)} symbols, {NEAT_CONCURRENCY} parallel workers")
 
+    results_list: list[dict] = []
     sem = asyncio.Semaphore(NEAT_CONCURRENCY)
 
     async def evolve_one(symbol: str):
@@ -48,6 +49,7 @@ async def evolution_cycle(redis: aioredis.Redis, gm: GenomeManager):
                     None, engine.run, GENERATIONS
                 )
                 result["symbol"] = symbol
+                results_list.append(result)
                 await redis.set(f"neat:best_genome:{symbol}", json.dumps(result), ex=86400)
                 await redis.lpush("neat:evolution_log", json.dumps(result))
                 await redis.ltrim("neat:evolution_log", 0, 999)
@@ -58,6 +60,20 @@ async def evolution_cycle(redis: aioredis.Redis, gm: GenomeManager):
                 log.error(f"NEAT error [{symbol}]: {e}")
 
     await asyncio.gather(*[evolve_one(s) for s in symbols])
+
+    if results_list:
+        import time as _time
+        best = max(results_list, key=lambda r: r.get("fitness", 0))
+        stats = {
+            "generation": GENERATIONS,
+            "best_fitness": best.get("fitness", 0),
+            "genome_count": sum(r.get("genome_count", 0) for r in results_list),
+            "species_count": best.get("species_count", 1),
+            "symbol_count": len(results_list),
+            "timestamp": _time.time(),
+        }
+        await redis.set("neat:stats", json.dumps(stats), ex=86400)
+        log.info(f"neat:stats written — best_fitness={stats['best_fitness']:.4f} symbols={stats['symbol_count']}")
 
 
 async def main():

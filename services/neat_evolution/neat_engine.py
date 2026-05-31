@@ -123,6 +123,8 @@ class NEATTradingEngine:
                 genome.fitness = self.evaluate_genome(genome, config)
 
         best = pop.run(eval_genomes, generations)
+        species_count = len(pop.species.species) if hasattr(pop, 'species') else 1
+        genome_count = sum(len(s.members) for s in pop.species.species.values()) if hasattr(pop, 'species') else 0
         logger.info(f"NEAT best fitness: {best.fitness:.4f}")
 
         return {
@@ -130,6 +132,9 @@ class NEATTradingEngine:
             "fitness": float(best.fitness),
             "nodes": len(best.nodes),
             "connections": len(best.connections),
+            "generation": generations,
+            "species_count": species_count,
+            "genome_count": genome_count,
             "topology_json": json.dumps({
                 "nodes": list(best.nodes.keys()),
                 "connections": {f"{k[0]}_{k[1]}": v.enabled for k, v in best.connections.items()}

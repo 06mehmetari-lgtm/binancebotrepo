@@ -110,6 +110,8 @@ async def main():
                 last_refresh = now
 
             await asyncio.gather(*[_debate_one(s) for s in list(active_set)])
+            await redis.set("agents:last_run", str(time.time()))
+            log.info(f"agent_system: {len(active_set)} symbols — rotating batches of 120")
             await asyncio.sleep(10)
 
     await asyncio.gather(debate_loop(), weight_update_loop(redis))
