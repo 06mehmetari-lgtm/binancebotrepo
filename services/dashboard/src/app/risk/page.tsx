@@ -236,7 +236,7 @@ export default function RiskPage() {
       {(data.recent_liquidations ?? []).length > 0 && (
         <div className="bg-gray-900 border border-red-900/40 rounded-lg overflow-hidden">
           <div className="px-4 py-3 border-b border-gray-800">
-            <h2 className="text-red-400 font-semibold text-sm uppercase tracking-wider">Recent Large Liquidations (>$50K)</h2>
+            <h2 className="text-red-400 font-semibold text-sm uppercase tracking-wider">Recent Large Liquidations (&gt;$50K)</h2>
           </div>
           <div className="divide-y divide-gray-800/40">
             {(data.recent_liquidations ?? []).slice(0, 5).map((liq, i) => (
