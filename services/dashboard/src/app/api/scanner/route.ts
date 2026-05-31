@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 export const dynamic = 'force-dynamic'
 import { createRedis } from '../_redis'
+import { discoverSymbols } from '@/lib/universe'
 
 function safe(raw: string | null): Record<string, unknown> | null {
   if (!raw) return null
@@ -35,18 +36,16 @@ function computeSQS(p: {
 export async function GET() {
   const redis = createRedis()
   try {
-    const [featKeys, wsRaw, btRaw, shadowRaw] = await Promise.all([
-      redis.keys('features:latest:*'),
+    const [symbols, wsRaw, btRaw, shadowRaw] = await Promise.all([
+      discoverSymbols(redis),
       redis.get('ws:status'),
       redis.get('backtest:results'),
       redis.get('shadow:leaderboard'),
     ])
 
-    if (featKeys.length === 0) {
+    if (symbols.length === 0) {
       return NextResponse.json({ coins: [], total: 0, long_count: 0, short_count: 0, flat_count: 0, ws_status: null })
     }
-
-    const symbols = featKeys.map(k => (k as string).replace('features:latest:', ''))
 
     const pipeline = redis.pipeline()
     for (const sym of symbols) pipeline.get(`features:latest:${sym}`)

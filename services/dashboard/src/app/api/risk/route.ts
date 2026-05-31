@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 export const dynamic = 'force-dynamic'
 import { createRedis } from '../_redis'
+import { discoverSymbols } from '@/lib/universe'
 
 function safeJson(raw: string | null | undefined): unknown {
   if (!raw) return null
@@ -19,7 +20,8 @@ function macroVixNumber(raw: unknown): number | null {
 export async function GET() {
   const redis = createRedis()
   try {
-    const featureKeys = await redis.keys('features:latest:*')
+    const symbols = await discoverSymbols(redis)
+    const featureKeys = symbols.map(s => `features:latest:${s}`)
 
     const pipeline = redis.pipeline()
     pipeline.get('immunity:status')

@@ -9,6 +9,7 @@ import redis.asyncio as aioredis
 from signal_generator import SignalGenerator
 from kelly_calculator import KellyCalculator
 from signal_validator import SignalValidator
+from ensemble import fuse_sources
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
@@ -64,11 +65,80 @@ async def push_activity(redis: aioredis.Redis, event: dict):
     await redis.ltrim("activity:feed", 0, ACTIVITY_MAX - 1)
 
 
+def _parse_neat(raw: str | None) -> tuple[str | None, float]:
+    if not raw:
+        return None, 0.0
+    try:
+        g = json.loads(raw)
+        fit = float(g.get("fitness", 0))
+        if fit < 0.5:
+            return None, 0.0
+        direction = "long" if fit >= 1.2 else ("short" if fit < 0.8 else "flat")
+        if direction == "flat":
+            return None, 0.0
+        return direction, min(fit / 3.0, 0.82)
+    except Exception:
+        return None, 0.0
+
+
+def _parse_rl(raw: str | None) -> tuple[str | None, float]:
+    if not raw:
+        return None, 0.0
+    try:
+        d = json.loads(raw)
+        direction = d.get("direction", "flat")
+        confidence = float(d.get("confidence", 0))
+        if direction == "flat" or confidence <= 0:
+            return None, 0.0
+        return direction, confidence
+    except Exception:
+        return None, 0.0
+
+
+async def publish_universe_snapshot(redis: aioredis.Redis, all_sigs: list[dict], symbols: list[str]):
+    """O(1) dashboard read — avoids redis.keys on 500+ symbols."""
+    long_c = sum(1 for s in all_sigs if s.get("direction") == "long" and s.get("is_valid"))
+    short_c = sum(1 for s in all_sigs if s.get("direction") == "short" and s.get("is_valid"))
+    payload = {
+        "updated_at": time.time(),
+        "symbols": sorted(symbols),
+        "counts": {
+            "total": len(symbols),
+            "long": long_c,
+            "short": short_c,
+            "flat": len(all_sigs) - long_c - short_c,
+        },
+        "signals": {
+            s["symbol"]: {
+                "direction": s.get("direction"),
+                "confidence": s.get("confidence"),
+                "is_valid": s.get("is_valid"),
+                "rsi": s.get("rsi"),
+                "regime": s.get("regime"),
+                "source": s.get("source"),
+            }
+            for s in all_sigs
+        },
+    }
+    await redis.set("snapshot:universe:v1", json.dumps(payload), ex=180)
+
+
 async def generate_signal(redis: aioredis.Redis, symbol: str) -> dict | None:
-    context_raw = await redis.get(f"context:latest:{symbol}")
-    agents_raw = await redis.get(f"agents:verdicts:{symbol}")
-    verdict_raw = await redis.get(f"agents:verdict:{symbol}")
-    features_raw = await redis.get(f"features:latest:{symbol}")
+    pipe = redis.pipeline()
+    pipe.get(f"context:latest:{symbol}")
+    pipe.get(f"agents:verdicts:{symbol}")
+    pipe.get(f"agents:verdict:{symbol}")
+    pipe.get(f"features:latest:{symbol}")
+    pipe.get(f"neat:best_genome:{symbol}")
+    pipe.get(f"rl:signal:{symbol}")
+    (
+        context_raw,
+        agents_raw,
+        verdict_raw,
+        features_raw,
+        neat_raw,
+        rl_raw,
+    ) = await pipe.execute()
 
     context = json.loads(context_raw) if context_raw else {}
     agent_verdicts = json.loads(agents_raw) if agents_raw else []
@@ -87,12 +157,25 @@ async def generate_signal(redis: aioredis.Redis, symbol: str) -> dict | None:
     if signal is None:
         return None
 
+    neat_dir, neat_conf = _parse_neat(neat_raw)
+    rl_dir, rl_conf = _parse_rl(rl_raw)
+    final_dir, final_conf, final_source, ensemble_diag = fuse_sources(
+        signal.direction,
+        signal.confidence,
+        neat_dir,
+        neat_conf,
+        rl_dir,
+        rl_conf,
+    )
+
     signal_dict = {
         "symbol": symbol,
-        "direction": signal.direction,
-        "confidence": signal.confidence,
+        "direction": final_dir,
+        "confidence": final_conf,
         "kelly_fraction": signal.kelly_fraction,
-        "source": signal.source,
+        "source": final_source,
+        "agent_source": signal.source,
+        "ensemble": ensemble_diag,
         "timestamp": signal.timestamp,
         "crisis_level": context.get("crisis_level", 0),
         "drift_status": context.get("drift_status", features.get("drift_status", "STABLE")),
@@ -222,6 +305,8 @@ async def main():
                         "rsi": sig.get("rsi"),
                         "regime": sig.get("regime"),
                     })
+
+            await publish_universe_snapshot(redis, all_sigs, list(active_set))
 
             cycle += 1
             if cycle % 12 == 0:

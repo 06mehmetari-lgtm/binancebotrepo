@@ -12,6 +12,7 @@ from price_features import PriceFeatureBuilder
 from orderbook_features import OrderBookFeatureBuilder
 from crypto_features import CryptoFeatureBuilder
 from drift_detector import DriftDetector
+from timescale_writer import schedule_write
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
@@ -216,6 +217,7 @@ async def main():
             if features:
                 await redis.set(f"features:latest:{symbol}", json.dumps(features), ex=FEAT_TTL)
                 await redis.publish(f"ch:features:{symbol}", symbol)
+                schedule_write(symbol, features)
         except Exception as e:
             log.error(f"Feature error [{symbol}]: {e}")
 

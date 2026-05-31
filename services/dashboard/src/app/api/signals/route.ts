@@ -1,14 +1,13 @@
 import { NextResponse } from 'next/server'
 export const dynamic = 'force-dynamic'
 import { createRedis } from '../_redis'
+import { discoverSymbols } from '@/lib/universe'
 
 export async function GET() {
   const redis = createRedis()
   try {
-    const featureKeys = await redis.keys('features:latest:*')
-    if (featureKeys.length === 0) return NextResponse.json([])
-
-    const symbols = featureKeys.map(k => k.replace('features:latest:', ''))
+    const symbols = await discoverSymbols(redis)
+    if (symbols.length === 0) return NextResponse.json([])
 
     const pipeline = redis.pipeline()
     for (const sym of symbols) {

@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 export const dynamic = 'force-dynamic'
 import { createRedis } from '../_redis'
+import { discoverSymbols, scanKeys } from '@/lib/universe'
 
 function safeJson(raw: string | null): unknown {
   if (!raw) return null
@@ -25,13 +26,9 @@ export async function GET() {
   try {
     await redis.ping()
 
-    // Discover active symbols from feature keys
-    const featureKeys = await redis.keys('features:latest:*')
-    const symbols = featureKeys.map(k => k.replace('features:latest:', ''))
+    const symbols = await discoverSymbols(redis)
     const activeSymbolCount = symbols.length
-
-    // Discover all NEAT genome keys for best fitness calculation
-    const genomeKeys = await redis.keys('neat:best_genome:*')
+    const genomeKeys = await scanKeys(redis, 'neat:best_genome:*')
 
     // Batch fetch static keys + per-symbol signal keys + genome keys
     const pipeline = redis.pipeline()

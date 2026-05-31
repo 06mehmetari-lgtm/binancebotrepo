@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 export const dynamic = 'force-dynamic'
 import { createRedis } from '../_redis'
+import { discoverSymbols } from '@/lib/universe'
 
 function safeJson(raw: string | null): Record<string, unknown> | null {
   if (!raw) return null
@@ -14,10 +15,8 @@ function safeJson(raw: string | null): Record<string, unknown> | null {
 export async function GET() {
   const redis = createRedis()
   try {
-    const featureKeys = await redis.keys('features:latest:*')
-    if (featureKeys.length === 0) return NextResponse.json([])
-
-    const symbols = featureKeys.map(k => k.replace('features:latest:', ''))
+    const symbols = await discoverSymbols(redis)
+    if (symbols.length === 0) return NextResponse.json([])
 
     // Fetch all feature and signal values in parallel using a pipeline
     const pipeline = redis.pipeline()
