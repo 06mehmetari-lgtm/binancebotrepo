@@ -22,6 +22,8 @@ interface PositionData {
   daily_pnl: number
   trade_history: Trade[]
   position_count: number
+  trading_halted?: boolean
+  halt_reason?: string | null
 }
 
 interface CurvePoint { ts: number; equity: number; pnl: number; symbol: string; direction: string }
@@ -151,6 +153,8 @@ export default function PositionsPage() {
   const [portfolio, setPortfolio] = useState<PortfolioData | null>(null)
   const [loading, setLoading] = useState(true)
   const [lastUpdate, setLastUpdate] = useState('')
+  const [emergencyBusy, setEmergencyBusy] = useState(false)
+  const [emergencyMsg, setEmergencyMsg] = useState('')
 
   const fetchData = async () => {
     try {
@@ -172,6 +176,45 @@ export default function PositionsPage() {
     return () => clearInterval(t)
   }, [])
 
+  const runEmergencyClose = async () => {
+    const ok = window.confirm(
+      'ACİL DURUM: Tüm açık pozisyonlar (OMS + Shadow) hemen kapatılacak ve yeni işlem açılması durdurulacak.\n\nDevam edilsin mi?'
+    )
+    if (!ok) return
+    setEmergencyBusy(true)
+    setEmergencyMsg('')
+    try {
+      const res = await fetch('/api/emergency', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'close_all' }),
+      })
+      const j = await res.json()
+      setEmergencyMsg(j.message ?? (res.ok ? 'Tetiklendi' : j.error ?? 'Hata'))
+      await fetchData()
+    } catch (e) {
+      setEmergencyMsg(String(e))
+    } finally {
+      setEmergencyBusy(false)
+    }
+  }
+
+  const resumeTrading = async () => {
+    if (!window.confirm('İşlem duraklatması kaldırılsın mı? (Pozisyon açma tekrar aktif olur)')) return
+    setEmergencyBusy(true)
+    try {
+      await fetch('/api/emergency', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'resume' }),
+      })
+      setEmergencyMsg('İşlem duraklatması kaldırıldı')
+      await fetchData()
+    } finally {
+      setEmergencyBusy(false)
+    }
+  }
+
   if (loading) return (
     <div className="flex items-center justify-center mt-32 gap-3 text-gray-500">
       <span className="animate-spin text-orange-400">⚡</span>
@@ -179,7 +222,7 @@ export default function PositionsPage() {
     </div>
   )
 
-  const { positions = [], daily_pnl = 0, trade_history = [] } = data ?? {}
+  const { positions = [], daily_pnl = 0, trade_history = [], trading_halted = false, halt_reason } = data ?? {}
   const totalUnrealized = positions.reduce((s, p) => s + p.unrealized_usdt, 0)
   const totalExposed = positions.reduce((s, p) => s + p.size_usd, 0)
   const winTrades = trade_history.filter(t => t.pnl_pct > 0).length
@@ -192,10 +235,41 @@ export default function PositionsPage() {
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div>
           <h1 className="text-white font-bold text-base">Portfolio — Paper Trading</h1>
-          <p className="text-gray-500 text-xs mt-0.5">OMS positions · DRY_RUN mode · 5s refresh</p>
+          <p className="text-gray-500 text-xs mt-0.5">OMS + Shadow · 5s refresh · sürekli tarama arka planda</p>
         </div>
-        <span className="text-xs text-gray-600">{lastUpdate}</span>
+        <div className="flex items-center gap-2 flex-wrap">
+          {trading_halted ? (
+            <button
+              type="button"
+              onClick={resumeTrading}
+              disabled={emergencyBusy}
+              className="px-3 py-1.5 rounded-lg text-xs font-bold bg-yellow-900/40 border border-yellow-700 text-yellow-300 hover:bg-yellow-900/60"
+            >
+              ▶ İşleme Devam
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={runEmergencyClose}
+              disabled={emergencyBusy}
+              className="px-4 py-2 rounded-lg text-xs font-black bg-red-700 hover:bg-red-600 text-white border border-red-500 shadow-lg shadow-red-900/40 disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              {emergencyBusy ? '⏳ Kapatılıyor...' : '🛑 ACİL DURUM — Tümünü Kapat'}
+            </button>
+          )}
+          <span className="text-xs text-gray-600">{lastUpdate}</span>
+        </div>
       </div>
+
+      {trading_halted && (
+        <div className="bg-red-950/50 border border-red-700 rounded-xl px-4 py-3 text-sm text-red-200">
+          <span className="font-bold">⛔ İşlemler duraklatıldı</span>
+          {halt_reason && <span className="text-red-300/80"> — {halt_reason}</span>}
+        </div>
+      )}
+      {emergencyMsg && (
+        <p className="text-xs text-orange-300 bg-orange-950/30 border border-orange-800/50 rounded-lg px-3 py-2">{emergencyMsg}</p>
+      )}
 
       {/* Summary stats */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">

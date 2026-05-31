@@ -307,6 +307,7 @@ async def main():
                     })
 
             await publish_universe_snapshot(redis, all_sigs, list(active_set))
+            await redis.set("system:heartbeat:signal_engine", str(time.time()), ex=120)
 
             cycle += 1
             if cycle % 12 == 0:

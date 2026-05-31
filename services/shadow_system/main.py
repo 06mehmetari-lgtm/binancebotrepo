@@ -11,6 +11,9 @@ from shadow_evaluator import ShadowEvaluator
 from promotion_engine import PromotionEngine
 from trade_store import schedule_save
 
+EMERGENCY_CHANNEL = "ch:emergency:close_all"
+HALT_KEY = "system:trading:halted"
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
 
@@ -32,7 +35,80 @@ trader = PaperTrader(initial_capital=PORTFOLIO_VALUE)
 SHADOW_IDS = ["SHADOW_A", "SHADOW_B", "SHADOW_C"]
 
 
+async def _is_halted(redis: aioredis.Redis) -> bool:
+    raw = await redis.get(HALT_KEY)
+    if not raw:
+        return False
+    try:
+        return bool(json.loads(raw).get("halted"))
+    except json.JSONDecodeError:
+        return True
+
+
+async def flatten_all_shadow_positions(redis: aioredis.Redis) -> int:
+    closed = 0
+    cursor = 0
+    while True:
+        cursor, keys = await redis.scan(cursor, match="shadow:positions:*", count=200)
+        for key in keys:
+            k = key.decode() if isinstance(key, bytes) else key
+            parts = k.split(":")
+            if len(parts) < 4:
+                continue
+            shadow_id, symbol = parts[2], parts[3]
+            pos_raw = await redis.get(k)
+            if not pos_raw:
+                continue
+            try:
+                pos = json.loads(pos_raw)
+            except json.JSONDecodeError:
+                continue
+            ticker_raw = await redis.get(f"binance:ticker:{symbol.lower()}")
+            if not ticker_raw:
+                await redis.delete(k)
+                continue
+            ticker = json.loads(ticker_raw)
+            ticker_data = ticker.get("data", ticker)
+            price = float(ticker_data.get("b", ticker_data.get("best_bid", 0)))
+            if price <= 0:
+                continue
+            pos_direction = pos.get("direction", "long")
+            close_side = "SELL" if pos_direction == "long" else "BUY_COVER"
+            result = trader.execute(shadow_id, symbol, close_side, price, 0)
+            await redis.delete(k)
+            if result:
+                closed += 1
+                closed_payload = {
+                    "shadow_id": shadow_id,
+                    "symbol": symbol,
+                    "source": "emergency",
+                    "closed_at": time.time(),
+                    **result,
+                }
+                await redis.publish("ch:trade_closed", json.dumps(closed_payload))
+                schedule_save(closed_payload)
+        if cursor == 0:
+            break
+    return closed
+
+
+async def emergency_listener(redis: aioredis.Redis):
+    pubsub = redis.pubsub()
+    await pubsub.subscribe(EMERGENCY_CHANNEL)
+    log.info("shadow_system subscribed to emergency close channel")
+    async for msg in pubsub.listen():
+        if msg.get("type") != "message":
+            continue
+        try:
+            n = await flatten_all_shadow_positions(redis)
+            log.warning(f"EMERGENCY: flattened {n} shadow position(s)")
+        except Exception as e:
+            log.error(f"Shadow emergency error: {e}")
+
+
 async def simulate_tick(redis: aioredis.Redis, symbol: str):
+    if await _is_halted(redis):
+        return
     sig_raw = await redis.get(f"signal:latest:{symbol}")
     if not sig_raw:
         return
@@ -141,9 +217,11 @@ async def report_loop(redis: aioredis.Redis):
 async def main():
     log.info("shadow_system starting")
     redis = await aioredis.from_url(REDIS_URL)
+    redis_em = await aioredis.from_url(REDIS_URL)
     await asyncio.gather(
         _trading_loop(redis),
         report_loop(redis),
+        emergency_listener(redis_em),
     )
 
 

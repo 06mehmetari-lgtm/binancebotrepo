@@ -73,11 +73,26 @@ export async function GET() {
       try { return JSON.parse(r) } catch { return null }
     }).filter(Boolean)
 
+    const haltRaw = await redis.get('system:trading:halted')
+    let trading_halted = false
+    let halt_reason: string | null = null
+    if (haltRaw) {
+      try {
+        const h = JSON.parse(haltRaw)
+        trading_halted = Boolean(h.halted)
+        halt_reason = typeof h.reason === 'string' ? h.reason : null
+      } catch {
+        trading_halted = true
+      }
+    }
+
     return NextResponse.json({
       positions: enriched,
       daily_pnl: dailyPnlRaw ? parseFloat(dailyPnlRaw) : 0,
       trade_history: tradeHistory,
       position_count: enriched.length,
+      trading_halted,
+      halt_reason,
     })
   } finally {
     await redis.quit()

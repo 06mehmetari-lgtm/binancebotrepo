@@ -14,6 +14,7 @@ from position_tracker import PositionTracker
 from audit_logger import AuditLogger
 from promotion_gate import check_live_trading_allowed, DRY_RUN
 from trade_store import schedule_save
+from emergency import EMERGENCY_CHANNEL, is_trading_halted
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
@@ -109,8 +110,59 @@ async def get_price(redis: aioredis.Redis, symbol: str) -> float:
     return (bid + ask) / 2 if bid > 0 and ask > 0 else bid or ask
 
 
+async def flatten_all_positions(redis: aioredis.Redis) -> int:
+    """Emergency: close every open OMS position at market."""
+    closed = 0
+    cursor = 0
+    while True:
+        cursor, keys = await redis.scan(cursor, match="oms:position:*", count=100)
+        for key in keys:
+            k = key.decode() if isinstance(key, bytes) else key
+            symbol = k.split(":")[-1]
+            pos_raw = await redis.get(k)
+            if not pos_raw:
+                continue
+            try:
+                pos = json.loads(pos_raw)
+            except json.JSONDecodeError:
+                continue
+            price = await get_price(redis, symbol)
+            if price > 0:
+                await close_position(redis, symbol, pos, price)
+                closed += 1
+        if cursor == 0:
+            break
+    return closed
+
+
+async def emergency_listener(redis: aioredis.Redis):
+    pubsub = redis.pubsub()
+    await pubsub.subscribe(EMERGENCY_CHANNEL)
+    log.info("OMS subscribed to emergency close channel")
+    async for msg in pubsub.listen():
+        if msg.get("type") != "message":
+            continue
+        try:
+            n = await flatten_all_positions(redis)
+            log.warning(f"EMERGENCY: flattened {n} OMS position(s)")
+            await redis.lpush(
+                "activity:feed",
+                json.dumps({
+                    "type": "emergency",
+                    "msg": f"Acil durum: {n} OMS pozisyonu kapatıldı",
+                    "time": time.time(),
+                }),
+            )
+        except Exception as e:
+            log.error(f"Emergency flatten error: {e}")
+
+
 async def process_signal(redis: aioredis.Redis, symbol: str):
     global _last_reset_day, _daily_pnl
+
+    halted, _reason = await is_trading_halted(redis)
+    if halted:
+        return
 
     # Daily reset
     day = int(time.time() // 86400)
@@ -244,7 +296,12 @@ async def main():
                     log.error(f"OMS error for {symbol}: {e}")
             await asyncio.sleep(5)
 
-    await asyncio.gather(signal_loop(), snapshot_portfolio(redis))
+    redis_em = await aioredis.from_url(REDIS_URL)
+    await asyncio.gather(
+        signal_loop(),
+        snapshot_portfolio(redis),
+        emergency_listener(redis_em),
+    )
 
 
 if __name__ == "__main__":

@@ -5,11 +5,12 @@ import { createRedis } from '../_redis'
 export async function GET() {
   const redis = createRedis()
   try {
-    const [resultsRaw, statusRaw, triggerRaw, logsRaw] = await Promise.all([
+    const [resultsRaw, statusRaw, triggerRaw, logsRaw, queueRaw] = await Promise.all([
       redis.get('backtest:results'),
       redis.get('backtest:status'),
       redis.get('backtest:trigger'),
       redis.lrange('backtest:log', 0, 299),
+      redis.get('backtest:queue:state'),
     ])
 
     const logs = (logsRaw as string[])
@@ -20,6 +21,7 @@ export async function GET() {
     return NextResponse.json({
       results: resultsRaw ? JSON.parse(resultsRaw as string) : null,
       status: statusRaw ? JSON.parse(statusRaw as string) : null,
+      queue: queueRaw ? JSON.parse(queueRaw as string) : null,
       trigger_pending: !!triggerRaw,
       logs,
     })

@@ -23,6 +23,7 @@ interface SymbolResult {
 
 interface BacktestSummary {
   symbols_tested: number
+  universe_target?: number
   total_trades: number
   avg_win_rate_pct: number
   portfolio_sharpe: number
@@ -56,9 +57,14 @@ interface BacktestData {
 
 interface BacktestStatus {
   status: 'idle' | 'running' | 'complete' | 'error'
+  mode?: string
   progress?: number
   completed?: number
   total?: number
+  symbols_total?: number
+  pass_number?: number
+  chunk_index?: number
+  chunks_total?: number
   last_symbol?: string
   started_at?: number
   completed_at?: number
@@ -257,9 +263,9 @@ export default function BacktestPage() {
       {/* Header */}
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1 className="text-white font-bold text-base">1 Yıllık Backtest — Binance USDM Futures</h1>
+          <h1 className="text-white font-bold text-base">Sürekli Evren Backtest — Binance USDM</h1>
           <p className="text-gray-500 text-xs mt-0.5">
-            365 gün · 1h kline · ATR stop/TP · %60 güven eşiği · %0.10 komisyon
+            500 coin parça parça 7/24 · 1y kline · rejim dersleri → AI Memory · arka planda durmaz
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -318,13 +324,19 @@ export default function BacktestPage() {
               <p className="text-orange-300 font-semibold text-sm">Backtest çalışıyor...</p>
             </div>
             <span className="text-orange-400 font-mono text-sm font-bold">
-              {status.completed ?? 0} / {status.total ?? '?'}
+              {status.mode === 'continuous'
+                ? `Parça ${status.chunk_index ?? '?'}/${status.chunks_total ?? '?'} · Tur ${status.pass_number ?? 1}`
+                : `${status.completed ?? 0} / ${status.total ?? '?'}`}
             </span>
           </div>
           <ProgressBar pct={(status.progress ?? 0) * 100} color="bg-orange-500" />
-          {status.last_symbol && (
-            <p className="text-gray-500 text-xs mt-2">Son: <span className="text-white">{status.last_symbol}</span></p>
-          )}
+          <p className="text-gray-500 text-xs mt-2">
+            Evren: <span className="text-white">{status.symbols_total ?? summary?.universe_target ?? '—'}</span> coin
+            {status.last_symbol && <> · Son: <span className="text-white">{status.last_symbol}</span></>}
+            {summary?.symbols_tested != null && (
+              <> · Arşiv: <span className="text-green-400">{summary.symbols_tested}</span> coin tamamlandı</>
+            )}
+          </p>
         </div>
       )}
 
@@ -338,8 +350,8 @@ export default function BacktestPage() {
         <div className="bg-gray-900 border border-gray-800 rounded-xl p-10 text-center">
           <p className="text-gray-400 text-sm font-semibold">Backtest henüz çalışmadı</p>
           <p className="text-gray-600 text-xs mt-2 max-w-sm mx-auto">
-            &quot;Yeni Backtest&quot; butonuna tıkla — sistem 25 coin için 1 yıllık Binance Futures verisini çekip simülasyon yapacak.
-            Tahminen 5-10 dakika sürer.
+            Backtest servisi başladığında tüm coin evreni parça parça taranır (varsayılan 500).
+            Her coin için 1 yıllık veri ve rejim dersleri AI hafızasına yazılır.
           </p>
           <button onClick={doTrigger} disabled={triggering}
             className="mt-4 px-6 py-2.5 rounded text-sm font-bold text-white bg-orange-600 hover:bg-orange-500 transition-colors">
