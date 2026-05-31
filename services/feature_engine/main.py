@@ -18,7 +18,7 @@ log = logging.getLogger(__name__)
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379")
 SYMBOLS_RAW = os.getenv("SYMBOLS", "AUTO")
-TOP_N = int(os.getenv("TOP_SYMBOLS", "100"))
+TOP_N = int(os.getenv("TOP_SYMBOLS", "500"))
 
 # Symbol refresh interval — re-scan Redis every 5 minutes to pick up new symbols
 SYMBOL_REFRESH_INTERVAL = 300

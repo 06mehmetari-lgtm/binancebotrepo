@@ -17,7 +17,7 @@ log = logging.getLogger(__name__)
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379")
 SYMBOLS_RAW = os.getenv("SYMBOLS", "AUTO")
-TOP_N = int(os.getenv("TOP_SYMBOLS", "100"))
+TOP_N = int(os.getenv("TOP_SYMBOLS", "500"))
 # Each symbol uses 4 streams; Binance limit is 1024 per connection → max 256 symbols per WS
 WS_BATCH_SIZE = 200
 
