@@ -11,6 +11,15 @@ function safeJson(raw: string | null): unknown {
   }
 }
 
+function macroVixNumber(raw: unknown): number | null {
+  if (typeof raw === 'number' && Number.isFinite(raw)) return raw
+  if (raw && typeof raw === 'object' && 'value' in raw) {
+    const v = (raw as { value?: unknown }).value
+    return typeof v === 'number' && Number.isFinite(v) ? v : null
+  }
+  return null
+}
+
 export async function GET() {
   const redis = createRedis()
   try {
@@ -80,7 +89,7 @@ export async function GET() {
       ws_status: wsStatus,
       shadow_leaderboard: shadowLeaderboard,
       fear_greed: fearGreed,
-      macro_vix: macroVix,
+      macro_vix: macroVixNumber(macroVix),
       active_symbol_count: activeSymbolCount,
       total_signals: totalSignals,
       avg_confidence: avgConfidence,

@@ -6,7 +6,55 @@ interface Signal { symbol: string; direction: string; confidence: number; regime
 interface Shadow { shadow_id: string; sharpe: number; win_rate: number; trades: number; return: number; promotion_ready: boolean; max_drawdown: number }
 interface Status { active_symbol_count: number; total_signals: number; avg_confidence: number; best_genome_fitness: number; fear_greed: { value: number; classification: string }; macro_vix: number; ws_status: { status: string; symbols?: number } | null; shadow: { leaderboard: Shadow[] } }
 interface SymbolResult { win_rate_pct: number; sharpe_ratio: number; total_return_pct: number; max_drawdown_pct: number; total_trades: number; profit_factor: number }
-interface BacktestResults { summary: { symbols_tested: number }; results: Record<string, SymbolResult> }
+
+function parseVix(raw: unknown): number {
+  if (typeof raw === 'number' && Number.isFinite(raw)) return raw
+  if (raw && typeof raw === 'object' && 'value' in raw) {
+    const v = (raw as { value?: unknown }).value
+    return typeof v === 'number' && Number.isFinite(v) ? v : 0
+  }
+  return 0
+}
+
+/** Normalize /api/backtest payload to per-symbol map (supports { symbols: [] } and legacy dict). */
+function backtestBySymbol(apiPayload: unknown): Record<string, SymbolResult> | null {
+  const root = apiPayload as { results?: unknown } | null
+  const results = root?.results
+  if (!results || typeof results !== 'object') return null
+
+  const withSymbols = results as { symbols?: unknown[] }
+  if (Array.isArray(withSymbols.symbols)) {
+    const map: Record<string, SymbolResult> = {}
+    for (const row of withSymbols.symbols) {
+      if (!row || typeof row !== 'object') continue
+      const r = row as Record<string, unknown>
+      const sym = String(r.symbol ?? '')
+      if (!sym.endsWith('USDT')) continue
+      const winRatePct = typeof r.win_rate_pct === 'number'
+        ? r.win_rate_pct
+        : typeof r.win_rate === 'number' ? r.win_rate * 100 : 0
+      map[sym] = {
+        win_rate_pct: winRatePct,
+        sharpe_ratio: Number(r.sharpe_ratio ?? r.sharpe ?? 0),
+        total_return_pct: Number(r.total_return_pct ?? 0),
+        max_drawdown_pct: Number(r.max_drawdown_pct ?? 0),
+        total_trades: Number(r.total_trades ?? 0),
+        profit_factor: Number(r.profit_factor ?? 0),
+      }
+    }
+    return Object.keys(map).length ? map : null
+  }
+
+  const map: Record<string, SymbolResult> = {}
+  for (const [sym, bt] of Object.entries(results as Record<string, unknown>)) {
+    if (sym === 'summary' || sym === 'symbols' || !bt || typeof bt !== 'object') continue
+    if (!sym.endsWith('USDT')) continue
+    const row = bt as Record<string, unknown>
+    if (typeof row.total_trades !== 'number') continue
+    map[sym] = row as unknown as SymbolResult
+  }
+  return Object.keys(map).length ? map : null
+}
 
 const DRIFT_COLOR: Record<string, string> = { STABLE: 'text-green-400', WARNING: 'text-yellow-400', DRIFTING: 'text-orange-400', SHOCK: 'text-red-500 animate-pulse' }
 const DIR_STYLE: Record<string, string> = { long: 'text-green-400 bg-green-900/30 border border-green-800/50', short: 'text-red-400 bg-red-900/30 border border-red-800/50', flat: 'text-gray-500 bg-gray-800/50 border border-gray-700/50' }
@@ -55,12 +103,13 @@ function ConfidenceBar({ value }: { value: number }) {
 }
 
 function WinRateBadge({ wr }: { wr: number }) {
-  const color = wr >= 60 ? 'text-green-400 bg-green-900/30 border-green-800/40'
-    : wr >= 52 ? 'text-yellow-400 bg-yellow-900/30 border-yellow-800/40'
+  const safe = Number.isFinite(wr) ? wr : 0
+  const color = safe >= 60 ? 'text-green-400 bg-green-900/30 border-green-800/40'
+    : safe >= 52 ? 'text-yellow-400 bg-yellow-900/30 border-yellow-800/40'
     : 'text-gray-500 bg-gray-800/40 border-gray-700/40'
   return (
     <span className={`text-xs px-2 py-0.5 rounded border font-mono font-bold ${color}`}>
-      {wr.toFixed(1)}%
+      {safe.toFixed(1)}%
     </span>
   )
 }
@@ -70,7 +119,7 @@ export default function Home() {
   const [signals, setSignals] = useState<Signal[]>([])
   const [shadow, setShadow] = useState<Shadow[]>([])
   const [status, setStatus] = useState<Partial<Status>>({})
-  const [backtest, setBacktest] = useState<BacktestResults | null>(null)
+  const [backtest, setBacktest] = useState<Record<string, SymbolResult> | null>(null)
   const [loading, setLoading] = useState(true)
   const [lastUpdate, setLastUpdate] = useState('')
 
@@ -87,7 +136,8 @@ export default function Home() {
       setSignals(Array.isArray(s) ? s : [])
       setShadow(Array.isArray(sh) ? sh : [])
       setStatus(st || {})
-      if (bt?.results) setBacktest(bt)
+      const btMap = backtestBySymbol(bt)
+      if (btMap) setBacktest(btMap)
       setLastUpdate(new Date().toLocaleTimeString())
     } catch { /* retry on next tick */ } finally { setLoading(false) }
   }
@@ -107,23 +157,24 @@ export default function Home() {
   const wsSymbols = status.ws_status?.symbols
   const activeSignals = signals.filter(s => s.direction !== 'flat')
   const heatmapSymbols = markets.slice(0, 40)
-  const shadowData = shadow.length ? shadow : (status.shadow?.leaderboard ?? [])
-  const vixVal = status.macro_vix ?? 0
+  const statusExt = status as Partial<Status> & { shadow_leaderboard?: Shadow[] }
+  const shadowData = shadow.length ? shadow : (statusExt.shadow_leaderboard ?? status.shadow?.leaderboard ?? [])
+  const vixVal = parseVix(status.macro_vix)
 
   // Top Performers: merge backtest + current signal data
-  const topPerformers = backtest?.results
-    ? Object.entries(backtest.results)
+  const topPerformers = backtest
+    ? Object.entries(backtest)
         .map(([sym, bt]) => ({
           symbol: sym,
-          win_rate: bt.win_rate_pct,
-          sharpe: bt.sharpe_ratio,
-          ret: bt.total_return_pct,
-          dd: bt.max_drawdown_pct,
-          trades: bt.total_trades,
-          score: bt.sharpe_ratio * (bt.win_rate_pct / 100),
+          win_rate: bt.win_rate_pct ?? 0,
+          sharpe: bt.sharpe_ratio ?? 0,
+          ret: bt.total_return_pct ?? 0,
+          dd: bt.max_drawdown_pct ?? 0,
+          trades: bt.total_trades ?? 0,
+          score: (bt.sharpe_ratio ?? 0) * ((bt.win_rate_pct ?? 0) / 100),
           signal: signals.find(s => s.symbol === sym),
         }))
-        .filter(p => p.trades > 0)
+        .filter(p => p.trades > 0 && Number.isFinite(p.sharpe) && Number.isFinite(p.win_rate))
         .sort((a, b) => b.score - a.score)
         .slice(0, 15)
     : []
@@ -134,8 +185,8 @@ export default function Home() {
     .slice(0, 10)
     .map(sig => ({
       ...sig,
-      btWR: backtest?.results?.[sig.symbol]?.win_rate_pct,
-      btSharpe: backtest?.results?.[sig.symbol]?.sharpe_ratio,
+      btWR: backtest?.[sig.symbol]?.win_rate_pct,
+      btSharpe: backtest?.[sig.symbol]?.sharpe_ratio,
     }))
 
   return (
@@ -200,8 +251,8 @@ export default function Home() {
                     </td>
                     <td className="px-4 py-2.5 text-gray-400 text-xs">{p.trades}</td>
                     <td className="px-4 py-2.5">
-                      {p.signal
-                        ? <span className={`text-xs px-2 py-0.5 rounded font-bold border ${DIR_STYLE[p.signal.direction]}`}>{p.signal.direction.toUpperCase()}</span>
+                      {p.signal?.direction
+                        ? <span className={`text-xs px-2 py-0.5 rounded font-bold border ${DIR_STYLE[p.signal.direction] ?? DIR_STYLE.flat}`}>{p.signal.direction.toUpperCase()}</span>
                         : <span className="text-gray-700 text-xs">—</span>}
                     </td>
                     <td className="px-4 py-2.5">
@@ -250,7 +301,7 @@ export default function Home() {
                         {sig.symbol}
                       </td>
                       <td className="px-4 py-2.5">
-                        <span className={`px-2 py-0.5 rounded text-xs font-bold ${DIR_STYLE[sig.direction]}`}>{sig.direction.toUpperCase()}</span>
+                        <span className={`px-2 py-0.5 rounded text-xs font-bold ${DIR_STYLE[sig.direction] ?? DIR_STYLE.flat}`}>{(sig.direction ?? 'flat').toUpperCase()}</span>
                       </td>
                       <td className="px-4 py-2.5"><ConfidenceBar value={sig.confidence} /></td>
                       <td className={`px-4 py-2.5 font-mono text-xs ${rsiTextColor(mkt?.rsi_14 ?? sig.rsi ?? 50)}`}>
