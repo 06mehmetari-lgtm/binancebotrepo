@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server'
+export const dynamic = 'force-dynamic'
 import { createRedis } from '../_redis'
 
 const QDRANT_URL = process.env.QDRANT_URL || 'http://qdrant:6333'
