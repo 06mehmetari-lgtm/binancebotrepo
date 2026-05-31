@@ -1,5 +1,5 @@
 'use client'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 interface SymbolResult {
   symbol: string
@@ -66,6 +66,12 @@ interface BacktestStatus {
   msg?: string
 }
 
+interface LogEntry {
+  ts: number
+  msg: string
+  level: 'info' | 'success' | 'warn' | 'error'
+}
+
 type SortKey = 'win_rate_pct' | 'sharpe_ratio' | 'total_return_pct' | 'max_drawdown_pct' | 'total_trades' | 'profit_factor'
 
 function StatCard({ label, value, sub, color, highlight }: { label: string; value: string; sub?: string; color: string; highlight?: boolean }) {
@@ -113,46 +119,112 @@ function MonthlyHeatmap({ data }: { data: Record<string, number> }) {
   )
 }
 
+function LogPanel({ logs, isRunning }: { logs: LogEntry[]; isRunning: boolean }) {
+  const endRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    endRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [logs.length])
+
+  const lineColor = (level: string) => {
+    if (level === 'success') return 'text-green-400'
+    if (level === 'warn') return 'text-yellow-400'
+    if (level === 'error') return 'text-red-400'
+    return 'text-gray-300'
+  }
+
+  const fmtTs = (ts: number) => {
+    const d = new Date(ts * 1000)
+    return d.toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+  }
+
+  return (
+    <div className="bg-gray-950 border border-gray-800 rounded-xl overflow-hidden">
+      <div className="px-4 py-2.5 border-b border-gray-800 flex items-center justify-between bg-gray-900/80">
+        <div className="flex items-center gap-2">
+          {isRunning && <span className="w-2 h-2 rounded-full bg-orange-500 animate-pulse" />}
+          <span className="text-gray-300 font-semibold text-xs">
+            {isRunning ? 'Canlı Log' : 'Son Çalışma Logu'}
+          </span>
+          <span className="text-gray-600 text-xs">{logs.length} satır</span>
+        </div>
+        {isRunning && <span className="text-orange-400 text-xs animate-pulse">● CANLI</span>}
+      </div>
+      <div className="h-72 overflow-y-auto p-3 space-y-0.5 font-mono text-[11px] leading-relaxed">
+        {logs.length === 0 ? (
+          <p className="text-gray-600 italic">Log bekleniyor...</p>
+        ) : (
+          logs.map((entry, i) => (
+            <div key={i} className="flex gap-2">
+              <span className="text-gray-600 shrink-0 select-none">{fmtTs(entry.ts)}</span>
+              <span className={lineColor(entry.level)}>{entry.msg}</span>
+            </div>
+          ))
+        )}
+        <div ref={endRef} />
+      </div>
+    </div>
+  )
+}
+
 export default function BacktestPage() {
-  const [data, setData] = useState<{ results: BacktestData | null; status: BacktestStatus | null }>({ results: null, status: null })
+  const [data, setData] = useState<{
+    results: BacktestData | null
+    status: BacktestStatus | null
+    trigger_pending: boolean
+    logs: LogEntry[]
+  }>({ results: null, status: null, trigger_pending: false, logs: [] })
+
   const [loading, setLoading] = useState(true)
   const [triggering, setTriggering] = useState(false)
-  const [queued, setQueued] = useState(false)
   const [sortKey, setSortKey] = useState<SortKey>('sharpe_ratio')
   const [sortAsc, setSortAsc] = useState(false)
   const [expandedSymbol, setExpandedSymbol] = useState<string | null>(null)
   const [lastUpdate, setLastUpdate] = useState('')
+  const firstLoadRef = useRef(true)
+  const autoTriggeredRef = useRef(false)
+
+  const doTrigger = async () => {
+    setTriggering(true)
+    try {
+      await fetch('/api/backtest', { method: 'POST' })
+    } finally {
+      setTriggering(false)
+    }
+  }
 
   const fetchData = async () => {
     try {
       const d = await fetch('/api/backtest').then(r => r.json())
       setData(d)
-      setLastUpdate(new Date().toLocaleTimeString())
-    } catch { } finally { setLoading(false) }
+      setLastUpdate(new Date().toLocaleTimeString('tr-TR'))
+
+      // Auto-trigger on first page load if there's nothing running and no results
+      if (firstLoadRef.current) {
+        firstLoadRef.current = false
+        if (!d.results && !d.status && !d.trigger_pending && !autoTriggeredRef.current) {
+          autoTriggeredRef.current = true
+          fetch('/api/backtest', { method: 'POST' })
+        }
+      }
+    } catch { } finally {
+      setLoading(false)
+    }
   }
 
   useEffect(() => {
     fetchData()
-    const t = setInterval(fetchData, 10000)
+    const t = setInterval(fetchData, 5000)
     return () => clearInterval(t)
   }, [])
-
-  const triggerBacktest = async () => {
-    setTriggering(true)
-    try {
-      const res = await fetch('/api/backtest', { method: 'POST' })
-      if (res.ok) setQueued(true)
-      setTimeout(fetchData, 2000)
-    } finally { setTriggering(false) }
-  }
 
   const status = data.status
   const results = data.results
   const summary = results?.summary
   const config = results?.config
   const isRunning = status?.status === 'running'
-  const isComplete = status?.status === 'complete' || !!results
-  if (isRunning && queued) setQueued(false)
+  const isQueued = data.trigger_pending && !isRunning
+  const hasLogs = data.logs.length > 0
 
   const symbols = (results?.symbols ?? []).slice().sort((a, b) => {
     const av = a[sortKey] as number
@@ -182,20 +254,33 @@ export default function BacktestPage() {
           </p>
         </div>
         <div className="flex items-center gap-3">
-          <span className="text-xs text-gray-600">{lastUpdate ? `${lastUpdate} · 10s` : ''}</span>
+          <span className="text-xs text-gray-600">{lastUpdate ? `${lastUpdate} · 5s` : ''}</span>
           <button
-            onClick={triggerBacktest}
-            disabled={triggering || isRunning || queued}
+            onClick={doTrigger}
+            disabled={triggering || isRunning || isQueued}
             className={`px-4 py-2 rounded text-xs font-bold transition-colors border ${
-              isRunning ? 'border-orange-700/50 text-orange-400 bg-orange-900/20 cursor-wait'
-                : queued ? 'border-yellow-700/50 text-yellow-400 bg-yellow-900/20 cursor-wait'
-                : 'border-blue-700/50 text-blue-400 bg-blue-900/20 hover:bg-blue-900/40'
+              isRunning
+                ? 'border-orange-700/50 text-orange-400 bg-orange-900/20 cursor-wait'
+                : isQueued
+                  ? 'border-yellow-700/50 text-yellow-400 bg-yellow-900/20 cursor-wait'
+                  : 'border-blue-700/50 text-blue-400 bg-blue-900/20 hover:bg-blue-900/40'
             }`}
           >
-            {triggering ? 'Başlatılıyor...' : isRunning ? '⟳ Çalışıyor...' : queued ? '⏳ Sırada...' : '▶ Yeni Backtest'}
+            {triggering ? 'Başlatılıyor...' : isRunning ? '⟳ Çalışıyor...' : isQueued ? '⏳ Sırada...' : '▶ Yeni Backtest'}
           </button>
         </div>
       </div>
+
+      {/* Queued banner */}
+      {isQueued && (
+        <div className="bg-yellow-900/20 border border-yellow-700/40 rounded-xl p-4 flex items-center gap-3">
+          <span className="text-yellow-400 text-base">⏳</span>
+          <div>
+            <p className="text-yellow-300 font-semibold text-sm">Tetikleyici gönderildi</p>
+            <p className="text-yellow-600 text-xs mt-0.5">Backtest servisi sinyali alınca (max 60s) başlayacak. Sayfa otomatik güncellenir.</p>
+          </div>
+        </div>
+      )}
 
       {/* Running progress */}
       {isRunning && status && (
@@ -211,31 +296,25 @@ export default function BacktestPage() {
           </div>
           <ProgressBar pct={(status.progress ?? 0) * 100} color="bg-orange-500" />
           {status.last_symbol && (
-            <p className="text-gray-500 text-xs mt-2">Son: <span className="text-white">{status.last_symbol}</span> — Binance API&apos;den veriler çekiliyor, hesaplanıyor...</p>
+            <p className="text-gray-500 text-xs mt-2">Son: <span className="text-white">{status.last_symbol}</span></p>
           )}
         </div>
       )}
 
-      {/* Queued banner */}
-      {queued && !isRunning && (
-        <div className="bg-yellow-900/20 border border-yellow-700/40 rounded-xl p-4 flex items-center gap-3">
-          <span className="text-yellow-400 text-base">⏳</span>
-          <div>
-            <p className="text-yellow-300 font-semibold text-sm">Tetikleyici gönderildi</p>
-            <p className="text-yellow-600 text-xs mt-0.5">Backtest servisi sinyali aldığında (max 60s) başlayacak. Sayfa otomatik güncellenir.</p>
-          </div>
-        </div>
+      {/* Live log panel — show when running OR there are logs */}
+      {(isRunning || hasLogs) && (
+        <LogPanel logs={data.logs} isRunning={isRunning} />
       )}
 
       {/* No results yet */}
-      {!loading && !isRunning && !queued && !results && (
+      {!loading && !isRunning && !isQueued && !results && (
         <div className="bg-gray-900 border border-gray-800 rounded-xl p-10 text-center">
           <p className="text-gray-400 text-sm font-semibold">Backtest henüz çalışmadı</p>
           <p className="text-gray-600 text-xs mt-2 max-w-sm mx-auto">
             &quot;Yeni Backtest&quot; butonuna tıkla — sistem 25 coin için 1 yıllık Binance Futures verisini çekip simülasyon yapacak.
             Tahminen 5-10 dakika sürer.
           </p>
-          <button onClick={triggerBacktest} disabled={triggering}
+          <button onClick={doTrigger} disabled={triggering}
             className="mt-4 px-6 py-2.5 rounded text-sm font-bold text-white bg-orange-600 hover:bg-orange-500 transition-colors">
             {triggering ? 'Başlatılıyor...' : '▶ Backtest Başlat'}
           </button>

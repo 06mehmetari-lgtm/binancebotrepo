@@ -33,8 +33,20 @@ PORTFOLIO_VALUE = float(os.getenv("PORTFOLIO_VALUE", "10000"))
 engine = BacktestEngine(initial_capital=PORTFOLIO_VALUE)
 
 
+async def push_log(redis: aioredis.Redis, msg: str, level: str = "info"):
+    entry = json.dumps({"ts": round(time.time(), 1), "msg": msg, "level": level})
+    await redis.lpush("backtest:log", entry)
+    await redis.ltrim("backtest:log", 0, 299)
+    await redis.expire("backtest:log", 86400 * 2)
+
+
 async def run_backtest(redis: aioredis.Redis):
     started = time.time()
+
+    # Clear previous log and write start marker
+    await redis.delete("backtest:log")
+    await push_log(redis, f"🚀 Backtest başladı — top {BACKTEST_SYMBOLS} sembol, {BACKTEST_DAYS} gün · 1h kline")
+
     log.info(f"Backtest started — top {BACKTEST_SYMBOLS} symbols, {BACKTEST_DAYS} days of 1h data")
 
     await redis.set("backtest:status", json.dumps({
@@ -45,28 +57,50 @@ async def run_backtest(redis: aioredis.Redis):
         "total": BACKTEST_SYMBOLS,
     }))
 
+    await push_log(redis, f"📊 Binance Futures en yüksek hacimli {BACKTEST_SYMBOLS} sembol seçiliyor...")
     symbols = fetch_top_symbols(BACKTEST_SYMBOLS)
+    preview = ", ".join(symbols[:6]) + ("..." if len(symbols) > 6 else "")
+    await push_log(redis, f"✓ {len(symbols)} sembol seçildi: {preview}", "success")
+
     all_results: list[dict] = []
 
     for idx, symbol in enumerate(symbols):
+        prefix = f"[{idx + 1}/{len(symbols)}]"
         try:
+            await push_log(redis, f"{prefix} {symbol} — 1 yıllık kline verisi çekiliyor...")
             log.info(f"[{idx + 1}/{len(symbols)}] {symbol} — fetching klines...")
             klines = fetch_klines(symbol, interval="1h", days=BACKTEST_DAYS)
 
             if len(klines) < 250:
+                await push_log(redis, f"{prefix} {symbol} ⚠ yetersiz veri ({len(klines)} bar), atlandı", "warn")
                 log.warning(f"[{symbol}] insufficient data ({len(klines)} bars), skipping")
             else:
+                await push_log(redis, f"{prefix} {symbol} — {len(klines)} bar hazır · simülasyon çalışıyor...")
                 log.info(f"[{symbol}] running simulation on {len(klines)} bars...")
                 result = engine.run(symbol, klines)
                 if result and result.get("total_trades", 0) >= 5:
                     all_results.append(result)
-                    log.info(
-                        f"[{symbol}] WR={result['win_rate_pct']:.1f}%  "
-                        f"Sharpe={result['sharpe_ratio']:.2f}  "
-                        f"Return={result['total_return_pct']:.1f}%  "
-                        f"Trades={result['total_trades']}"
+                    wr = result["win_rate_pct"]
+                    sr = result["sharpe_ratio"]
+                    ret = result["total_return_pct"]
+                    trades = result["total_trades"]
+                    sign = "+" if ret >= 0 else ""
+                    lvl = "success" if wr >= 60 and sr >= 1.0 else "info"
+                    await push_log(
+                        redis,
+                        f"{prefix} {symbol} ✓  WR={wr:.1f}%  Sharpe={sr:.2f}  Getiri={sign}{ret:.1f}%  ({trades} işlem)",
+                        lvl,
                     )
+                    log.info(
+                        f"[{symbol}] WR={wr:.1f}%  "
+                        f"Sharpe={sr:.2f}  "
+                        f"Return={ret:.1f}%  "
+                        f"Trades={trades}"
+                    )
+                else:
+                    await push_log(redis, f"{prefix} {symbol} — yetersiz işlem sayısı (<5), atlandı", "warn")
         except Exception as exc:
+            await push_log(redis, f"{prefix} {symbol} ✗ hata: {exc}", "error")
             log.error(f"[{symbol}] failed: {exc}", exc_info=True)
 
         await redis.set("backtest:status", json.dumps({
@@ -79,6 +113,7 @@ async def run_backtest(redis: aioredis.Redis):
         }))
 
     if not all_results:
+        await push_log(redis, "✗ Kullanılabilir sonuç bulunamadı — backtest iptal edildi", "error")
         log.error("No usable backtest results — aborting")
         await redis.set("backtest:status", json.dumps({"status": "error", "msg": "no results"}))
         return
@@ -154,6 +189,15 @@ async def run_backtest(redis: aioredis.Redis):
         "symbols_tested": len(all_results),
         "elapsed_seconds": elapsed,
     }))
+
+    elapsed_min = round(elapsed / 60, 1)
+    await push_log(
+        redis,
+        f"✅ Tamamlandı {elapsed_min}dk'da — {len(all_results)} sembol | "
+        f"Ort WR={avg_wr * 100:.1f}%  Sharpe={weighted_sharpe:.2f}  Getiri={avg_return:+.1f}%  "
+        f"Toplam {total_trades} işlem",
+        "success",
+    )
 
     log.info(
         f"Backtest complete in {elapsed}s — "
