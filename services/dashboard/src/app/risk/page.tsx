@@ -4,6 +4,8 @@ import { useEffect, useState } from 'react'
 interface RiskData {
   immunity_halted: boolean
   daily_loss_pct: number
+  daily_loss_display_pct?: number
+  max_daily_loss_pct?: number
   daily_trades: number
   crisis_level: number
   regime: string | null
@@ -98,6 +100,8 @@ export default function RiskPage() {
   const [sqsTop, setSqsTop] = useState<SqsEntry[]>([])
   const [loading, setLoading] = useState(true)
   const [lastUpdate, setLastUpdate] = useState('')
+  const [clearBusy, setClearBusy] = useState(false)
+  const [clearMsg, setClearMsg] = useState('')
 
   const fetchData = async () => {
     try {
@@ -117,9 +121,34 @@ export default function RiskPage() {
 
   useEffect(() => { fetchData(); const t = setInterval(fetchData, 5000); return () => clearInterval(t) }, [])
 
+  const clearImmunityHalt = async () => {
+    if (!window.confirm(
+      'Bağışıklık kilidi kaldırılsın mı? Günlük zarar sayacı sıfırlanır; sabit limitler (%2 günlük zarar, %5 pozisyon vb.) geçerli kalır.'
+    )) return
+    setClearBusy(true)
+    setClearMsg('')
+    try {
+      const res = await fetch('/api/emergency', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'clear_immunity_halt' }),
+      })
+      const j = await res.json()
+      setClearMsg(j.message ?? (res.ok ? 'Kilit kaldırıldı' : j.error ?? 'Hata'))
+      await fetchData()
+    } catch (e) {
+      setClearMsg(String(e))
+    } finally {
+      setClearBusy(false)
+    }
+  }
+
   const crisis = data.crisis_level ?? 0
-  const dailyLoss = (data.daily_loss_pct ?? 0) * 100
-  const maxDailyLoss = (data.limits?.max_daily_loss ?? 0.02) * 100
+  const dailyLoss =
+    data.daily_loss_display_pct ??
+    (data.daily_loss_pct ?? 0) * 100
+  const maxDailyLoss =
+    (data.max_daily_loss_pct ?? data.limits?.max_daily_loss ?? 0.02) * 100
   const dailyTrades = data.daily_trades ?? 0
   const maxTrades = data.limits?.max_trades_per_day ?? 50
   const isHalted = data.immunity_halted ?? false
@@ -156,13 +185,32 @@ export default function RiskPage() {
       </div>
 
       {isHalted && (
-        <div className="bg-red-900/40 border border-red-500/60 rounded-lg p-4 flex items-center gap-3">
-          <span className="text-red-400 text-2xl animate-pulse">⚠</span>
-          <div>
-            <p className="text-red-300 font-bold text-sm">IMMUNITY SYSTEM HALTED</p>
-            <p className="text-red-400/80 text-xs mt-0.5">Max drawdown limit exceeded — all trading suspended until daily reset</p>
+        <div className="bg-red-900/40 border border-red-500/60 rounded-lg p-4 flex flex-col sm:flex-row sm:items-center gap-4">
+          <div className="flex items-start gap-3 flex-1">
+            <span className="text-red-400 text-2xl animate-pulse shrink-0">⚠</span>
+            <div>
+              <p className="text-red-300 font-bold text-sm">BAĞIŞIKLIK SİSTEMİ DURDURULDU</p>
+              <p className="text-red-200/90 text-xs mt-1 leading-relaxed">
+                Günlük zarar limiti (%2) veya acil durdurma sonrası koruma devrede — yeni emirler reddediliyor.
+                Şu an kayıtlı günlük zarar: <span className="font-mono font-bold">{dailyLoss.toFixed(2)}%</span>
+                {' '}(limit {maxDailyLoss.toFixed(0)}%).
+                Acil durdurma kullandıysanız aşağıdaki düğme ile kilidi kaldırın; sabit limitler değişmez.
+              </p>
+              <p className="text-red-400/60 text-[11px] mt-1.5">IMMUNITY SYSTEM HALTED — not max portfolio drawdown (10%)</p>
+            </div>
           </div>
+          <button
+            type="button"
+            onClick={clearImmunityHalt}
+            disabled={clearBusy}
+            className="shrink-0 px-4 py-2 rounded-lg text-xs font-bold bg-green-800/60 border border-green-600 text-green-200 hover:bg-green-800 disabled:opacity-50"
+          >
+            {clearBusy ? '⏳...' : '▶ Kilidi Kaldır & Devam Et'}
+          </button>
         </div>
+      )}
+      {clearMsg && (
+        <p className="text-xs text-orange-300 bg-orange-950/30 border border-orange-800/50 rounded-lg px-3 py-2">{clearMsg}</p>
       )}
 
       {/* Crisis Level */}
@@ -288,7 +336,8 @@ export default function RiskPage() {
           <GaugeBar label="Daily Loss" value={dailyLoss} max={maxDailyLoss} color="bg-orange-500" danger={maxDailyLoss} />
           <GaugeBar label="Trades Today" value={dailyTrades} max={maxTrades} color="bg-blue-500" danger={maxTrades} />
           <div className="pt-2 border-t border-gray-800/60 text-xs text-gray-500">
-            Limits reset at 00:00 UTC daily. Exceeding daily loss triggers trading suspension for the day.
+            Sayaçlar UTC gece yarısı sıfırlanır. %2 günlük zarar veya acil durum sonrası işlem askıya alınır —
+            Risk sayfasındaki &quot;Kilidi Kaldır&quot; ile paper modda devam edebilirsiniz.
           </div>
         </div>
 
@@ -328,7 +377,7 @@ export default function RiskPage() {
           <h2 className="text-orange-400 font-semibold text-sm uppercase tracking-wider">Absolute Hard Limits</h2>
         </div>
         <div className="p-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-          <LimitCard icon="📉" label="Max Drawdown" value="10%" description="Entire system halts if total drawdown exceeds this threshold" />
+          <LimitCard icon="📉" label="Max Drawdown (shadow)" value="10%" description="Shadow promotion gate — separate from daily immunity halt on this page" />
           <LimitCard icon="🗓" label="Max Daily Loss" value="2%" description="No new trades once daily loss hits 2% of portfolio" />
           <LimitCard icon="📊" label="Max Position Size" value="5%" description="No single trade can exceed 5% of total portfolio value" />
           <LimitCard icon="🎯" label="Min Signal Confidence" value="60%" description="Signals below 60% confidence are suppressed to flat" />

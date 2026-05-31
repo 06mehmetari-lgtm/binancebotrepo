@@ -23,6 +23,45 @@ breaker = CircuitBreaker(max_failures=5, reset_timeout=300)
 _last_reset_day = -1
 
 
+def clear_operational_halt(reset_counters: bool = False) -> None:
+    """Clear in-memory halt after dashboard emergency / user resume (not immunity.py limits)."""
+    immunity._system_halted = False
+    immunity._halt_until = 0.0
+    if reset_counters:
+        immunity._daily_loss = 0.0
+        immunity._daily_trades = 0
+        immunity._open_positions = 0
+        log.info("Immunity halt cleared — daily counters reset")
+    else:
+        log.info("Immunity halt cleared — daily counters kept")
+
+
+def expire_stale_halt() -> None:
+    """If halt window passed, stop reporting halted (orders already allowed)."""
+    if immunity._system_halted and immunity._halt_until > 0 and time.time() >= immunity._halt_until:
+        immunity._system_halted = False
+        immunity._halt_until = 0.0
+
+
+async def halt_control_listener(redis: aioredis.Redis):
+    """Dashboard resume/restart publishes ch:immunity:clear_halt to lift paper-trading halt."""
+    pubsub = redis.pubsub()
+    await pubsub.subscribe("ch:immunity:clear_halt", "ch:trading:restart")
+    log.info("Immunity halt control listener active")
+    async for msg in pubsub.listen():
+        if msg.get("type") != "message":
+            continue
+        try:
+            raw = msg.get("data")
+            if isinstance(raw, bytes):
+                raw = raw.decode()
+            payload = json.loads(raw) if raw else {}
+            reset = bool(payload.get("reset_counters", True))
+            clear_operational_halt(reset_counters=reset)
+        except Exception as e:
+            log.error(f"Halt clear listener error: {e}")
+
+
 async def order_approval_loop(redis: aioredis.Redis):
     """Listen for order requests on Redis list immunity:requests, respond with approval."""
     global _last_reset_day
@@ -75,6 +114,7 @@ async def status_writer_loop(redis: aioredis.Redis):
     """Write immunity status to Redis every 30s for dashboard monitoring."""
     while True:
         try:
+            expire_stale_halt()
             status = {
                 "max_position_pct": MAX_POSITION_PCT * 100,
                 "max_daily_loss_pct": MAX_DAILY_LOSS_PCT * 100,
@@ -100,10 +140,12 @@ async def main():
     redis = await aioredis.from_url(REDIS_URL)
     # Create separate connection for pubsub
     redis_sub = await aioredis.from_url(REDIS_URL)
+    redis_ctl = await aioredis.from_url(REDIS_URL)
     await asyncio.gather(
         order_approval_loop(redis),
         status_writer_loop(redis),
         position_close_listener(redis_sub),
+        halt_control_listener(redis_ctl),
     )
 
 

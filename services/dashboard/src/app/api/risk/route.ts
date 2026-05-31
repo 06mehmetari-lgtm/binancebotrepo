@@ -78,13 +78,20 @@ export async function GET() {
     const dailyLossPctRaw = typeof immunityStatus?.daily_loss_pct === 'number'
       ? immunityStatus.daily_loss_pct
       : 0
+    // immunity:status stores daily_loss_pct as percent (0.15 = 0.15%)
+    const dailyLossFraction = dailyLossPctRaw / 100
     const dailyTrades = typeof immunityStatus?.daily_trades === 'number'
       ? immunityStatus.daily_trades
       : 0
+    const maxDailyLossPctImmunity = typeof immunityStatus?.max_daily_loss_pct === 'number'
+      ? immunityStatus.max_daily_loss_pct / 100
+      : 0.02
 
     return NextResponse.json({
       immunity_halted: Boolean(immunityStatus?.system_halted ?? immunityStatus?.halted ?? false),
-      daily_loss_pct: dailyLossPctRaw > 1 ? dailyLossPctRaw / 100 : dailyLossPctRaw,
+      daily_loss_pct: dailyLossFraction,
+      daily_loss_display_pct: dailyLossPctRaw,
+      max_daily_loss_pct: maxDailyLossPctImmunity,
       daily_trades: dailyTrades,
       crisis_level: maxCrisis,
       regime: dominantRegime,

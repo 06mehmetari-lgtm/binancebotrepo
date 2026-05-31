@@ -24,6 +24,24 @@ REGIME_TR: dict[str, str] = {
 }
 
 
+def _vote_signal(v: Any) -> str:
+    if isinstance(v, dict):
+        return str(v.get("signal", "flat"))
+    return str(getattr(v, "signal", "flat"))
+
+
+def _vote_confidence(v: Any) -> float:
+    if isinstance(v, dict):
+        return float(v.get("confidence", 0.5))
+    return float(getattr(v, "confidence", 0.5))
+
+
+def _vote_agent_name(v: Any) -> str:
+    if isinstance(v, dict):
+        return str(v.get("agent") or v.get("agent_name") or "?")
+    return str(getattr(v, "agent_name", None) or getattr(v, "agent", "?"))
+
+
 def _fmt_reasoning(reasoning: Any) -> str:
     if reasoning is None:
         return ""
@@ -45,10 +63,10 @@ def format_vote_reasoning(agent_name: str, signal: str, confidence: float, reaso
 def build_dissent_risk(votes: list[Any], final_signal: str) -> str:
     if final_signal == "flat":
         return "Sinyal bastırıldı — ajan konsensüsü yeterli değil veya risk ajanı FLAT önerdi."
-    opposing = [v for v in votes if getattr(v, "signal", v.get("signal", "flat")) not in (final_signal, "flat")]
+    opposing = [v for v in votes if _vote_signal(v) not in (final_signal, "flat")]
     if not opposing:
         return ""
-    names = [getattr(v, "agent_name", v.get("agent", "?")) for v in opposing]
+    names = [_vote_agent_name(v) for v in opposing]
     return (
         f"{len(opposing)} ajan karşı görüşte ({', '.join(names)}). "
         f"Ağırlıklı oylama yine de {final_signal.upper()} yönünde."
@@ -63,8 +81,8 @@ def build_probability_breakdown(
 ) -> dict[str, float]:
     scores = {"long": 0.0, "short": 0.0, "flat": 0.0}
     for v in votes:
-        sig = getattr(v, "signal", v.get("signal", "flat"))
-        conf = float(getattr(v, "confidence", v.get("confidence", 0.5)))
+        sig = _vote_signal(v)
+        conf = _vote_confidence(v)
         if sig in scores:
             scores[sig] += conf
     total = sum(scores.values()) or 1.0

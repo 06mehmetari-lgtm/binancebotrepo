@@ -60,9 +60,11 @@ def fuse_sources(
         sources.append(("rl", rl_confidence))
 
     total_w = sum(
-        W_AGENT if "agent" in weights_used else 0,
-        W_NEAT if "neat" in weights_used else 0,
-        W_RL if "rl" in weights_used else 0,
+        [
+            W_AGENT if "agent" in weights_used else 0,
+            W_NEAT if "neat" in weights_used else 0,
+            W_RL if "rl" in weights_used else 0,
+        ]
     ) or 1.0
     for k in fused:
         fused[k] /= total_w

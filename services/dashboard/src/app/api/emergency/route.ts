@@ -9,22 +9,33 @@ export async function POST(req: Request) {
     const body = await req.json().catch(() => ({}))
     const action = (body as { action?: string }).action ?? 'close_all'
 
-    if (action === 'resume' || action === 'restart_trading') {
+    if (
+      action === 'resume' ||
+      action === 'restart_trading' ||
+      action === 'clear_immunity_halt'
+    ) {
       await redis.del('system:trading:halted')
+      const resetCounters =
+        action === 'restart_trading' || action === 'clear_immunity_halt'
       const pulse = JSON.stringify({
         ts: Date.now() / 1000,
         by: 'dashboard',
-        action: action === 'restart_trading' ? 'restart_trading' : 'resume',
+        action,
+        reset_counters: resetCounters,
       })
       await redis.publish('ch:trading:restart', pulse)
+      await redis.publish('ch:immunity:clear_halt', pulse)
       await redis.set('system:trading:restart_pulse', pulse, 'EX', 120)
       return NextResponse.json({
         ok: true,
         action,
+        immunity_clear_requested: true,
         message:
           action === 'restart_trading'
-            ? 'İşlemler yeniden başlatıldı — duraklatma kaldırıldı, OMS/sinyal taraması tetiklendi'
-            : 'Trading halt cleared',
+            ? 'İşlemler yeniden başlatıldı — acil durdurma ve bağışıklık kilidi kaldırıldı'
+            : action === 'clear_immunity_halt'
+              ? 'Bağışıklık sistemi kilidi kaldırıldı — yeni işlemler tekrar değerlendirilebilir'
+              : 'İşlem duraklatması kaldırıldı',
       })
     }
 
