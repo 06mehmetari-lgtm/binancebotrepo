@@ -85,6 +85,60 @@ function computeBB(closes: number[], period = 20): { upper: number[]; lower: num
   return { upper, lower, mid }
 }
 
+function normalizeMonthly(monthly: unknown): Record<string, number> {
+  if (!monthly) return {}
+  if (Array.isArray(monthly)) {
+    const out: Record<string, number> = {}
+    for (const m of monthly) {
+      if (m && typeof m === 'object' && 'month' in (m as object)) {
+        const row = m as { month?: string; return_pct?: number }
+        if (row.month) out[String(row.month)] = Number(row.return_pct ?? 0)
+      }
+    }
+    return out
+  }
+  if (typeof monthly === 'object') {
+    return Object.fromEntries(
+      Object.entries(monthly as Record<string, unknown>).map(([k, v]) => [k, Number(v)])
+    )
+  }
+  return {}
+}
+
+function normalizeBacktestRow(raw: Record<string, unknown> | null) {
+  if (!raw) return null
+  const winRatePct =
+    typeof raw.win_rate_pct === 'number'
+      ? raw.win_rate_pct
+      : typeof raw.win_rate === 'number'
+        ? raw.win_rate <= 1
+          ? raw.win_rate * 100
+          : raw.win_rate
+        : 0
+  const exitRaw = raw.exit_reasons
+  const exit_reasons =
+    exitRaw && typeof exitRaw === 'object' && !Array.isArray(exitRaw)
+      ? Object.fromEntries(
+          Object.entries(exitRaw as Record<string, unknown>).map(([k, v]) => [k, Number(v)])
+        )
+      : { take_profit: 0, stop_loss: 0, time_exit: 0 }
+  return {
+    win_rate_pct: winRatePct,
+    sharpe_ratio: Number(raw.sharpe_ratio ?? raw.sharpe ?? 0),
+    total_return_pct: Number(raw.total_return_pct ?? 0),
+    max_drawdown_pct: Number(raw.max_drawdown_pct ?? 0),
+    total_trades: Number(raw.total_trades ?? 0),
+    profit_factor: Number(raw.profit_factor ?? 0),
+    avg_win_pct: Number(raw.avg_win_pct ?? 0),
+    avg_loss_pct: Number(raw.avg_loss_pct ?? 0),
+    avg_bars_held: Number(raw.avg_bars_held ?? 0),
+    long_win_rate_pct: Number(raw.long_win_rate_pct ?? 0),
+    short_win_rate_pct: Number(raw.short_win_rate_pct ?? 0),
+    exit_reasons,
+    monthly_returns: normalizeMonthly(raw.monthly_returns),
+  }
+}
+
 // ── Main handler ─────────────────────────────────────────────────────────────
 
 export async function GET(
@@ -99,7 +153,7 @@ export async function GET(
   const redis = createRedis()
   try {
     // ── 1. Parallel: Redis kline cache + bookTicker + all signal data ──
-    const [cachedKlines, tickerRaw, featRaw, sigRaw, verdictRaw, verdictsRaw, btRaw, shadowRaw, contextRaw] =
+    const [cachedKlines, tickerRaw, featRaw, sigRaw, verdictRaw, verdictsRaw, btRaw, symBtRaw, shadowRaw, contextRaw] =
       await Promise.all([
         redis.get(`klines:1h:${symbol}`),
         redis.get(`binance:ticker:${symbol.toLowerCase()}`),
@@ -108,6 +162,7 @@ export async function GET(
         redis.get(`agents:verdict:${symbol}`),
         redis.get(`agents:verdicts:${symbol}`),
         redis.get('backtest:results'),
+        redis.get(`backtest:symbol:${symbol}`),
         redis.get('shadow:leaderboard'),
         redis.get(`context:latest:${symbol}`),
       ])
@@ -189,21 +244,33 @@ export async function GET(
           dissent_risk: verdictParsed.dissent_risk ?? '',
         }
       : null
-    const votes: { agent: string; signal: string; confidence: number; reasoning: string }[] = verdictsRaw
-      ? JSON.parse(verdictsRaw)
-      : []
+    let votes: { agent: string; signal: string; confidence: number; reasoning: string }[] = []
+    if (verdictsRaw) {
+      try {
+        const parsed = JSON.parse(verdictsRaw)
+        votes = Array.isArray(parsed) ? parsed : []
+      } catch { /* ignore */ }
+    }
     const context = contextRaw ? JSON.parse(contextRaw) : null
 
-    // Per-symbol backtest stats (supports symbols[] or legacy dict)
-    let backtestStats: Record<string, unknown> | null = null
-    if (btRaw) {
-      const bt = JSON.parse(btRaw)
-      const results = bt.results ?? bt
-      if (Array.isArray(results?.symbols)) {
-        backtestStats = results.symbols.find((r: { symbol?: string }) => r?.symbol === symbol) ?? null
-      } else if (results?.[symbol]) {
-        backtestStats = results[symbol]
-      }
+    let backtestStats: ReturnType<typeof normalizeBacktestRow> = null
+    if (symBtRaw) {
+      try {
+        backtestStats = normalizeBacktestRow(JSON.parse(symBtRaw))
+      } catch { /* ignore */ }
+    }
+    if (!backtestStats && btRaw) {
+      try {
+        const bt = JSON.parse(btRaw)
+        const results = bt.results ?? bt
+        let row: Record<string, unknown> | null = null
+        if (Array.isArray(results?.symbols)) {
+          row = results.symbols.find((r: { symbol?: string }) => r?.symbol === symbol) ?? null
+        } else if (results?.[symbol]) {
+          row = results[symbol]
+        }
+        backtestStats = normalizeBacktestRow(row)
+      } catch { /* ignore */ }
     }
 
     // Latest ATR for SL/TP levels

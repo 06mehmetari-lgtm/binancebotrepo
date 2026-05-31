@@ -201,13 +201,33 @@ export default function PositionsPage() {
     if (!window.confirm('İşlem duraklatması kaldırılsın mı? (Pozisyon açma tekrar aktif olur)')) return
     setEmergencyBusy(true)
     try {
-      await fetch('/api/emergency', {
+      const res = await fetch('/api/emergency', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'resume' }),
       })
-      setEmergencyMsg('İşlem duraklatması kaldırıldı')
+      const j = await res.json()
+      setEmergencyMsg(j.message ?? 'İşlem duraklatması kaldırıldı')
       await fetchData()
+    } finally {
+      setEmergencyBusy(false)
+    }
+  }
+
+  const restartTrading = async () => {
+    setEmergencyBusy(true)
+    setEmergencyMsg('')
+    try {
+      const res = await fetch('/api/emergency', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'restart_trading' }),
+      })
+      const j = await res.json()
+      setEmergencyMsg(j.message ?? (res.ok ? 'Tarama yenilendi' : j.error ?? 'Hata'))
+      await fetchData()
+    } catch (e) {
+      setEmergencyMsg(String(e))
     } finally {
       setEmergencyBusy(false)
     }
@@ -255,7 +275,16 @@ export default function PositionsPage() {
               {emergencyBusy ? '⏳ Kapatılıyor...' : '🛑 ACİL DURUM — Tümünü Kapat'}
             </button>
           )}
-          <span className="text-xs text-gray-600">{lastUpdate}</span>
+          <button
+            type="button"
+            onClick={restartTrading}
+            disabled={emergencyBusy}
+            className="px-4 py-2 rounded-lg text-xs font-bold bg-green-800/50 border border-green-600 text-green-300 hover:bg-green-800/70 disabled:opacity-40"
+            title="Duraklatmayı kaldırır, portfolio ve sinyal taramasını yeniler"
+          >
+            {emergencyBusy ? '⏳...' : '⟳ İşlem Yeniden Başlat'}
+          </button>
+          <span className="text-xs text-gray-600">{lastUpdate} · 5s</span>
         </div>
       </div>
 

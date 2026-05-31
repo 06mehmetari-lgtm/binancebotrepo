@@ -213,7 +213,87 @@ function AgentVoteRow({ vote }: { vote: Vote }) {
   )
 }
 
-function LeverageGauge({ rec }: { leverageRec: CoinData['leverageRec']; rec: number }) {
+const DEFAULT_LEVERAGE_REC: CoinData['leverageRec'] = {
+  recommended: 1,
+  baseLev: 1,
+  crisisMult: 1,
+  crisisLevel: 0,
+  atrPct: 0,
+  kellyFraction: 0,
+}
+
+function normalizeMonthly(monthly: unknown): Record<string, number> {
+  if (!monthly) return {}
+  if (Array.isArray(monthly)) {
+    const out: Record<string, number> = {}
+    for (const m of monthly) {
+      if (m && typeof m === 'object' && 'month' in (m as object)) {
+        const row = m as { month?: string; return_pct?: number }
+        if (row.month) out[String(row.month)] = Number(row.return_pct ?? 0)
+      }
+    }
+    return out
+  }
+  if (typeof monthly === 'object') {
+    return Object.fromEntries(
+      Object.entries(monthly as Record<string, unknown>).map(([k, v]) => [k, Number(v)])
+    )
+  }
+  return {}
+}
+
+function normalizeCoinPayload(d: Record<string, unknown>): CoinData {
+  const lev = (d.leverageRec ?? DEFAULT_LEVERAGE_REC) as CoinData['leverageRec']
+  const levels = (d.levels ?? { sl: null, tp: null, currentPrice: 0, atr: 0, atrPct: 0 }) as CoinData['levels']
+  const rawBt = d.backtestStats as Record<string, unknown> | null
+  let backtestStats: BacktestStats | null = null
+  if (rawBt && typeof rawBt === 'object') {
+    const winRatePct =
+      typeof rawBt.win_rate_pct === 'number'
+        ? rawBt.win_rate_pct
+        : typeof rawBt.win_rate === 'number'
+          ? rawBt.win_rate <= 1
+            ? rawBt.win_rate * 100
+            : rawBt.win_rate
+          : 0
+    backtestStats = {
+      win_rate_pct: winRatePct,
+      sharpe_ratio: Number(rawBt.sharpe_ratio ?? 0),
+      total_return_pct: Number(rawBt.total_return_pct ?? 0),
+      max_drawdown_pct: Number(rawBt.max_drawdown_pct ?? 0),
+      total_trades: Number(rawBt.total_trades ?? 0),
+      profit_factor: Number(rawBt.profit_factor ?? 0),
+      avg_win_pct: Number(rawBt.avg_win_pct ?? 0),
+      avg_loss_pct: Number(rawBt.avg_loss_pct ?? 0),
+      avg_bars_held: Number(rawBt.avg_bars_held ?? 0),
+      long_win_rate_pct: Number(rawBt.long_win_rate_pct ?? 0),
+      short_win_rate_pct: Number(rawBt.short_win_rate_pct ?? 0),
+      exit_reasons: (rawBt.exit_reasons ?? { take_profit: 0, stop_loss: 0, time_exit: 0 }) as BacktestStats['exit_reasons'],
+      monthly_returns: normalizeMonthly(rawBt.monthly_returns),
+    }
+  }
+  return {
+    symbol: String(d.symbol ?? ''),
+    klines: Array.isArray(d.klines) ? (d.klines as KlinePoint[]) : [],
+    ticker24h: (d.ticker24h as CoinData['ticker24h']) ?? null,
+    features: (d.features as Features) ?? null,
+    signal: (d.signal as Signal) ?? null,
+    verdict: (d.verdict as Verdict) ?? null,
+    votes: Array.isArray(d.votes) ? (d.votes as Vote[]) : [],
+    backtestStats,
+    levels,
+    leverageRec: {
+      recommended: Number(lev.recommended ?? 1),
+      baseLev: Number(lev.baseLev ?? 1),
+      crisisMult: Number(lev.crisisMult ?? 1),
+      crisisLevel: Number(lev.crisisLevel ?? 0),
+      atrPct: Number(lev.atrPct ?? 0),
+      kellyFraction: Number(lev.kellyFraction ?? 0),
+    },
+  }
+}
+
+function LeverageGauge({ rec }: { rec: number }) {
   const maxLev = 20
   const pct = (rec / maxLev) * 100
   const color = rec <= 2 ? 'bg-red-500' : rec <= 5 ? 'bg-yellow-500' : rec <= 10 ? 'bg-green-500' : 'bg-orange-500'
@@ -232,7 +312,10 @@ function LeverageGauge({ rec }: { leverageRec: CoinData['leverageRec']; rec: num
 // ── Monthly return mini heatmap ───────────────────────────────────────────────
 
 function MonthlyHeatmap({ monthly }: { monthly: Record<string, number> }) {
-  const entries = Object.entries(monthly).sort(([a], [b]) => a.localeCompare(b))
+  const entries = Object.entries(monthly ?? {})
+    .map(([month, ret]) => [month, Number(ret)] as const)
+    .filter(([, ret]) => Number.isFinite(ret))
+    .sort(([a], [b]) => a.localeCompare(b))
   if (!entries.length) return null
   return (
     <div className="grid grid-cols-6 gap-1">
@@ -270,10 +353,11 @@ export default function CoinPage() {
     if (!symbol) return
     try {
       const res = await fetch(`/api/coin/${symbol}`)
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      const d: CoinData = await res.json()
+      const raw = await res.json()
+      if (!res.ok) throw new Error((raw as { error?: string }).error ?? `HTTP ${res.status}`)
+      const d = normalizeCoinPayload(raw as Record<string, unknown>)
       setData(d)
-      setLeverageVal(d.leverageRec.recommended)
+      setLeverageVal(d.leverageRec?.recommended ?? 1)
     } catch (e: any) {
       setError(e.message)
     } finally {
@@ -303,22 +387,26 @@ export default function CoinPage() {
   if (!data) return null
 
   const { klines, ticker24h, features, signal, verdict, votes, backtestStats, levels, leverageRec } = data
-  const price = ticker24h?.lastPrice ?? levels.currentPrice
+  const safeVotes = Array.isArray(votes) ? votes : []
+  const price = ticker24h?.lastPrice ?? levels?.currentPrice ?? 0
   const change = ticker24h?.priceChangePercent ?? 0
   const changeColor = change >= 0 ? 'text-green-400' : 'text-red-400'
   const dir = signal?.direction ?? 'flat'
   const conf = signal?.confidence ?? 0
-  const longVotes = votes.filter(v => v.signal === 'long').length
-  const shortVotes = votes.filter(v => v.signal === 'short').length
-  const flatVotes = votes.filter(v => v.signal === 'flat').length
+  const longVotes = safeVotes.filter(v => v?.signal === 'long').length
+  const shortVotes = safeVotes.filter(v => v?.signal === 'short').length
+  const flatVotes = safeVotes.filter(v => v?.signal === 'flat').length
+  const levRec = leverageRec ?? DEFAULT_LEVERAGE_REC
 
-  // Chart data (last 100 bars for readability)
   const chartData = klines.slice(-100)
-
-  // Determine price range for Y axis with BB bands
-  const priceMin = Math.min(...chartData.map(k => Math.min(k.low, k.bbLow || k.close))) * 0.998
-  const priceMax = Math.max(...chartData.map(k => Math.max(k.high, k.bbUp || k.close))) * 1.002
-  const volumeMax = Math.max(...chartData.map(k => k.volume)) * 4
+  const hasChart = chartData.length > 0
+  const priceMin = hasChart
+    ? Math.min(...chartData.map(k => Math.min(k.low, k.bbLow || k.close))) * 0.998
+    : price * 0.99
+  const priceMax = hasChart
+    ? Math.max(...chartData.map(k => Math.max(k.high, k.bbUp || k.close))) * 1.002
+    : price * 1.01
+  const volumeMax = hasChart ? Math.max(...chartData.map(k => k.volume), 1) * 4 : 1
 
   // X axis: show every ~10th label
   const xTick = Math.ceil(chartData.length / 10)
@@ -329,7 +417,7 @@ export default function CoinPage() {
     return idx % xTick === 0 ? v.split(',')[0] : ''
   }
 
-  const positionSizeUsd = 10000 * leverageRec.kellyFraction * leverageVal
+  const positionSizeUsd = 10000 * (levRec.kellyFraction ?? 0) * leverageVal
   const crisisLabels = ['Normal', 'Caution', 'Warning', 'Alarm', 'CRISIS']
 
   return (
@@ -386,7 +474,12 @@ export default function CoinPage() {
           </div>
 
           {/* ── Price Chart ── */}
-          {chartType === 'price' && (
+          {chartType === 'price' && !hasChart && (
+            <div className="bg-gray-900 border border-gray-800 rounded-xl p-8 text-center text-gray-500 text-sm">
+              Kline verisi yükleniyor veya bu coin için henüz veri yok.
+            </div>
+          )}
+          {chartType === 'price' && hasChart && (
             <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
               <div className="px-4 py-2.5 border-b border-gray-800 flex items-center justify-between">
                 <span className="text-sm font-semibold text-white">{symbol} · 1H · Last 100 bars</span>
@@ -457,7 +550,10 @@ export default function CoinPage() {
           )}
 
           {/* ── RSI Chart ── */}
-          {chartType === 'rsi' && (
+          {chartType === 'rsi' && !hasChart && (
+            <div className="bg-gray-900 border border-gray-800 rounded-xl p-8 text-center text-gray-500 text-sm">RSI için yeterli veri yok.</div>
+          )}
+          {chartType === 'rsi' && hasChart && (
             <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
               <div className="px-4 py-2.5 border-b border-gray-800">
                 <span className="text-sm font-semibold text-white">RSI(14) — {symbol}</span>
@@ -496,7 +592,10 @@ export default function CoinPage() {
           )}
 
           {/* ── MACD Chart ── */}
-          {chartType === 'macd' && (
+          {chartType === 'macd' && !hasChart && (
+            <div className="bg-gray-900 border border-gray-800 rounded-xl p-8 text-center text-gray-500 text-sm">MACD için yeterli veri yok.</div>
+          )}
+          {chartType === 'macd' && hasChart && (
             <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
               <div className="px-4 py-2.5 border-b border-gray-800">
                 <span className="text-sm font-semibold text-white">MACD(12,26,9) — {symbol}</span>
@@ -676,11 +775,11 @@ export default function CoinPage() {
           </div>
 
           {/* Agent votes breakdown */}
-          {votes.length > 0 && (
+          {safeVotes.length > 0 && (
             <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 space-y-3">
               <h3 className="text-sm font-semibold text-white">9-Agent Breakdown</h3>
               <div className="space-y-2.5">
-                {votes.map((v, i) => <AgentVoteRow key={i} vote={v} />)}
+                {safeVotes.map((v, i) => <AgentVoteRow key={v.agent ?? i} vote={v} />)}
               </div>
             </div>
           )}
@@ -691,29 +790,29 @@ export default function CoinPage() {
 
             <div className="flex items-center gap-3">
               <div className="text-center">
-                <p className="text-3xl font-black text-orange-400">{leverageRec.recommended}×</p>
+                <p className="text-3xl font-black text-orange-400">{levRec.recommended}×</p>
                 <p className="text-xs text-gray-500">Recommended</p>
               </div>
               <div className="flex-1 text-xs space-y-1 text-gray-400">
                 <div className="flex justify-between">
-                  <span>ATR Volatility</span><span>{leverageRec.atrPct}%</span>
+                  <span>ATR Volatility</span><span>{levRec.atrPct}%</span>
                 </div>
                 <div className="flex justify-between">
                   <span>Crisis Level</span>
-                  <span className={leverageRec.crisisLevel > 2 ? 'text-red-400' : 'text-green-400'}>
-                    L{leverageRec.crisisLevel} {crisisLabels[leverageRec.crisisLevel]}
+                  <span className={levRec.crisisLevel > 2 ? 'text-red-400' : 'text-green-400'}>
+                    L{levRec.crisisLevel} {crisisLabels[levRec.crisisLevel]}
                   </span>
                 </div>
                 <div className="flex justify-between">
-                  <span>Crisis Mult</span><span>{(leverageRec.crisisMult * 100).toFixed(0)}%</span>
+                  <span>Crisis Mult</span><span>{(levRec.crisisMult * 100).toFixed(0)}%</span>
                 </div>
                 <div className="flex justify-between">
-                  <span>Kelly Size</span><span>{(leverageRec.kellyFraction * 100).toFixed(2)}%</span>
+                  <span>Kelly Size</span><span>{((levRec.kellyFraction ?? 0) * 100).toFixed(2)}%</span>
                 </div>
               </div>
             </div>
 
-            <LeverageGauge leverageRec={leverageRec} rec={leverageRec.recommended} />
+            <LeverageGauge rec={levRec.recommended} />
 
             {/* Interactive leverage slider */}
             <div className="space-y-2">
