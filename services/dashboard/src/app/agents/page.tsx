@@ -202,7 +202,7 @@ export default function AgentsPage() {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-white font-bold text-base">9-Agent Debate System</h1>
-          <p className="text-gray-500 text-xs mt-0.5">Multi-agent LLM deliberation via Claude API · each agent has a distinct role and perspective</p>
+          <p className="text-gray-500 text-xs mt-0.5">Multi-agent LLM deliberation (Groq → Ollama → rule-based fallback) · each agent has a distinct role and perspective</p>
         </div>
         <span className="text-xs text-gray-600">{lastUpdate ? `${lastUpdate} · 10s` : '10s refresh'}</span>
       </div>

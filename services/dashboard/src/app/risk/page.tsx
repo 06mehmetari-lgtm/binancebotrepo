@@ -196,8 +196,8 @@ export default function RiskPage() {
         <div className="p-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
           <LimitCard icon="📉" label="Max Drawdown" value="10%" description="Entire system halts if total drawdown exceeds this threshold" />
           <LimitCard icon="🗓" label="Max Daily Loss" value="2%" description="No new trades once daily loss hits 2% of portfolio" />
-          <LimitCard icon="📊" label="Max Position Size" value="7%" description="No single trade can exceed 7% of total portfolio value" />
-          <LimitCard icon="🎯" label="Min Signal Confidence" value="52%" description="Signals below 52% confidence are suppressed to flat" />
+          <LimitCard icon="📊" label="Max Position Size" value="5%" description="No single trade can exceed 5% of total portfolio value" />
+          <LimitCard icon="🎯" label="Min Signal Confidence" value="60%" description="Signals below 60% confidence are suppressed to flat" />
           <LimitCard icon="⚡" label="Max Trades / Day" value="50" description="Hard limit on daily trade count prevents overtrading" />
           <LimitCard icon="🔒" label="Max Leverage" value="3×" description="Maximum leverage allowed by the immunity system" />
           <LimitCard icon="🏦" label="Max Open Positions" value="3" description="No more than 3 simultaneous open positions" />

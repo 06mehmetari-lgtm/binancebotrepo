@@ -230,7 +230,7 @@ export default function MemoryPage() {
               Coin Nasıl Bulunuyor? — 8 Aşamalı Karar Süreci
             </h2>
             <p className="text-gray-500 text-xs mb-4">
-              Her coin için saniyede bir kez bu 8 aşama çalışır. Sistem aynı anda 100 coini takip eder ve yalnızca tüm filtrelerden geçenlerde pozisyon açar.
+              Her coin için saniyede bir kez bu 8 aşama çalışır. Sistem aynı anda 500+ coini paralel olarak takip eder ve yalnızca tüm filtrelerden geçenlerde pozisyon açar.
             </p>
             <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
               {PIPELINE_STEPS.map((step, i) => (
