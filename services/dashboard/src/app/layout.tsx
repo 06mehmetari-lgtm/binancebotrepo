@@ -9,6 +9,7 @@ const NAV_LINKS = [
   { href: '/agents', label: 'Agents' },
   { href: '/evolution', label: 'Evolution' },
   { href: '/shadow', label: 'Shadow' },
+  { href: '/risk', label: 'Risk' },
 ]
 
 function NavLink({ href, label, active }: { href: string; label: string; active: boolean }) {
@@ -41,6 +42,7 @@ function Nav() {
         </div>
         <div className="ml-auto flex items-center gap-3 shrink-0">
           <span className="hidden sm:block text-xs text-gray-600 font-mono">USDM Futures</span>
+          <span className="hidden sm:inline-flex items-center gap-1 text-xs font-bold px-2 py-0.5 rounded bg-yellow-900/40 text-yellow-400 border border-yellow-700/50">PAPER</span>
           <span className="text-xs text-gray-700 font-mono">v2.0</span>
         </div>
       </div>
