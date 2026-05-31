@@ -24,6 +24,8 @@ export async function GET(req: Request) {
     pipeline.get(`oms:position:${symbol}`)
     pipeline.get('portfolio:state:v1')
     pipeline.get(`signal:latest:${symbol}`)
+    pipeline.get(`learn:profile:${symbol}`)
+    pipeline.get('learn:global:v1')
     const results = await pipeline.exec()
 
     const votesRaw = (safeJson(results?.[0]?.[1] as string | null) ?? []) as Array<Record<string, unknown>>
@@ -32,6 +34,8 @@ export async function GET(req: Request) {
     const openPosition = safeJson(results?.[3]?.[1] as string | null)
     const portfolioState = safeJson(results?.[4]?.[1] as string | null) as Record<string, unknown> | null
     const liveSignal = safeJson(results?.[5]?.[1] as string | null) as Record<string, unknown> | null
+    const learnProfile = safeJson(results?.[6]?.[1] as string | null)
+    const learnGlobal = safeJson(results?.[7]?.[1] as string | null)
 
     const votes = Array.isArray(votesRaw)
       ? votesRaw.map(v => ({
@@ -71,6 +75,8 @@ export async function GET(req: Request) {
             has_position: liveSignal.has_position,
           }
         : null,
+      learn_profile: learnProfile,
+      learn_global: learnGlobal,
     })
   } catch (e) {
     return NextResponse.json({ symbol: 'BTCUSDT', votes: [], verdict: null, genome: null }, { status: 500 })

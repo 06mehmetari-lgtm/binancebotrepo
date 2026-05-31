@@ -248,6 +248,7 @@ flowchart TB
 
 ### P1 — 2–4 hafta
 
+- [x] **`learning_engine`** — sürekli davranış öğrenme (2sn tarama + `ch:features` pub/sub)
 - [x] Shadow `promotion_ready` → `system:promotion:status` → OMS live gate (`LIVE_TRADING_CONFIRMED` + `DRY_RUN=false`)
 - [x] Postgres `trades` kalıcı yazım (OMS/shadow `trade_store.py`)
 - Signal validator: liquidity sweep, funding spike, OB imbalance shock

@@ -14,6 +14,15 @@ interface AgentData {
   open_position?: OpenPosition | null
   portfolio?: { total_open: number; long_positions: number; short_positions: number } | null
   live_signal?: { direction: string; confidence: number; trade_action?: string; has_position?: boolean } | null
+  learn_profile?: {
+    current_regime?: string
+    best_entry_hint?: string
+    avoid_hint?: string
+    drivers?: { factor: string; effect: string; win_rate: number; avg_move_pct: number; samples: number }[]
+    regime_transitions?: { transition: string; up_bias: number; samples: number }[]
+    updates?: number
+  } | null
+  learn_global?: { symbols_tracked?: number; message?: string; top_drivers?: { factor: string; avg_win_rate: number }[] } | null
 }
 
 const SIG_COLOR: Record<string, string> = { long: 'text-green-400', short: 'text-red-400', flat: 'text-gray-400' }
@@ -223,13 +232,17 @@ export default function AgentsPage() {
   const votes = data.votes ?? []
   const verdict = data.verdict
   const genome = data.genome ?? null
+  const learnProfile = data.learn_profile
+  const learnGlobal = data.learn_global
 
   return (
     <div className="space-y-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-white font-bold text-base">9-Agent Debate System</h1>
-          <p className="text-gray-500 text-xs mt-0.5">Multi-agent LLM deliberation (Groq → Ollama → rule-based fallback) · each agent has a distinct role and perspective</p>
+          <p className="text-gray-500 text-xs mt-0.5">
+            Sürekli öğrenen AI (learning_engine) + 9 ajan · rejim/faktör tepkileri her 2sn güncellenir
+          </p>
         </div>
         <span className="text-xs text-gray-600">{lastUpdate ? `${lastUpdate} · 10s` : '10s refresh'}</span>
       </div>
@@ -277,6 +290,44 @@ export default function AgentsPage() {
           )}
         </div>
       </div>
+
+      {learnGlobal && (
+        <div className="bg-purple-950/30 border border-purple-700/40 rounded-xl px-4 py-3 text-xs text-purple-200">
+          <span className="font-bold text-purple-300">🧠 Sürekli öğrenme aktif</span>
+          {' — '}{learnGlobal.message ?? `${learnGlobal.symbols_tracked ?? 0} coin izleniyor`}
+        </div>
+      )}
+
+      {learnProfile && (
+        <div className="bg-gray-900 border border-purple-800/50 rounded-xl p-4 space-y-3">
+          <h2 className="text-purple-400 font-semibold text-sm uppercase tracking-wider">
+            Canlı davranış profili — {symbol}
+          </h2>
+          <p className="text-gray-300 text-sm">
+            <span className="text-gray-500">Rejim:</span> {learnProfile.current_regime ?? '—'}
+            {' · '}
+            <span className="text-green-400">Al: {learnProfile.best_entry_hint}</span>
+            {' · '}
+            <span className="text-red-400">Kaçın: {learnProfile.avoid_hint}</span>
+          </p>
+          {learnProfile.drivers && learnProfile.drivers.length > 0 && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              {learnProfile.drivers.map(d => (
+                <div key={d.factor} className="bg-gray-800/60 rounded-lg px-3 py-2 text-xs">
+                  <span className="text-white font-mono">{d.factor}</span>
+                  <span className={d.effect === 'up' ? ' text-green-400' : d.effect === 'down' ? ' text-red-400' : ' text-gray-400'}>
+                    {' → '}{d.effect} %{d.avg_move_pct.toFixed(2)}
+                  </span>
+                  <span className="text-gray-500 block">WR {(d.win_rate * 100).toFixed(0)}% · n={d.samples}</span>
+                </div>
+              ))}
+            </div>
+          )}
+          <p className="text-gray-600 text-[10px]">
+            {learnProfile.updates ?? 0} gözlem · learning_engine coin tepkilerini saniye saniye kaydeder ve ajana besler
+          </p>
+        </div>
+      )}
 
       {(data.open_position || data.verdict?.trade_action === 'close' || data.live_signal?.trade_action === 'close') && (
         <div className="bg-orange-950/40 border border-orange-600/50 rounded-xl px-4 py-3 text-sm">

@@ -10,6 +10,7 @@ from signal_generator import SignalGenerator
 from kelly_calculator import KellyCalculator
 from signal_validator import SignalValidator
 from ensemble import fuse_sources
+from learn_adjust import adjust_confidence
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
@@ -144,6 +145,7 @@ async def generate_signal(redis: aioredis.Redis, symbol: str) -> dict | None:
     pipe.get(f"neat:best_genome:{symbol}")
     pipe.get(f"rl:signal:{symbol}")
     pipe.get(f"oms:position:{symbol}")
+    pipe.get(f"learn:profile:{symbol}")
     (
         context_raw,
         agents_raw,
@@ -152,6 +154,7 @@ async def generate_signal(redis: aioredis.Redis, symbol: str) -> dict | None:
         neat_raw,
         rl_raw,
         pos_raw,
+        learn_raw,
     ) = await pipe.execute()
 
     context = json.loads(context_raw) if context_raw else {}
@@ -181,6 +184,9 @@ async def generate_signal(redis: aioredis.Redis, symbol: str) -> dict | None:
         rl_dir,
         rl_conf,
     )
+    final_conf, learn_note = adjust_confidence(final_dir, final_conf, learn_raw)
+    if learn_note:
+        ensemble_diag["learn_adjust"] = learn_note
 
     signal_dict = {
         "symbol": symbol,

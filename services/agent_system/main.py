@@ -169,6 +169,37 @@ async def weight_update_loop(redis: aioredis.Redis):
         await asyncio.sleep(300)
 
 
+_learn_debate_at: dict[str, float] = {}
+LEARN_DEBATE_COOLDOWN = float(os.getenv("LEARN_DEBATE_COOLDOWN_SEC", "45"))
+
+
+async def learn_update_listener(redis: aioredis.Redis):
+    """Re-debate symbol when learning_engine publishes new behavioral profile."""
+    pubsub = redis.pubsub()
+    await pubsub.psubscribe("ch:learn:*")
+    log.info("agent_system: listening for learning profile updates")
+    async for msg in pubsub.listen():
+        if msg.get("type") != "pmessage":
+            continue
+        try:
+            sym = msg.get("data")
+            if isinstance(sym, bytes):
+                sym = sym.decode()
+            symbol = str(sym).upper()
+            if not symbol.endswith("USDT"):
+                ch = msg.get("channel", b"")
+                if isinstance(ch, bytes):
+                    ch = ch.decode()
+                symbol = ch.split(":")[-1].upper()
+            now = time.time()
+            if now - _learn_debate_at.get(symbol, 0) < LEARN_DEBATE_COOLDOWN:
+                continue
+            _learn_debate_at[symbol] = now
+            await run_debate_for_symbol(redis, symbol)
+        except Exception as e:
+            log.debug(f"learn listener: {e}")
+
+
 async def trade_feedback_loop(redis: aioredis.Redis):
     """Adjust agent weights when shadow/OMS closes a trade."""
     pubsub = redis.pubsub()
@@ -276,10 +307,12 @@ async def main():
             await asyncio.sleep(AGENT_CYCLE_SEC)
 
     redis_fb = await aioredis.from_url(REDIS_URL)
+    redis_learn = await aioredis.from_url(REDIS_URL)
     await asyncio.gather(
         debate_loop(),
         weight_update_loop(redis),
         trade_feedback_loop(redis_fb),
+        learn_update_listener(redis_learn),
     )
 
 

@@ -30,6 +30,12 @@ docker compose up -d
 # Adım 5 — durumu kontrol et:
 prom-status
 
+# Güncelleme (git repo ~/binancebotrepo):
+cd ~/binancebotrepo && git pull origin master
+docker compose build learning_engine agent_system signal_engine dashboard
+docker compose up -d learning_engine agent_system signal_engine dashboard
+docker compose logs -f learning_engine --tail 30
+
 ════════════════════════════════════════════════════
 ERIŞIM ADRESLERİ
 ════════════════════════════════════════════════════

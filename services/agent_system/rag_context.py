@@ -8,9 +8,29 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-async def fetch_trade_lessons(redis, symbol: str, limit: int = 5) -> list[str]:
-    """Return short lesson strings from recent closed trades for this symbol."""
+async def fetch_trade_lessons(redis, symbol: str, limit: int = 8) -> list[str]:
+    """Return short lesson strings from trades, backtest, and live learning engine."""
     try:
+        learn_raw = await redis.get(f"learn:profile:{symbol}")
+        if learn_raw:
+            try:
+                prof = json.loads(learn_raw)
+                hint = (
+                    f"[Öğrenen AI] Rejim={prof.get('current_regime')} | "
+                    f"Al:{prof.get('best_entry_hint', '')} | "
+                    f"Kaçın:{prof.get('avoid_hint', '')}"
+                )
+                lessons_prefill = [hint]
+                for d in prof.get("drivers", [])[:2]:
+                    lessons_prefill.append(
+                        f"Faktör {d.get('factor')}: %{d.get('avg_move_pct', 0):.2f} "
+                        f"(WR {float(d.get('win_rate', 0))*100:.0f}%)"
+                    )
+            except json.JSONDecodeError:
+                lessons_prefill = []
+        else:
+            lessons_prefill = []
+
         raw = await redis.lrange(f"trade:lessons:{symbol}", 0, limit - 1)
         lessons: list[str] = []
         for item in raw or []:
@@ -38,7 +58,14 @@ async def fetch_trade_lessons(redis, symbol: str, limit: int = 5) -> list[str]:
                     lessons.insert(0, f"[Backtest 1y] {line}")
             except json.JSONDecodeError:
                 pass
-        return lessons
+        # Deduplicate while keeping learning profile on top
+        seen: set[str] = set()
+        merged: list[str] = []
+        for line in lessons_prefill + lessons:
+            if line and line not in seen:
+                seen.add(line)
+                merged.append(line)
+        return merged[:limit]
     except Exception as e:
         logger.debug(f"trade lessons read failed for {symbol}: {e}")
         return []

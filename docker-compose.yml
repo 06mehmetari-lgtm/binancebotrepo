@@ -172,6 +172,24 @@ services:
     networks:
       - prometheus_net
 
+  learning_engine:
+    build: ./services/learning_engine
+    container_name: prometheus_learning
+    restart: unless-stopped
+    environment:
+      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379
+      - LEARNING_SCAN_SEC=${LEARNING_SCAN_SEC:-2}
+      - LEARNING_SCAN_BATCH=${LEARNING_SCAN_BATCH:-100}
+      - LEARNING_CONCURRENCY=${LEARNING_CONCURRENCY:-80}
+      - LEARNING_PROFILE_EVERY_N=${LEARNING_PROFILE_EVERY_N:-15}
+      - LEARNING_GLOBAL_SYNC_SEC=${LEARNING_GLOBAL_SYNC_SEC:-30}
+    depends_on:
+      - redis
+      - feature_engine
+      - context_engine
+    networks:
+      - prometheus_net
+
   neat_evolution:
     build: ./services/neat_evolution
     container_name: prometheus_neat
