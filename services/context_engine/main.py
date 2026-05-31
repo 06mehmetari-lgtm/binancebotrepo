@@ -20,6 +20,7 @@ regime_classifier = RegimeClassifier()
 crisis_detector = CrisisDetector()
 
 FEATURE_HISTORY: dict[str, list] = {}
+LAST_REGIME: dict[str, str] = {}
 
 
 async def discover_symbols(redis: aioredis.Redis) -> list[str]:
@@ -105,6 +106,23 @@ async def main():
             if ctx:
                 await redis.set(f"context:latest:{symbol}", json.dumps(ctx), ex=120)
                 await redis.publish(f"ch:context:{symbol}", symbol)
+                # Push regime change to activity feed
+                new_regime = ctx.get("regime", "unknown")
+                old_regime = LAST_REGIME.get(symbol)
+                if old_regime and old_regime != new_regime and new_regime != "unknown":
+                    LAST_REGIME[symbol] = new_regime
+                    event = json.dumps({
+                        "type": "regime_change",
+                        "time": time.time(),
+                        "symbol": symbol,
+                        "regime": new_regime,
+                        "prev_regime": old_regime,
+                        "crisis_level": ctx.get("crisis_level", 0),
+                    })
+                    await redis.lpush("activity:feed", event)
+                    await redis.ltrim("activity:feed", 0, 199)
+                elif not old_regime:
+                    LAST_REGIME[symbol] = new_regime
         await asyncio.sleep(2)
 
 

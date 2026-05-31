@@ -4,10 +4,19 @@ import { useEffect, useRef, useState } from 'react'
 interface ActivityEvent {
   time: number
   type: string
-  symbol: string
-  direction: string
-  confidence: number
-  source: string
+  symbol?: string
+  direction?: string
+  confidence?: number
+  source?: string
+  rsi?: number
+  label?: string
+  regime?: string
+  prev_regime?: string
+  crisis_level?: number
+  total?: number
+  long?: number
+  short?: number
+  flat?: number
 }
 
 interface Coin {
@@ -322,25 +331,79 @@ export default function ScannerPage() {
         <div ref={activityRef} className="divide-y divide-gray-800/50 max-h-72 overflow-y-auto">
           {activity.length === 0 ? (
             <div className="px-4 py-6 text-center">
-              <p className="text-gray-500 text-sm">Henüz sinyal olayı yok</p>
-              <p className="text-gray-600 text-xs mt-1">signal_engine başladıktan sonra burada görünecek</p>
+              <p className="text-gray-500 text-sm">Sistem çalışıyor — ilk tarama özeti ~60 saniye içinde gelecek</p>
+              <p className="text-gray-600 text-xs mt-1">Aktif sinyal veya RSI uyarısı oluşunca burada anlık görünür</p>
             </div>
           ) : activity.map((ev, i) => {
+            if (ev.type === 'scan_summary') {
+              return (
+                <div key={i} className="flex items-center gap-3 px-4 py-2 text-xs bg-gray-800/20">
+                  <span className="text-blue-400 shrink-0">⟳</span>
+                  <div className="flex-1 text-gray-400">
+                    <span className="font-semibold text-blue-300">Tarama Tamamlandı</span>
+                    <span className="ml-2">{ev.total} coin</span>
+                    {(ev.long ?? 0) > 0 && <span className="ml-2 text-green-400">▲ {ev.long} LONG</span>}
+                    {(ev.short ?? 0) > 0 && <span className="ml-2 text-red-400">▼ {ev.short} SHORT</span>}
+                    {(ev.long ?? 0) === 0 && (ev.short ?? 0) === 0 && <span className="ml-2 text-gray-600">sinyal yok</span>}
+                  </div>
+                  <span className="text-gray-600 shrink-0 font-mono">{timeAgo(ev.time)}</span>
+                </div>
+              )
+            }
+            if (ev.type === 'regime_change') {
+              const regimeColor: Record<string, string> = {
+                trending_up: 'text-green-400', trending_down: 'text-red-400',
+                volatile: 'text-orange-400', ranging: 'text-blue-400',
+              }
+              return (
+                <div key={i} className="flex items-center gap-3 px-4 py-2 text-xs bg-purple-950/10">
+                  <span className="shrink-0">🔄</span>
+                  <div className="flex-1 min-w-0">
+                    <span className="font-bold text-white">{(ev.symbol ?? '').replace('USDT', '')}</span>
+                    <span className="ml-1.5 text-gray-500">rejim değişti:</span>
+                    <span className="ml-1.5 text-gray-600 line-through">{ev.prev_regime?.replace('_', ' ')}</span>
+                    <span className="mx-1 text-gray-600">→</span>
+                    <span className={`font-semibold ${regimeColor[ev.regime ?? ''] ?? 'text-gray-400'}`}>
+                      {ev.regime?.replace('_', ' ')}
+                    </span>
+                  </div>
+                  <span className="text-gray-600 shrink-0 font-mono">{timeAgo(ev.time)}</span>
+                </div>
+              )
+            }
+            if (ev.type === 'rsi_alert') {
+              const oversold = (ev.rsi ?? 50) < 50
+              return (
+                <div key={i} className={`flex items-center gap-3 px-4 py-2.5 text-xs ${oversold ? 'bg-green-950/10' : 'bg-red-950/10'}`}>
+                  <span className="text-base shrink-0">{oversold ? '📉' : '📈'}</span>
+                  <div className="flex-1 min-w-0">
+                    <span className="font-bold text-white">{(ev.symbol ?? '').replace('USDT', '')}</span>
+                    <span className={`ml-1.5 font-semibold ${oversold ? 'text-green-400' : 'text-red-400'}`}>
+                      RSI {ev.rsi?.toFixed(1)}
+                    </span>
+                    <span className="ml-1.5 text-gray-500">{ev.label}</span>
+                  </div>
+                  <span className="text-gray-600 shrink-0 font-mono">{timeAgo(ev.time)}</span>
+                </div>
+              )
+            }
+            // signal event
             const isLong = ev.direction === 'long'
             const isShort = ev.direction === 'short'
             return (
               <div key={i} className={`flex items-center gap-3 px-4 py-2.5 text-xs ${
-                isLong ? 'bg-green-950/10' : isShort ? 'bg-red-950/10' : ''
+                isLong ? 'bg-green-950/15' : isShort ? 'bg-red-950/15' : ''
               }`}>
-                <span className={`text-base shrink-0 ${isLong ? '' : isShort ? '' : ''}`}>
-                  {isLong ? '🟢' : isShort ? '🔴' : '⬜'}
-                </span>
+                <span className="text-base shrink-0">{isLong ? '🟢' : isShort ? '🔴' : '⬜'}</span>
                 <div className="flex-1 min-w-0">
-                  <span className="font-bold text-white">{ev.symbol.replace('USDT','')}</span>
-                  <span className={`ml-1.5 font-semibold uppercase ${isLong ? 'text-green-400' : isShort ? 'text-red-400' : 'text-gray-500'}`}>
+                  <span className="font-bold text-white">{(ev.symbol ?? '').replace('USDT', '')}</span>
+                  <span className={`ml-1.5 font-bold uppercase ${isLong ? 'text-green-400' : isShort ? 'text-red-400' : 'text-gray-500'}`}>
                     {ev.direction}
                   </span>
-                  <span className="ml-1.5 text-gray-500">{(ev.confidence * 100).toFixed(0)}% · {ev.source}</span>
+                  <span className="ml-1.5 text-gray-500">
+                    {((ev.confidence ?? 0) * 100).toFixed(0)}% · {ev.source}
+                    {ev.rsi != null && <span className="ml-1">· RSI {ev.rsi}</span>}
+                  </span>
                 </div>
                 <span className="text-gray-600 shrink-0 font-mono">{timeAgo(ev.time)}</span>
               </div>

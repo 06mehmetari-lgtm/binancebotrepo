@@ -39,17 +39,9 @@ async def discover_symbols(redis: aioredis.Redis) -> list[str]:
     )
 
 
-async def push_activity(redis: aioredis.Redis, event_type: str, symbol: str,
-                        direction: str, confidence: float, source: str):
-    event = json.dumps({
-        "time": time.time(),
-        "type": event_type,
-        "symbol": symbol,
-        "direction": direction,
-        "confidence": round(confidence, 3),
-        "source": source,
-    })
-    await redis.lpush("activity:feed", event)
+async def push_activity(redis: aioredis.Redis, event: dict):
+    event.setdefault("time", time.time())
+    await redis.lpush("activity:feed", json.dumps(event))
     await redis.ltrim("activity:feed", 0, ACTIVITY_MAX - 1)
 
 
@@ -87,6 +79,9 @@ async def generate_signal(redis: aioredis.Redis, symbol: str) -> dict | None:
         "drift_status": context.get("drift_status", features.get("drift_status", "STABLE")),
         "regime": context.get("regime", "unknown"),
         "agent_count": len(agent_verdicts),
+        "rsi": round(float(features.get("rsi_14", 50) or 50), 1),
+        "macd_hist": round(float(features.get("macd_hist", 0) or 0), 4),
+        "volume_ratio": round(float(features.get("volume_ratio", 1) or 1), 2),
     }
 
     is_valid, reason = validator.validate(signal_dict, context)
@@ -128,30 +123,65 @@ async def main():
             last_refresh = time.time()
 
         signal_count = 0
+        all_sigs: list[dict] = []
+
         for symbol in list(active_set):
             try:
                 sig = await generate_signal(redis, symbol)
                 if sig is not None:
-                    # Always write — scanner/dashboard needs all coins visible
                     await redis.set(f"signal:latest:{symbol}", json.dumps(sig), ex=90)
                     await redis.publish(f"ch:signal:{symbol}", symbol)
-                    # Only count/log/feed actionable signals
+                    all_sigs.append(sig)
                     if sig["direction"] != "flat" and sig.get("is_valid"):
                         signal_count += 1
                         log.info(
                             f"[{symbol}] {sig['direction'].upper()} "
                             f"conf={sig['confidence']:.2f} src={sig['source']}"
                         )
-                        await push_activity(
-                            redis, "signal", symbol,
-                            sig["direction"], sig["confidence"], sig["source"]
-                        )
+                        await push_activity(redis, {
+                            "type": "signal",
+                            "symbol": symbol,
+                            "direction": sig["direction"],
+                            "confidence": sig["confidence"],
+                            "source": sig["source"],
+                            "rsi": sig.get("rsi"),
+                            "regime": sig.get("regime"),
+                        })
             except Exception as e:
                 log.error(f"Signal error for {symbol}: {e}")
 
         cycle += 1
-        if cycle % 12 == 0:  # log summary every ~60s
+        if cycle % 12 == 0:  # every ~60 seconds
+            long_c = sum(1 for s in all_sigs if s["direction"] == "long" and s.get("is_valid"))
+            short_c = sum(1 for s in all_sigs if s["direction"] == "short" and s.get("is_valid"))
             log.info(f"Cycle {cycle}: {len(active_set)} symbols, {signal_count} active signals")
+
+            # Push scan summary to activity feed
+            await push_activity(redis, {
+                "type": "scan_summary",
+                "total": len(active_set),
+                "long": long_c,
+                "short": short_c,
+                "flat": len(all_sigs) - long_c - short_c,
+            })
+
+            # Push top RSI extremes (most oversold / overbought)
+            extremes = sorted(
+                [s for s in all_sigs if s.get("rsi") is not None and (s["rsi"] < 32 or s["rsi"] > 68)],
+                key=lambda s: abs(s["rsi"] - 50),
+                reverse=True,
+            )[:5]
+            for s in extremes:
+                rsi = s["rsi"]
+                await push_activity(redis, {
+                    "type": "rsi_alert",
+                    "symbol": s["symbol"],
+                    "direction": s["direction"],
+                    "confidence": s["confidence"],
+                    "source": "rsi_scan",
+                    "rsi": rsi,
+                    "label": "Aşırı Satış" if rsi < 32 else "Aşırı Alış",
+                })
 
         await asyncio.sleep(5)
 
