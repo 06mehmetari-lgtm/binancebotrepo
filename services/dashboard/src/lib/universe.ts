@@ -34,6 +34,15 @@ export async function getUniverseSnapshot<T>(redis: Redis): Promise<T | null> {
 }
 
 /** Non-blocking key discovery — never use KEYS at scale. */
+/** /api/signals returns a bare array or { signals: [] } */
+export function parseSignalsResponse(data: unknown): unknown[] {
+  if (Array.isArray(data)) return data
+  if (data && typeof data === 'object' && Array.isArray((data as { signals?: unknown[] }).signals)) {
+    return (data as { signals: unknown[] }).signals
+  }
+  return []
+}
+
 export async function scanKeys(redis: Redis, pattern: string): Promise<string[]> {
   const keys: string[] = []
   let cursor = '0'

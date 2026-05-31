@@ -42,14 +42,44 @@ interface TradeMemory {
   confidence?: number
 }
 
+interface LearnProfile {
+  symbol: string
+  current_regime?: string
+  best_entry_hint?: string
+  avoid_hint?: string
+  updates?: number
+  drivers?: { factor: string; effect: string; win_rate: number; avg_move_pct: number; samples: number }[]
+}
+
+interface LearnLesson {
+  symbol: string
+  text: string
+  source: string
+  ts: number
+  category?: string
+}
+
 interface MemoryData {
   activity: ActivityEvent[]
   active_signals: ActiveSignal[]
   signal_summary: {
     total: number; long: number; short: number; flat: number
+    close_actions?: number; hold_actions?: number
     avg_confidence: number; tracked_symbols: number
     context_symbols: number; agent_symbols: number
+    snapshot_at?: number | null
   }
+  learning?: {
+    global?: { message?: string; symbols_tracked?: number; top_drivers?: { factor: string; avg_win_rate: number }[] }
+    profiles?: LearnProfile[]
+    profiles_count?: number
+    recent_lessons?: LearnLesson[]
+    backtest_log?: { msg: string; level: string; ts: number }[]
+    engine_active?: boolean
+    last_heartbeat?: number | null
+  }
+  scanning?: { active: boolean; last_scan?: number | null; universe_size?: number }
+  services?: { name: string; ok: boolean }[]
   drift_summary: Record<string, number>
   ws_status: { status: string; symbols?: number } | null
   shadow_leaderboard: { shadow_id: string; sharpe: number; win_rate: number; trades: number; return: number; promotion_ready: boolean }[]
@@ -246,7 +276,7 @@ export default function MemoryPage() {
   const [data, setData] = useState<Partial<MemoryData>>({})
   const [loading, setLoading] = useState(true)
   const [lastUpdate, setLastUpdate] = useState('')
-  const [tab, setTab] = useState<'live' | 'pipeline' | 'memories' | 'stats'>('live')
+  const [tab, setTab] = useState<'live' | 'pipeline' | 'learning' | 'memories' | 'stats'>('live')
   const feedRef = useRef<HTMLDivElement>(null)
 
   const fetchData = async () => {
@@ -276,6 +306,9 @@ export default function MemoryPage() {
   const winRegs = Object.entries(data.win_regimes ?? {}).sort((a, b) => b[1] - a[1])
   const wsConnected = (data.ws_status as { status?: string } | null)?.status === 'CONNECTED'
   const crisis = currentState?.crisis_level ?? 0
+  const learning = data.learning
+  const scanning = data.scanning
+  const activeSignalCount = (summary?.long ?? 0) + (summary?.short ?? 0) + (summary?.close_actions ?? 0) + (summary?.hold_actions ?? 0)
 
   return (
     <div className="space-y-4">
@@ -284,29 +317,39 @@ export default function MemoryPage() {
           <h1 className="text-white font-bold text-base">Sistem İzleme</h1>
           <p className="text-gray-500 text-xs mt-0.5">Yapay zekanın anlık kararları, hafızası ve öğrenim istatistikleri</p>
         </div>
-        <div className="flex items-center gap-3 shrink-0">
+        <div className="flex items-center gap-3 shrink-0 flex-wrap justify-end">
+          <span className={`flex items-center gap-1.5 text-xs font-semibold ${scanning?.active ? 'text-green-400' : 'text-yellow-400'}`}>
+            <span className={`w-1.5 h-1.5 rounded-full ${scanning?.active ? 'bg-green-400 animate-pulse' : 'bg-yellow-500'}`} />
+            {scanning?.active ? `TARAMA AKTİF · ${scanning.universe_size ?? 0} coin` : 'Tarama bekleniyor'}
+          </span>
           <span className={`flex items-center gap-1.5 text-xs font-semibold ${wsConnected ? 'text-green-400' : 'text-gray-500'}`}>
-            <span className={`w-1.5 h-1.5 rounded-full ${wsConnected ? 'bg-green-400 animate-pulse' : 'bg-gray-600'}`} />
+            <span className={`w-1.5 h-1.5 rounded-full ${wsConnected ? 'bg-green-400' : 'bg-gray-600'}`} />
             WS {wsConnected ? 'BAĞLI' : 'BEKLE'}
+          </span>
+          <span className={`text-xs font-semibold ${learning?.engine_active ? 'text-purple-400' : 'text-gray-600'}`}>
+            🧠 Öğrenme {learning?.engine_active ? 'AKTİF' : '—'}
           </span>
           <span className="text-xs text-gray-600">{lastUpdate ? `${lastUpdate} · 5s` : '5s'}</span>
         </div>
       </div>
 
       {/* Summary Stats */}
-      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-2">
+      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-2">
         <StatPill label="Takip Edilen" value={summary?.tracked_symbols ?? 0} color="text-blue-400" />
-        <StatPill label="Aktif Sinyal" value={summary?.long ?? 0 + (summary?.short ?? 0)} color="text-orange-400" />
+        <StatPill label="Aktif Sinyal" value={activeSignalCount} color="text-orange-400" />
         <StatPill label="Long" value={summary?.long ?? 0} color="text-green-400" />
         <StatPill label="Short" value={summary?.short ?? 0} color="text-red-400" />
         <StatPill label="Ort Güven" value={summary?.avg_confidence ? `${Math.round(summary.avg_confidence * 100)}%` : '—'} color={(summary?.avg_confidence ?? 0) >= 0.7 ? 'text-green-400' : 'text-orange-400'} />
+        <StatPill label="Kapat" value={summary?.close_actions ?? 0} color="text-yellow-400" />
+        <StatPill label="Öğrenilen Coin" value={learning?.profiles_count ?? 0} color="text-purple-400" />
         <StatPill label="Kriz" value={`L${crisis}`} color={CRISIS_COLORS[crisis] ?? 'text-green-400'} />
       </div>
 
       {/* Tab Selector */}
-      <div className="flex gap-1 bg-gray-900/60 rounded-lg p-1 border border-gray-800/60">
+      <div className="flex gap-1 bg-gray-900/60 rounded-lg p-1 border border-gray-800/60 flex-wrap">
         {([
           { key: 'live', label: '🔴 Canlı İzleme' },
+          { key: 'learning', label: '🧬 AI Öğrenmesi' },
           { key: 'pipeline', label: '⚙️ Karar Süreci' },
           { key: 'memories', label: '🧠 İşlem Hafızası' },
           { key: 'stats', label: '📊 İstatistikler' },
@@ -341,7 +384,11 @@ export default function MemoryPage() {
               {activity.length === 0 ? (
                 <div className="p-8 text-center">
                   <p className="text-gray-500 text-sm">Aktivite bekleniyor...</p>
-                  <p className="text-gray-600 text-xs mt-1">Signal engine her 5 saniyede bir tarama yapar</p>
+                  <p className="text-gray-600 text-xs mt-1">
+                    {scanning?.active
+                      ? `${scanning.universe_size} coin taranıyor — sinyal üretilince burada görünür`
+                      : 'signal_engine ve learning_engine konteynerlerini başlatın'}
+                  </p>
                 </div>
               ) : (
                 activity.map((ev, i) => <ActivityRow key={i} ev={ev} />)
@@ -446,6 +493,95 @@ export default function MemoryPage() {
               </div>
             )}
           </div>
+        </div>
+      )}
+
+      {/* TAB: Learning */}
+      {tab === 'learning' && (
+        <div className="space-y-4">
+          {learning?.global && (
+            <div className="bg-purple-950/30 border border-purple-700/40 rounded-xl px-4 py-3">
+              <p className="text-purple-300 font-bold text-sm">Global öğrenme özeti</p>
+              <p className="text-purple-100/80 text-sm mt-1">{learning.global.message}</p>
+              {learning.global.top_drivers && learning.global.top_drivers.length > 0 && (
+                <div className="flex flex-wrap gap-2 mt-2">
+                  {learning.global.top_drivers.map(d => (
+                    <span key={d.factor} className="text-xs bg-gray-900/80 px-2 py-1 rounded text-gray-300">
+                      {d.factor} · WR {(d.avg_win_rate * 100).toFixed(0)}%
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+            <div className="bg-gray-900 border border-gray-800 rounded-lg overflow-hidden">
+              <div className="px-4 py-3 border-b border-gray-800">
+                <h2 className="text-purple-400 font-semibold text-sm uppercase tracking-wider">Son öğrenilen dersler</h2>
+                <p className="text-gray-600 text-xs mt-0.5">Canlı motor + backtest + işlem sonrası</p>
+              </div>
+              <div className="max-h-[480px] overflow-y-auto divide-y divide-gray-800/40">
+                {(learning?.recent_lessons ?? []).length === 0 ? (
+                  <p className="p-6 text-center text-gray-500 text-sm">Henüz ders yok — learning_engine başlatın</p>
+                ) : (
+                  learning!.recent_lessons!.map((les, i) => (
+                    <div key={i} className="px-4 py-3 hover:bg-gray-800/20 text-xs">
+                      <div className="flex justify-between gap-2 mb-1">
+                        <span className="font-bold text-white">{les.symbol}</span>
+                        <span className="text-gray-600 shrink-0">{timeAgo(les.ts)}</span>
+                      </div>
+                      <span className="text-[10px] text-purple-400 uppercase">{les.source}</span>
+                      <p className="text-gray-300 mt-1 leading-relaxed">{les.text}</p>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+
+            <div className="bg-gray-900 border border-gray-800 rounded-lg overflow-hidden">
+              <div className="px-4 py-3 border-b border-gray-800">
+                <h2 className="text-green-400 font-semibold text-sm uppercase tracking-wider">Coin davranış profilleri</h2>
+                <p className="text-gray-600 text-xs mt-0.5">{learning?.profiles_count ?? 0} coin için birikmiş model</p>
+              </div>
+              <div className="max-h-[480px] overflow-y-auto divide-y divide-gray-800/40">
+                {(learning?.profiles ?? []).length === 0 ? (
+                  <p className="p-6 text-center text-gray-500 text-sm">Profil oluşuyor (2–5 dk)</p>
+                ) : (
+                  learning!.profiles!.map(p => (
+                    <a key={p.symbol} href={`/coin/${p.symbol}`}
+                      className="block px-4 py-3 hover:bg-gray-800/20 text-xs">
+                      <div className="flex justify-between items-center mb-1">
+                        <span className="font-bold text-white">{p.symbol}</span>
+                        <span className="text-gray-500">{p.updates ?? 0} gözlem</span>
+                      </div>
+                      <p className="text-blue-400">Rejim: {p.current_regime ?? '—'}</p>
+                      <p className="text-green-400/90 mt-0.5">Al: {p.best_entry_hint}</p>
+                      <p className="text-red-400/90">Kaçın: {p.avoid_hint}</p>
+                      {p.drivers && p.drivers[0] && (
+                        <p className="text-gray-500 mt-1">
+                          En güçlü faktör: {p.drivers[0].factor} → {p.drivers[0].effect} (WR {(p.drivers[0].win_rate * 100).toFixed(0)}%)
+                        </p>
+                      )}
+                    </a>
+                  ))
+                )}
+              </div>
+            </div>
+          </div>
+
+          {learning?.backtest_log && learning.backtest_log.length > 0 && (
+            <div className="bg-gray-900 border border-gray-800 rounded-lg p-4">
+              <h3 className="text-orange-400 text-xs font-semibold uppercase tracking-wider mb-2">Backtest öğrenme logu</h3>
+              <div className="font-mono text-[11px] text-gray-400 space-y-1 max-h-40 overflow-y-auto">
+                {learning.backtest_log.map((l, i) => (
+                  <p key={i} className={l.level === 'success' ? 'text-green-400/80' : l.level === 'error' ? 'text-red-400/80' : ''}>
+                    [{new Date(l.ts * 1000).toLocaleTimeString('tr-TR')}] {l.msg}
+                  </p>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       )}
 

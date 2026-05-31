@@ -4,7 +4,20 @@ import { useEffect, useState } from 'react'
 interface Market { symbol: string; rsi_14: number; direction: string; confidence: number; regime: string; crisis_level: number; kelly_fraction: number; drift_status: string }
 interface Signal { symbol: string; direction: string; confidence: number; regime: string; crisis_level: number; drift_status: string; kelly_fraction: number; rsi?: number }
 interface Shadow { shadow_id: string; sharpe: number; win_rate: number; trades: number; return: number; promotion_ready: boolean; max_drawdown: number }
-interface Status { active_symbol_count: number; total_signals: number; avg_confidence: number; best_genome_fitness: number; fear_greed: { value: number; classification: string }; macro_vix: number; ws_status: { status: string; symbols?: number } | null; shadow: { leaderboard: Shadow[] } }
+interface Status {
+  active_symbol_count: number
+  total_signals: number
+  signal_long?: number
+  signal_short?: number
+  open_positions?: number
+  close_actions?: number
+  avg_confidence: number | null
+  best_genome_fitness: number | null
+  fear_greed: { value: number; classification: string }
+  macro_vix: number
+  ws_status: { status: string; symbols?: number } | null
+  shadow: { leaderboard: Shadow[] }
+}
 interface SymbolResult { win_rate_pct: number; sharpe_ratio: number; total_return_pct: number; max_drawdown_pct: number; total_trades: number; profit_factor: number }
 
 function parseVix(raw: unknown): number {
@@ -133,7 +146,7 @@ export default function Home() {
         fetch('/api/backtest').then(r => r.json()),
       ])
       setMarkets(Array.isArray(m) ? m : [])
-      setSignals(Array.isArray(s) ? s : [])
+      setSignals((Array.isArray(s) ? s : []) as Signal[])
       setShadow(Array.isArray(sh) ? sh : [])
       setStatus(st || {})
       const btMap = backtestBySymbol(bt)
@@ -200,7 +213,13 @@ export default function Home() {
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2.5">
         <StatCard label="WebSocket" value={wsStatus} sub={wsSymbols ? `${wsSymbols} symbols` : undefined} color={wsColor} dot={wsDot} />
         <StatCard label="Active Symbols" value={String(status.active_symbol_count ?? markets.length)} color="text-blue-400" />
-        <StatCard label="Active Signals" value={String(activeSignals.length)} sub={`of ${signals.length} total`} color="text-orange-400" />
+        <StatCard
+          label="Sinyaller"
+          value={`▲${status.signal_long ?? 0} ▼${status.signal_short ?? 0}`}
+          sub={`${signals.length || status.total_signals || 0} coin · kapat:${status.close_actions ?? 0}`}
+          color="text-orange-400"
+        />
+        <StatCard label="Açık Pozisyon" value={String(status.open_positions ?? 0)} color="text-yellow-400" />
         <StatCard label="Best Genome" value={status.best_genome_fitness?.toFixed(4) ?? '—'} color="text-purple-400" />
         <StatCard label="Fear & Greed" value={String(status.fear_greed?.value ?? '—')} sub={status.fear_greed?.classification} color="text-yellow-400" />
         <StatCard label="VIX" value={vixVal ? vixVal.toFixed(1) : '—'} sub={vixVal > 40 ? 'EXTREME' : vixVal > 25 ? 'ELEVATED' : 'NORMAL'} color={vixVal > 40 ? 'text-red-400 animate-pulse' : vixVal > 25 ? 'text-orange-400' : 'text-green-400'} />

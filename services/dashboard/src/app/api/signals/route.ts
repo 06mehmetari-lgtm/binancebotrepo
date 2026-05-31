@@ -9,20 +9,41 @@ export async function GET() {
     const symbols = await discoverSymbols(redis)
     if (symbols.length === 0) return NextResponse.json([])
 
+    const snapRaw = await redis.get('snapshot:universe:v1')
+
     const pipeline = redis.pipeline()
     for (const sym of symbols) {
       pipeline.get(`signal:latest:${sym}`)
+      pipeline.get(`features:latest:${sym}`)
     }
     const results = await pipeline.exec()
 
     const signals = []
+    const half = symbols.length
     for (let i = 0; i < symbols.length; i++) {
-      const raw = results?.[i]?.[1] as string | null
-      if (!raw) continue
-      try {
-        signals.push(JSON.parse(raw))
-      } catch {
-        // skip malformed entries
+      const sigRaw = results?.[i]?.[1] as string | null
+      const featRaw = results?.[half + i]?.[1] as string | null
+      if (sigRaw) {
+        try {
+          signals.push(JSON.parse(sigRaw))
+          continue
+        } catch { /* fall through */ }
+      }
+      if (featRaw) {
+        try {
+          const f = JSON.parse(featRaw)
+          signals.push({
+            symbol: symbols[i],
+            direction: 'flat',
+            confidence: 0,
+            regime: 'unknown',
+            drift_status: f.drift_status ?? 'STABLE',
+            kelly_fraction: 0,
+            crisis_level: 0,
+            source: 'pending',
+            rsi: f.rsi_14,
+          })
+        } catch { /* skip */ }
       }
     }
 

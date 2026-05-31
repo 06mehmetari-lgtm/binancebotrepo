@@ -207,12 +207,11 @@ export default function AgentsPage() {
       if (Array.isArray(d) && d.length > 0) { setSymbols(d); setSymbol(d[0]) }
     }).catch(() => setSymbols(['BTCUSDT', 'ETHUSDT', 'BNBUSDT']))
     // Fetch live signals to show direction badges
-    fetch('/api/signals').then(r => r.json()).then((d: any[]) => {
-      if (Array.isArray(d)) {
-        const map: Record<string, { direction: string; confidence: number }> = {}
-        d.forEach(s => { map[s.symbol] = { direction: s.direction, confidence: s.confidence } })
-        setSignals(map)
-      }
+    fetch('/api/signals').then(r => r.json()).then((d: unknown) => {
+      const arr = Array.isArray(d) ? d : (d as { signals?: { symbol: string; direction: string; confidence: number }[] })?.signals ?? []
+      const map: Record<string, { direction: string; confidence: number }> = {}
+      arr.forEach(s => { map[s.symbol] = { direction: s.direction, confidence: s.confidence } })
+      setSignals(map)
     }).catch(() => {})
   }, [])
 
