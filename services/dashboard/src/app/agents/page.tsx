@@ -7,7 +7,14 @@ interface Verdict {
   consensus_reasoning?: string; dissent_risk?: string
 }
 interface Genome { fitness: number; generation: number; nodes: number; connections: number; status?: string }
-interface AgentData { symbol: string; votes: Vote[]; verdict: Verdict; genome: Genome }
+interface OpenPosition { direction: string; size_usd?: number; entry_price?: number; entry_time?: number }
+interface AgentData {
+  symbol: string; votes: Vote[]; verdict: Verdict & { trade_action?: string; open_position?: OpenPosition }
+  genome: Genome
+  open_position?: OpenPosition | null
+  portfolio?: { total_open: number; long_positions: number; short_positions: number } | null
+  live_signal?: { direction: string; confidence: number; trade_action?: string; has_position?: boolean } | null
+}
 
 const SIG_COLOR: Record<string, string> = { long: 'text-green-400', short: 'text-red-400', flat: 'text-gray-400' }
 const SIG_BG: Record<string, string> = { long: 'bg-green-500', short: 'bg-red-500', flat: 'bg-gray-600' }
@@ -175,8 +182,18 @@ export default function AgentsPage() {
   const [data, setData] = useState<Partial<AgentData>>({})
   const [loading, setLoading] = useState(true)
   const [lastUpdate, setLastUpdate] = useState('')
+  const [portfolio, setPortfolio] = useState<{ total_open: number; long_positions: number; short_positions: number } | null>(null)
 
   useEffect(() => {
+    fetch('/api/portfolio/state').then(r => r.json()).then(p => {
+      if (p && typeof p.total_open === 'number') {
+        setPortfolio({
+          total_open: p.total_open,
+          long_positions: p.long_positions ?? 0,
+          short_positions: p.short_positions ?? 0,
+        })
+      }
+    }).catch(() => {})
     fetch('/api/symbols').then(r => r.json()).then(d => {
       if (Array.isArray(d) && d.length > 0) { setSymbols(d); setSymbol(d[0]) }
     }).catch(() => setSymbols(['BTCUSDT', 'ETHUSDT', 'BNBUSDT']))
@@ -226,10 +243,15 @@ export default function AgentsPage() {
             placeholder="Search symbol (e.g. BTC, ETH, SOL)..."
             className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-purple-500 transition-colors"
           />
-          <div className="flex items-center gap-2 text-xs text-gray-600 shrink-0">
-            <span className="text-green-400 font-semibold">▲ {Object.values(signals).filter(s => s.direction === 'long').length}</span>
-            <span className="text-red-400 font-semibold">▼ {Object.values(signals).filter(s => s.direction === 'short').length}</span>
-            <span>{symbols.length} tracked</span>
+          <div className="flex items-center gap-2 text-xs text-gray-600 shrink-0 flex-wrap justify-end">
+            <span className="text-green-400 font-semibold" title="Yeni long sinyaller">Sinyal ▲ {Object.values(signals).filter(s => s.direction === 'long').length}</span>
+            <span className="text-red-400 font-semibold" title="Yeni short sinyaller">Sinyal ▼ {Object.values(signals).filter(s => s.direction === 'short').length}</span>
+            {portfolio && portfolio.total_open > 0 && (
+              <span className="text-orange-400 font-bold border border-orange-700/50 px-2 py-0.5 rounded" title="Açık pozisyonlar (OMS+Shadow)">
+                Pozisyon {portfolio.total_open} (▲{portfolio.long_positions} ▼{portfolio.short_positions})
+              </span>
+            )}
+            <span>{symbols.length} coin</span>
           </div>
         </div>
 
@@ -255,6 +277,24 @@ export default function AgentsPage() {
           )}
         </div>
       </div>
+
+      {(data.open_position || data.verdict?.trade_action === 'close' || data.live_signal?.trade_action === 'close') && (
+        <div className="bg-orange-950/40 border border-orange-600/50 rounded-xl px-4 py-3 text-sm">
+          <span className="text-orange-300 font-bold">Senkron durum: </span>
+          {data.open_position ? (
+            <span className="text-orange-100">
+              Açık {data.open_position.direction?.toUpperCase()} pozisyon var
+              {data.verdict?.trade_action === 'close' || data.live_signal?.trade_action === 'close'
+                ? ' — AI çıkış (SAT/KAPAT) öneriyor, OMS kapatacak'
+                : data.verdict?.trade_action === 'hold'
+                  ? ' — AI tutma öneriyor'
+                  : ' — sinyal güncelleniyor'}
+            </span>
+          ) : (
+            <span className="text-gray-400">Pozisyon verisi yükleniyor...</span>
+          )}
+        </div>
+      )}
 
       {loading ? (
         <div className="text-center mt-10 text-gray-500 text-sm animate-pulse">Loading agent data...</div>
@@ -298,8 +338,15 @@ export default function AgentsPage() {
                 <div className="p-4 space-y-3">
                   <div className="flex items-center gap-4">
                     <span className={`text-2xl font-black ${SIG_COLOR[verdict.direction] ?? 'text-gray-400'}`}>
-                      {verdict.direction === 'long' ? '▲ LONG' : verdict.direction === 'short' ? '▼ SHORT' : '— FLAT'}
+                      {verdict.trade_action === 'close' ? '🛑 KAPAT' :
+                        verdict.direction === 'long' ? '▲ LONG' :
+                        verdict.direction === 'short' ? '▼ SHORT' : '— FLAT'}
                     </span>
+                    {verdict.trade_action && verdict.trade_action !== 'none' && (
+                      <span className="text-xs px-2 py-1 rounded bg-gray-800 text-orange-300 border border-orange-700/40">
+                        aksiyon: {verdict.trade_action}
+                      </span>
+                    )}
                     <div className="flex-1">
                       <div className="flex justify-between text-xs text-gray-500 mb-1">
                         <span>Consensus Confidence</span>

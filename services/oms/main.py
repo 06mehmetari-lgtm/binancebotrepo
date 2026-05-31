@@ -15,6 +15,7 @@ from audit_logger import AuditLogger
 from promotion_gate import check_live_trading_allowed, DRY_RUN
 from trade_store import schedule_save
 from emergency import EMERGENCY_CHANNEL, is_trading_halted
+from portfolio_sync import publish_portfolio_state
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
@@ -96,6 +97,7 @@ async def close_position(redis: aioredis.Redis, symbol: str, pos: dict, current_
         log.info(f"Position CLOSED: {symbol} {direction} pnl={pnl_pct:.2%} (${pnl_usdt:+.2f})")
 
     await redis.delete(f"oms:position:{symbol}")
+    await publish_portfolio_state(redis)
 
 
 async def get_price(redis: aioredis.Redis, symbol: str) -> float:
@@ -176,24 +178,31 @@ async def process_signal(redis: aioredis.Redis, symbol: str):
         return
     signal = json.loads(sig_raw)
 
-    if not signal.get("is_valid"):
+    direction = signal.get("direction", "flat")
+    trade_action = signal.get("trade_action", "")
+    pos_raw = await redis.get(f"oms:position:{symbol}")
+
+    # Flat / close signal → exit open position (fixes AI flat vs open position desync)
+    if direction == "flat" or trade_action == "close":
+        if pos_raw:
+            pos = json.loads(pos_raw)
+            price = await get_price(redis, symbol)
+            if price > 0:
+                log.info(f"[{symbol}] Closing position — signal={direction} action={trade_action}")
+                await close_position(redis, symbol, pos, price)
         return
 
-    direction = signal["direction"]
-    pos_raw = await redis.get(f"oms:position:{symbol}")
+    if not signal.get("is_valid"):
+        return
 
     # If we have a position in the opposite direction, close it first
     if pos_raw:
         pos = json.loads(pos_raw)
         if pos.get("direction") == direction:
             return  # Already positioned correctly
-        # Close opposite position
         price = await get_price(redis, symbol)
         if price > 0:
             await close_position(redis, symbol, pos, price)
-
-    if direction == "flat":
-        return
 
     confidence = float(signal.get("confidence", 0))
     kelly = float(signal.get("kelly_fraction", 0.01))
@@ -243,6 +252,7 @@ async def process_signal(redis: aioredis.Redis, symbol: str):
         "size_usd": size_usd, "entry_price": price,
         "entry_time": time.time(), "entry_signal": signal,
     }), ex=86400)
+    await publish_portfolio_state(redis)
 
 
 async def snapshot_portfolio(redis: aioredis.Redis):
@@ -280,6 +290,14 @@ async def main():
     symbols: list[str] = []
     last_refresh = 0.0
 
+    async def portfolio_sync_loop():
+        while True:
+            try:
+                await publish_portfolio_state(redis)
+            except Exception as e:
+                log.debug(f"portfolio sync: {e}")
+            await asyncio.sleep(5)
+
     async def signal_loop():
         nonlocal symbols, last_refresh
         while True:
@@ -299,6 +317,7 @@ async def main():
     redis_em = await aioredis.from_url(REDIS_URL)
     await asyncio.gather(
         signal_loop(),
+        portfolio_sync_loop(),
         snapshot_portfolio(redis),
         emergency_listener(redis_em),
     )

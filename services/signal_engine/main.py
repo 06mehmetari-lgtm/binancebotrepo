@@ -99,6 +99,15 @@ async def publish_universe_snapshot(redis: aioredis.Redis, all_sigs: list[dict],
     """O(1) dashboard read — avoids redis.keys on 500+ symbols."""
     long_c = sum(1 for s in all_sigs if s.get("direction") == "long" and s.get("is_valid"))
     short_c = sum(1 for s in all_sigs if s.get("direction") == "short" and s.get("is_valid"))
+    close_c = sum(1 for s in all_sigs if s.get("trade_action") == "close")
+    hold_c = sum(1 for s in all_sigs if s.get("trade_action") == "hold")
+    pf_raw = await redis.get("portfolio:state:v1")
+    pf_open = 0
+    if pf_raw:
+        try:
+            pf_open = int(json.loads(pf_raw).get("total_open", 0))
+        except json.JSONDecodeError:
+            pass
     payload = {
         "updated_at": time.time(),
         "symbols": sorted(symbols),
@@ -107,6 +116,9 @@ async def publish_universe_snapshot(redis: aioredis.Redis, all_sigs: list[dict],
             "long": long_c,
             "short": short_c,
             "flat": len(all_sigs) - long_c - short_c,
+            "close_actions": close_c,
+            "hold_actions": hold_c,
+            "open_positions": pf_open,
         },
         "signals": {
             s["symbol"]: {
@@ -131,6 +143,7 @@ async def generate_signal(redis: aioredis.Redis, symbol: str) -> dict | None:
     pipe.get(f"features:latest:{symbol}")
     pipe.get(f"neat:best_genome:{symbol}")
     pipe.get(f"rl:signal:{symbol}")
+    pipe.get(f"oms:position:{symbol}")
     (
         context_raw,
         agents_raw,
@@ -138,6 +151,7 @@ async def generate_signal(redis: aioredis.Redis, symbol: str) -> dict | None:
         features_raw,
         neat_raw,
         rl_raw,
+        pos_raw,
     ) = await pipe.execute()
 
     context = json.loads(context_raw) if context_raw else {}
@@ -189,6 +203,21 @@ async def generate_signal(redis: aioredis.Redis, symbol: str) -> dict | None:
     is_valid, reason = validator.validate(signal_dict, context)
     signal_dict["is_valid"] = is_valid
     signal_dict["reject_reason"] = "" if is_valid else reason
+    signal_dict["trade_action"] = "none"
+
+    open_pos = json.loads(pos_raw) if pos_raw else None
+    if open_pos:
+        pos_dir = open_pos.get("direction", "long")
+        signal_dict["has_position"] = True
+        signal_dict["position_direction"] = pos_dir
+        if final_dir == "flat":
+            signal_dict["trade_action"] = "close"
+            signal_dict["is_valid"] = True
+            signal_dict["reject_reason"] = ""
+        elif final_dir == pos_dir:
+            signal_dict["trade_action"] = "hold"
+        elif final_dir in ("long", "short") and final_dir != pos_dir:
+            signal_dict["trade_action"] = "reverse"
 
     if verdict:
         signal_dict["consensus_reasoning"] = verdict.get("consensus_reasoning") or verdict.get("reasoning", "")

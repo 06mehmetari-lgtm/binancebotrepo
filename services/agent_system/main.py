@@ -47,6 +47,16 @@ async def run_debate_for_symbol(redis: aioredis.Redis, symbol: str):
     features = json.loads(feat_raw)
     context = json.loads(ctx_raw)
 
+    pos_raw = await redis.get(f"oms:position:{symbol}")
+    open_position = None
+    if pos_raw:
+        try:
+            open_position = json.loads(pos_raw)
+            open_position["symbol"] = symbol
+            context["open_position"] = open_position
+        except json.JSONDecodeError:
+            pass
+
     lessons = await fetch_trade_lessons(redis, symbol)
     result = await debate.run_debate(symbol, features, context, lessons=lessons)
 
@@ -104,9 +114,28 @@ async def run_debate_for_symbol(redis: aioredis.Redis, symbol: str):
         min(result.final_confidence * 0.05, 0.05),
     )
 
+    trade_action = "none"
+    direction = result.final_signal
+    if open_position:
+        pos_dir = open_position.get("direction", "long")
+        if result.final_signal == "flat":
+            trade_action = "close"
+            consensus_reasoning = (
+                f"Açık {pos_dir.upper()} pozisyon aktif. AI çıkış öneriyor (FLAT). "
+                + consensus_reasoning
+            )
+        elif result.final_signal == pos_dir:
+            trade_action = "hold"
+            direction = pos_dir
+            consensus_reasoning = (
+                f"Açık {pos_dir.upper()} pozisyon — tutma: {consensus_reasoning}"
+            )
+        elif result.final_signal in ("long", "short") and result.final_signal != pos_dir:
+            trade_action = "reverse"
+
     verdict = {
         "symbol": symbol,
-        "direction": result.final_signal,
+        "direction": direction,
         "confidence": result.final_confidence,
         "consensus": result.consensus_strength,
         "reasoning": result.majority_reasoning,
@@ -117,6 +146,8 @@ async def run_debate_for_symbol(redis: aioredis.Redis, symbol: str):
         "trade_lessons": lessons,
         "vote_count": len(result.all_votes),
         "timestamp": time.time(),
+        "trade_action": trade_action,
+        "open_position": open_position,
     }
     await redis.set(f"agents:verdict:{symbol}", json.dumps(verdict), ex=180)
     await redis.publish(f"ch:agents:{symbol}", symbol)
@@ -210,11 +241,35 @@ async def main():
                 await asyncio.sleep(AGENT_CYCLE_SEC)
                 continue
 
+            priority: list[str] = []
+            pf_raw = await redis.get("portfolio:state:v1")
+            if pf_raw:
+                try:
+                    pf = json.loads(pf_raw)
+                    priority = list(
+                        dict.fromkeys(
+                            p["symbol"]
+                            for p in pf.get("positions", [])
+                            if p.get("source") == "oms" and p.get("symbol")
+                        )
+                    )
+                except json.JSONDecodeError:
+                    pass
+
             batch_n = min(AGENT_BATCH_SIZE, n)
-            batch = [
-                symbols_list[(cycle_offset + i) % n]
-                for i in range(batch_n)
-            ]
+            batch: list[str] = []
+            used: set[str] = set()
+            for sym in priority:
+                if sym in active_set and len(batch) < batch_n:
+                    batch.append(sym)
+                    used.add(sym)
+            idx = 0
+            while len(batch) < batch_n and idx < n:
+                sym = symbols_list[(cycle_offset + idx) % n]
+                if sym not in used:
+                    batch.append(sym)
+                    used.add(sym)
+                idx += 1
             cycle_offset = (cycle_offset + batch_n) % n
 
             await asyncio.gather(*[_debate_one(s) for s in batch])

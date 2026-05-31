@@ -21,11 +21,17 @@ export async function GET(req: Request) {
     pipeline.get(`agents:verdicts:${symbol}`)
     pipeline.get(`agents:verdict:${symbol}`)
     pipeline.get(`neat:best_genome:${symbol}`)
+    pipeline.get(`oms:position:${symbol}`)
+    pipeline.get('portfolio:state:v1')
+    pipeline.get(`signal:latest:${symbol}`)
     const results = await pipeline.exec()
 
     const votesRaw = (safeJson(results?.[0]?.[1] as string | null) ?? []) as Array<Record<string, unknown>>
     const verdictRaw = safeJson(results?.[1]?.[1] as string | null) as Record<string, unknown> | null
     const genome = safeJson(results?.[2]?.[1] as string | null) ?? null
+    const openPosition = safeJson(results?.[3]?.[1] as string | null)
+    const portfolioState = safeJson(results?.[4]?.[1] as string | null) as Record<string, unknown> | null
+    const liveSignal = safeJson(results?.[5]?.[1] as string | null) as Record<string, unknown> | null
 
     const votes = Array.isArray(votesRaw)
       ? votesRaw.map(v => ({
@@ -44,7 +50,28 @@ export async function GET(req: Request) {
         }
       : null
 
-    return NextResponse.json({ symbol, votes, verdict, genome })
+    return NextResponse.json({
+      symbol,
+      votes,
+      verdict,
+      genome,
+      open_position: openPosition,
+      portfolio: portfolioState
+        ? {
+            total_open: portfolioState.total_open,
+            long_positions: portfolioState.long_positions,
+            short_positions: portfolioState.short_positions,
+          }
+        : null,
+      live_signal: liveSignal
+        ? {
+            direction: liveSignal.direction,
+            confidence: liveSignal.confidence,
+            trade_action: liveSignal.trade_action,
+            has_position: liveSignal.has_position,
+          }
+        : null,
+    })
   } catch (e) {
     return NextResponse.json({ symbol: 'BTCUSDT', votes: [], verdict: null, genome: null }, { status: 500 })
   } finally {
