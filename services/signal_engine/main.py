@@ -90,10 +90,10 @@ async def generate_signal(redis: aioredis.Redis, symbol: str) -> dict | None:
     }
 
     is_valid, reason = validator.validate(signal_dict, context)
-    if not is_valid:
-        log.debug(f"Signal rejected for {symbol}: {reason}")
-        return None
+    signal_dict["is_valid"] = is_valid
+    signal_dict["reject_reason"] = "" if is_valid else reason
 
+    # Always return for dashboard/scanner visibility; OMS filters by is_valid
     return signal_dict
 
 
@@ -131,10 +131,12 @@ async def main():
         for symbol in list(active_set):
             try:
                 sig = await generate_signal(redis, symbol)
-                if sig:
+                if sig is not None:
+                    # Always write — scanner/dashboard needs all coins visible
                     await redis.set(f"signal:latest:{symbol}", json.dumps(sig), ex=90)
                     await redis.publish(f"ch:signal:{symbol}", symbol)
-                    if sig["direction"] != "flat":
+                    # Only count/log/feed actionable signals
+                    if sig["direction"] != "flat" and sig.get("is_valid"):
                         signal_count += 1
                         log.info(
                             f"[{symbol}] {sig['direction'].upper()} "

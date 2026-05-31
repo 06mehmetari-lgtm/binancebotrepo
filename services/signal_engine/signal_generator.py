@@ -107,7 +107,7 @@ class SignalGenerator:
         return Signal(
             symbol=symbol,
             direction=direction,
-            confidence=confidence,
+            confidence=round(confidence, 4),
             kelly_fraction=kelly_fraction,
             source=source,
             timestamp=int(time.time() * 1000),
