@@ -20,6 +20,7 @@ REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379")
 DRY_RUN = os.getenv("DRY_RUN", "true").lower() == "true"
 PORTFOLIO_VALUE = float(os.getenv("PORTFOLIO_VALUE", "10000"))
 SYMBOL_REFRESH_INTERVAL = 300
+MIN_HOLD_SECONDS = int(os.getenv("MIN_HOLD_SECONDS", "300"))  # 5 dk minimum pozisyon süresi
 
 # Running daily P&L (reset at UTC midnight)
 _daily_pnl = 0.0
@@ -30,13 +31,17 @@ async def discover_symbols(redis: aioredis.Redis) -> list[str]:
     """Discover tradeable symbols from live signal keys."""
     keys = await redis.keys("signal:latest:*")
     if keys:
-        return sorted(
-            (k.decode() if isinstance(k, bytes) else k).split(":")[-1]
-            for k in keys
-        )
+        seen: set[str] = set()
+        result: list[str] = []
+        for k in keys:
+            sym = (k.decode() if isinstance(k, bytes) else k).split(":")[-1].upper()
+            if sym not in seen:
+                seen.add(sym)
+                result.append(sym)
+        return sorted(result)
     # Fallback to env var
     raw = os.getenv("SYMBOLS", "BTCUSDT,ETHUSDT,BNBUSDT")
-    return [s.strip() for s in raw.split(",") if s.strip()]
+    return [s.strip().upper() for s in raw.split(",") if s.strip()]
 
 
 async def request_immunity_approval(redis: aioredis.Redis, order_dict: dict) -> bool:
@@ -68,6 +73,15 @@ async def close_position(redis: aioredis.Redis, symbol: str, pos: dict, current_
     entry_price = pos.get("entry_price", current_price)
     direction = pos.get("direction", "long")
     size_usd = pos.get("size_usd", 0)
+    trade_id = pos.get("trade_id", str(uuid.uuid4())[:8])
+
+    # Mükerrer kayıt önleme: aynı trade_id daha önce kaydedildiyse atla
+    dedup_key = f"oms:trade_closed:{trade_id}"
+    already_closed = await redis.get(dedup_key)
+    if already_closed:
+        log.warning(f"Duplicate close attempt for {symbol} trade_id={trade_id} — skipping")
+        await redis.delete(f"oms:position:{symbol}")
+        return
 
     if entry_price > 0 and size_usd > 0:
         if direction == "long":
@@ -79,12 +93,15 @@ async def close_position(redis: aioredis.Redis, symbol: str, pos: dict, current_
         _daily_pnl += pnl_usdt
         await redis.set("oms:daily_pnl", str(round(_daily_pnl, 4)))
         trade = {
+            "trade_id": trade_id,
             "symbol": symbol, "direction": direction,
             "entry_price": entry_price, "exit_price": current_price,
+            "entry_time": pos.get("entry_time", 0),
             "pnl_pct": round(pnl_pct, 6), "pnl_usdt": round(pnl_usdt, 4),
             "size_usd": size_usd, "source": "oms",
             "closed_at": time.time(),
         }
+        await redis.set(dedup_key, "1", ex=3600)  # 1 saat dedup penceresi
         await redis.lpush("oms:trade_history", json.dumps(trade))
         await redis.ltrim("oms:trade_history", 0, 999)
         await redis.publish("ch:trade_closed", json.dumps(trade))
@@ -131,6 +148,10 @@ async def process_signal(redis: aioredis.Redis, symbol: str):
         pos = json.loads(pos_raw)
         if pos.get("direction") == direction:
             return  # Already positioned correctly
+        # Minimum hold süresi kontrolü — çok hızlı flip-flop önleme
+        held_seconds = time.time() - pos.get("entry_time", time.time())
+        if held_seconds < MIN_HOLD_SECONDS:
+            return  # Henüz minimum süre dolmadı
         # Close opposite position
         price = await get_price(redis, symbol)
         if price > 0:
@@ -171,7 +192,9 @@ async def process_signal(redis: aioredis.Redis, symbol: str):
         log.info(f"[LIVE] Executing {symbol} {direction.upper()} size=${size_usd:.2f} @ {price:.4f}")
 
     # Track the paper/live position
+    trade_id = str(uuid.uuid4())[:12]
     await redis.set(f"oms:position:{symbol}", json.dumps({
+        "trade_id": trade_id,
         "symbol": symbol, "direction": direction,
         "size_usd": size_usd, "entry_price": price,
         "entry_time": time.time(), "entry_signal": signal,
@@ -205,10 +228,44 @@ async def snapshot_portfolio(redis: aioredis.Redis):
         await asyncio.sleep(3600)  # hourly
 
 
+async def cleanup_duplicate_positions(redis: aioredis.Redis):
+    """Startup: Redis'teki lowercase/mükerrer pozisyon anahtarlarını temizle."""
+    keys = await redis.keys("oms:position:*")
+    seen: dict[str, str] = {}  # uppercase_symbol -> canonical_key
+    for k in keys:
+        raw_key = k.decode() if isinstance(k, bytes) else k
+        sym = raw_key.split(":")[-1].upper()
+        if sym in seen:
+            # Mükerrer: hangisi daha eski olanı sil
+            try:
+                existing_raw = await redis.get(seen[sym])
+                current_raw = await redis.get(raw_key)
+                existing = json.loads(existing_raw) if existing_raw else {}
+                current = json.loads(current_raw) if current_raw else {}
+                if current.get("entry_time", 0) > existing.get("entry_time", 0):
+                    await redis.delete(seen[sym])
+                    seen[sym] = raw_key
+                else:
+                    await redis.delete(raw_key)
+                log.info(f"Cleanup: removed duplicate position key for {sym}")
+            except Exception as e:
+                log.warning(f"Cleanup error for {sym}: {e}")
+        else:
+            seen[sym] = raw_key
+            # Lowercase key varsa uppercase'e taşı
+            if raw_key != f"oms:position:{sym}":
+                val = await redis.get(raw_key)
+                if val:
+                    await redis.set(f"oms:position:{sym}", val, ex=86400)
+                    await redis.delete(raw_key)
+                    log.info(f"Cleanup: renamed {raw_key} → oms:position:{sym}")
+
+
 async def main():
     mode = "DRY_RUN" if DRY_RUN else "LIVE"
     log.info(f"OMS starting — {mode} mode — portfolio=${PORTFOLIO_VALUE:.0f}")
     redis = await aioredis.from_url(REDIS_URL)
+    await cleanup_duplicate_positions(redis)
 
     symbols: list[str] = []
     last_refresh = 0.0

@@ -13,8 +13,8 @@ interface Position {
 }
 
 interface Trade {
-  symbol: string; direction: string; entry_price: number; exit_price: number
-  pnl_pct: number; pnl_usdt: number; size_usd: number; closed_at: number
+  trade_id?: string; symbol: string; direction: string; entry_price: number; exit_price: number
+  pnl_pct: number; pnl_usdt: number; size_usd: number; closed_at: number; entry_time?: number
 }
 
 interface PositionData {
@@ -384,7 +384,7 @@ export default function PositionsPage() {
               </thead>
               <tbody>
                 {trade_history.map((trade, i) => (
-                  <tr key={i}
+                  <tr key={trade.trade_id ?? `${trade.symbol}-${trade.closed_at}-${i}`}
                     className="border-b border-gray-800/40 hover:bg-gray-800/20 transition-colors cursor-pointer"
                     onClick={() => window.location.href = `/coin/${trade.symbol}`}>
                     <td className="px-4 py-2.5 font-bold text-white hover:text-orange-400 transition-colors">{trade.symbol}</td>

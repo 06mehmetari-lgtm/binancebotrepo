@@ -13,19 +13,27 @@ export async function GET() {
       redis.lrange('oms:trade_history', 0, 19),
     ])
 
+    const seenSymbols = new Set<string>()
     const positions = posRaws
       .map((raw, i) => {
         if (!raw) return null
         try {
           const pos = JSON.parse(raw)
           const key = typeof posKeys[i] === 'string' ? posKeys[i] : (posKeys[i] as Buffer).toString()
-          const symbol = key.split(':').pop() ?? pos.symbol
+          const symbol = (key.split(':').pop() ?? pos.symbol ?? '').toUpperCase()
           return { ...pos, symbol, key }
         } catch {
           return null
         }
       })
       .filter(Boolean)
+      .filter(pos => {
+        // Aynı symbol'ün mükerrer pozisyonlarını filtrele
+        const sym = (pos as { symbol: string }).symbol
+        if (seenSymbols.has(sym)) return false
+        seenSymbols.add(sym)
+        return true
+      })
 
     // Get current prices for P&L calculation
     const priceRaws = await Promise.all(
