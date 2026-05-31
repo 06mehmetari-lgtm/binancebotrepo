@@ -78,7 +78,8 @@ async def report_loop(redis: aioredis.Redis):
         for entry in leaderboard:
             if entry["promotion_ready"]:
                 log.info(f"PROMOTION READY: {entry['shadow_id']} Sharpe={entry['sharpe']:.2f} WR={entry['win_rate']:.1%}")
-        log.info(f"Shadow leaderboard: {[f\"{e['shadow_id']} S={e['sharpe']:.2f}\" for e in leaderboard]}")
+        summary = ", ".join(f"{e['shadow_id']} S={e['sharpe']:.2f}" for e in leaderboard)
+        log.info(f"Shadow leaderboard: [{summary}]")
         await asyncio.sleep(300)
 
 

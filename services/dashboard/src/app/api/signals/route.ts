@@ -1,18 +1,35 @@
 import { NextResponse } from 'next/server'
-import { Redis } from 'ioredis'
-
-const redis = new Redis({ host: process.env.REDIS_HOST || 'redis', port: 6379, password: process.env.REDIS_PASSWORD || undefined, lazyConnect: true })
+import { createRedis } from '../_redis'
 
 export async function GET() {
+  const redis = createRedis()
   try {
-    const symbols = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT']
-    const signals = []
+    const featureKeys = await redis.keys('features:latest:*')
+    if (featureKeys.length === 0) return NextResponse.json([])
+
+    const symbols = featureKeys.map(k => k.replace('features:latest:', ''))
+
+    const pipeline = redis.pipeline()
     for (const sym of symbols) {
-      const raw = await redis.get(`signal:latest:${sym}`)
-      if (raw) signals.push(JSON.parse(raw))
+      pipeline.get(`signal:latest:${sym}`)
     }
+    const results = await pipeline.exec()
+
+    const signals = []
+    for (let i = 0; i < symbols.length; i++) {
+      const raw = results?.[i]?.[1] as string | null
+      if (!raw) continue
+      try {
+        signals.push(JSON.parse(raw))
+      } catch {
+        // skip malformed entries
+      }
+    }
+
     return NextResponse.json(signals)
   } catch (e) {
-    return NextResponse.json({ error: String(e) }, { status: 500 })
+    return NextResponse.json([], { status: 500 })
+  } finally {
+    redis.disconnect()
   }
 }

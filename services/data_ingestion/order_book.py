@@ -23,21 +23,31 @@ class LocalOrderBook:
         self._snapshot_pending = False
 
     async def initialize(self):
-        logger.info(f"Initializing order book: {self.symbol}")
         self._snapshot_pending = True
-        params = {"symbol": self.symbol, "limit": 1000}
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get("https://api.binance.com/api/v3/depth", params=params)
-            data = resp.json()
-        self.last_update_id = data["lastUpdateId"]
-        self.bids = {Decimal(p): Decimal(q) for p, q in data["bids"] if Decimal(q) > 0}
-        self.asks = {Decimal(p): Decimal(q) for p, q in data["asks"] if Decimal(q) > 0}
-        for event in self._event_buffer:
-            self._apply(event)
-        self._event_buffer.clear()
-        self._initialized = True
-        self._snapshot_pending = False
-        logger.info(f"Order book ready: {self.symbol} (updateId={self.last_update_id})")
+        try:
+            params = {"symbol": self.symbol, "limit": 20}
+            async with httpx.AsyncClient(timeout=8.0) as client:
+                resp = await client.get(
+                    "https://fapi.binance.com/fapi/v1/depth", params=params
+                )
+                data = resp.json()
+            if "lastUpdateId" not in data:
+                logger.warning(f"Order book snapshot missing for {self.symbol}: {data.get('msg', data)}")
+                self._initialized = True
+                self._snapshot_pending = False
+                return
+            self.last_update_id = data["lastUpdateId"]
+            self.bids = {Decimal(p): Decimal(q) for p, q in data.get("bids", []) if Decimal(q) > 0}
+            self.asks = {Decimal(p): Decimal(q) for p, q in data.get("asks", []) if Decimal(q) > 0}
+            for event in self._event_buffer:
+                self._apply(event)
+            self._event_buffer.clear()
+            logger.debug(f"Order book ready: {self.symbol}")
+        except Exception as e:
+            logger.warning(f"Order book init failed for {self.symbol}: {e} — continuing without snapshot")
+        finally:
+            self._initialized = True
+            self._snapshot_pending = False
 
     def process_event(self, event: dict):
         if self._snapshot_pending:
