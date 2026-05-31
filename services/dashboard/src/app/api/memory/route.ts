@@ -137,7 +137,13 @@ export async function GET() {
         learnProfiles.push({ symbol: sym, ...p })
       }
     }
-    learnProfiles.sort((a, b) => (b.updates as number) - (a.updates as number))
+    learnProfiles.sort((a, b) => {
+      const stageOrder: Record<string, number> = { L3: 4, L2: 3, L1: 2, L0: 1 }
+      const sa = stageOrder[String(a.learning_stage ?? 'L0')] ?? 0
+      const sb = stageOrder[String(b.learning_stage ?? 'L0')] ?? 0
+      if (sb !== sa) return sb - sa
+      return (b.depth_score as number) - (a.depth_score as number)
+    })
 
     const learningLessons: LessonRow[] = []
     for (let i = 0; i < Math.min(symBatch.length, 40); i++) {
@@ -157,6 +163,13 @@ export async function GET() {
       }
     }
     learningLessons.sort((a, b) => b.ts - a.ts)
+    const seenLesson = new Set<string>()
+    const uniqueLessons = learningLessons.filter(l => {
+      const key = `${l.symbol}:${l.text.slice(0, 80)}`
+      if (seenLesson.has(key)) return false
+      seenLesson.add(key)
+      return true
+    })
 
     const activeSignals = allSignals
       .filter(s => s.direction !== 'flat' || s.trade_action === 'close' || s.trade_action === 'hold')
@@ -305,7 +318,7 @@ export async function GET() {
         global: learnGlobal,
         profiles: learnProfiles.slice(0, 25),
         profiles_count: learnProfileKeys.length,
-        recent_lessons: learningLessons.slice(0, 40),
+        recent_lessons: uniqueLessons.slice(0, 40),
         backtest_log: backtestLogs.slice(0, 20),
         engine_active: Boolean(hbLearn && now - parseFloat(hbLearn) < 60),
         last_heartbeat: hbLearn ? parseFloat(hbLearn) : null,

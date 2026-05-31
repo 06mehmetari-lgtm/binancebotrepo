@@ -51,8 +51,14 @@ interface LearnProfile {
   current_regime?: string
   best_entry_hint?: string
   avoid_hint?: string
+  ai_insight?: string
+  learning_stage?: string
+  stage_label?: string
+  depth_score?: number
+  llm_provider?: string
+  fingerprint?: { rsi_avg?: number; funding_avg?: number; volume_ratio_avg?: number }
   updates?: number
-  drivers?: { factor: string; effect: string; win_rate: number; avg_move_pct: number; samples: number }[]
+  drivers?: { factor: string; label?: string; effect: string; win_rate: number; avg_move_pct: number; samples: number }[]
 }
 
 interface LearnLesson {
@@ -79,7 +85,13 @@ interface MemoryData {
   open_positions?: PositionDecision[]
   portfolio?: { total_open?: number; long_positions?: number; short_positions?: number }
   learning?: {
-    global?: { message?: string; symbols_tracked?: number; top_drivers?: { factor: string; avg_win_rate: number }[] }
+    global?: {
+      message?: string
+      symbols_tracked?: number
+      stage_distribution?: Record<string, number>
+      llm_enriched_symbols?: number
+      top_drivers?: { factor: string; avg_win_rate: number }[]
+    }
     profiles?: LearnProfile[]
     profiles_count?: number
     recent_lessons?: LearnLesson[]
@@ -565,6 +577,18 @@ export default function MemoryPage() {
             <div className="bg-purple-950/30 border border-purple-700/40 rounded-xl px-4 py-3">
               <p className="text-purple-300 font-bold text-sm">Global öğrenme özeti</p>
               <p className="text-purple-100/80 text-sm mt-1">{learning.global.message}</p>
+              <div className="flex flex-wrap gap-2 mt-2 text-xs text-gray-500">
+                {learning.global.stage_distribution && Object.entries(learning.global.stage_distribution).map(([st, n]) => (
+                  <span key={st} className="bg-gray-900/80 px-2 py-1 rounded">
+                    {st}: {n} coin
+                  </span>
+                ))}
+                {(learning.global.llm_enriched_symbols ?? 0) > 0 && (
+                  <span className="text-purple-400 bg-purple-950/40 px-2 py-1 rounded">
+                    Groq/Ollama özet: {learning.global.llm_enriched_symbols} coin
+                  </span>
+                )}
+              </div>
               {learning.global.top_drivers && learning.global.top_drivers.length > 0 && (
                 <div className="flex flex-wrap gap-2 mt-2">
                   {learning.global.top_drivers.map(d => (
@@ -610,23 +634,38 @@ export default function MemoryPage() {
                 {(learning?.profiles ?? []).length === 0 ? (
                   <p className="p-6 text-center text-gray-500 text-sm">Profil oluşuyor (2–5 dk)</p>
                 ) : (
-                  learning!.profiles!.map(p => (
+                  learning!.profiles!.map(p => {
+                    const stage = p.learning_stage ?? 'L0'
+                    const stageColor = stage === 'L3' ? 'text-yellow-400' : stage === 'L2' ? 'text-purple-400' : stage === 'L1' ? 'text-blue-400' : 'text-gray-500'
+                    return (
                     <a key={p.symbol} href={`/coin/${p.symbol}`}
-                      className="block px-4 py-3 hover:bg-gray-800/20 text-xs">
-                      <div className="flex justify-between items-center mb-1">
+                      className="block px-4 py-3 hover:bg-gray-800/20 text-xs border-l-2 border-transparent hover:border-purple-500/50">
+                      <div className="flex justify-between items-center mb-1 gap-2">
                         <span className="font-bold text-white">{p.symbol}</span>
-                        <span className="text-gray-500">{p.updates ?? 0} gözlem</span>
+                        <span className={`font-bold ${stageColor}`}>{stage}</span>
+                        <span className="text-gray-500 shrink-0">derinlik {p.depth_score ?? 1}/5</span>
                       </div>
-                      <p className="text-blue-400">Rejim: {p.current_regime ?? '—'}</p>
+                      <p className="text-gray-600 text-[10px]">{p.updates ?? 0} gözlem · {p.stage_label ?? stage}</p>
+                      <p className="text-blue-400 mt-0.5">Rejim: {p.current_regime ?? '—'}
+                        {p.fingerprint?.rsi_avg != null && (
+                          <span className="text-gray-500"> · RSI ort {p.fingerprint.rsi_avg}</span>
+                        )}
+                      </p>
                       <p className="text-green-400/90 mt-0.5">Al: {p.best_entry_hint}</p>
                       <p className="text-red-400/90">Kaçın: {p.avoid_hint}</p>
+                      {p.ai_insight && (
+                        <p className="text-purple-200/90 mt-1.5 leading-relaxed bg-purple-950/30 rounded px-2 py-1.5 border border-purple-800/40">
+                          {p.llm_provider && <span className="text-[10px] text-purple-400 uppercase mr-1">{p.llm_provider} · </span>}
+                          {p.ai_insight}
+                        </p>
+                      )}
                       {p.drivers && p.drivers[0] && (
                         <p className="text-gray-500 mt-1">
-                          En güçlü faktör: {p.drivers[0].factor} → {p.drivers[0].effect} (WR {(p.drivers[0].win_rate * 100).toFixed(0)}%)
+                          En güçlü: {p.drivers[0].label ?? p.drivers[0].factor} (WR {(p.drivers[0].win_rate * 100).toFixed(0)}%, n={p.drivers[0].samples})
                         </p>
                       )}
                     </a>
-                  ))
+                  )})
                 )}
               </div>
             </div>

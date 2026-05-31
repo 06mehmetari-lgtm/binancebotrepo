@@ -9,6 +9,18 @@ import time
 from collections import deque
 from dataclasses import dataclass, field
 
+FACTOR_LABELS: dict[str, str] = {
+    "rsi_oversold_bounce": "RSI<32 sonrası 3 bar toparlanma",
+    "rsi_overbought_drop": "RSI>68 sonrası geri çekilme",
+    "bid_pressure_up": "Bid imbalance >0.25 yükseliş",
+    "high_funding_fade": "Yüksek funding sonrası short edge",
+    "crisis_risk_off": "Kriz L≥2 risk-off hareketi",
+    "trade_long_win": "Long işlem kârı",
+    "trade_long_loss": "Long işlem zararı",
+    "trade_short_win": "Short işlem kârı",
+    "trade_short_loss": "Short işlem zararı",
+}
+
 
 @dataclass
 class TickSample:
@@ -43,6 +55,25 @@ class PatternStats:
         return self.total_move_pct / max(self.hits, 1)
 
 
+def _learning_stage(updates: int, driver_count: int) -> str:
+    if updates < 40 or driver_count == 0:
+        return "L0"
+    if updates < 200 or driver_count < 2:
+        return "L1"
+    if updates < 600 or driver_count < 4:
+        return "L2"
+    return "L3"
+
+
+def _depth_score(drivers: list[dict], updates: int) -> int:
+    score = min(5, len([d for d in drivers if d.get("samples", 0) >= 8]))
+    if updates >= 200:
+        score = min(5, score + 1)
+    if updates >= 800:
+        score = min(5, score + 1)
+    return max(1, score)
+
+
 @dataclass
 class SymbolLearner:
     symbol: str
@@ -51,7 +82,10 @@ class SymbolLearner:
     regime_transitions: dict[str, PatternStats] = field(default_factory=dict)
     last_regime: str = "unknown"
     last_price: float = 0.0
+    last_drift: str = "STABLE"
     updates: int = 0
+    last_lesson_hash: str = ""
+    llm_enrich_count: int = 0
 
     def _pat(self, key: str) -> PatternStats:
         if key not in self.patterns:
@@ -63,21 +97,35 @@ class SymbolLearner:
             self.regime_transitions[key] = PatternStats()
         return self.regime_transitions[key]
 
+    def _fingerprint(self) -> dict:
+        if len(self.history) < 5:
+            return {}
+        recent = list(self.history)[-40:]
+        n = len(recent)
+        return {
+            "rsi_avg": round(sum(s.rsi for s in recent) / n, 1),
+            "macd_avg": round(sum(s.macd_hist for s in recent) / n, 5),
+            "funding_avg": round(sum(s.funding for s in recent) / n, 6),
+            "imbalance_avg": round(sum(s.imbalance_5 for s in recent) / n, 3),
+            "volume_ratio_avg": round(sum(s.volume_ratio for s in recent) / n, 2),
+            "crisis_max": max(s.crisis for s in recent),
+            "drift_modes": list({s.drift for s in recent}),
+        }
+
     def observe(self, sample: TickSample) -> list[str]:
-        """Returns new lesson lines when something meaningful was learned."""
+        """Returns new lesson lines only for meaningful regime shifts (deduped)."""
         new_lessons: list[str] = []
         self.history.append(sample)
         self.updates += 1
+        self.last_drift = sample.drift
 
         if self.last_price > 0 and sample.price > 0:
             move_pct = (sample.price - self.last_price) / self.last_price * 100
         else:
             move_pct = 0.0
 
-        # Evaluate pending hypotheses from previous ticks (3-step horizon)
         if len(self.history) >= 4:
             past = self.history[-4]
-            mid = self.history[-2]
             horizon_move = (sample.price - past.price) / past.price * 100 if past.price else 0
 
             if past.rsi < 32:
@@ -118,7 +166,6 @@ class SymbolLearner:
                 elif horizon_move > 0.2:
                     p.misses += 1
 
-        # Regime transition learning
         if self.last_regime and self.last_regime != sample.regime and sample.regime != "unknown":
             key = f"{self.last_regime}->{sample.regime}"
             rg = self._reg(key)
@@ -131,10 +178,11 @@ class SymbolLearner:
                         rg.total_move_pct += tr_move
                     elif tr_move < -0.1:
                         rg.misses += 1
-                    new_lessons.append(
-                        f"Rejim {self.last_regime}→{sample.regime}: "
-                        f"{'yükseliş' if tr_move > 0 else 'düşüş'} eğilimi %{abs(tr_move):.2f}"
-                    )
+                    if rg.samples <= 3 or self.updates % 45 == 0:
+                        new_lessons.append(
+                            f"{self.symbol}: rejim {self.last_regime}→{sample.regime} "
+                            f"{'+' if tr_move > 0 else '-'}{abs(tr_move):.2f}% (n={rg.samples})"
+                        )
 
         self.last_regime = sample.regime
         self.last_price = sample.price
@@ -144,41 +192,78 @@ class SymbolLearner:
         drivers: list[dict] = []
         for name, st in sorted(
             self.patterns.items(),
-            key=lambda x: x[1].samples,
+            key=lambda x: (x[1].win_rate, x[1].samples),
             reverse=True,
-        )[:8]:
-            if st.samples < 3:
+        ):
+            if st.samples < 5:
                 continue
-            effect = "up" if "bounce" in name or "pressure_up" in name else (
-                "down" if "drop" in name or "fade" in name or "risk_off" in name else "mixed"
-            )
+            wr = st.win_rate
+            if "bounce" in name or "pressure_up" in name or "win" in name:
+                effect = "long_edge"
+            elif "drop" in name or "fade" in name or "risk_off" in name or "loss" in name:
+                effect = "short_edge"
+            else:
+                effect = "neutral"
             drivers.append({
                 "factor": name,
+                "label": FACTOR_LABELS.get(name, name),
                 "effect": effect,
-                "win_rate": round(st.win_rate, 3),
+                "win_rate": round(wr, 3),
                 "avg_move_pct": round(st.avg_move_pct, 3),
                 "samples": st.samples,
             })
 
         regime_notes = []
-        for key, st in self.regime_transitions.items():
+        for key, st in sorted(
+            self.regime_transitions.items(),
+            key=lambda x: x[1].samples,
+            reverse=True,
+        ):
             if st.samples < 2:
                 continue
             regime_notes.append({
                 "transition": key,
-                "up_bias": st.win_rate,
+                "up_bias": round(st.win_rate, 3),
                 "avg_move_pct": round(st.avg_move_pct, 3),
                 "samples": st.samples,
             })
 
-        best_entry = "RSI aşırı satış + bid imbalance + düşük funding"
-        avoid = "yüksek funding + crisis≥2 + DRIFTING"
-        if drivers:
-            top = drivers[0]
-            if top["effect"] == "up":
-                best_entry = f"{top['factor']} onaylı (WR {top['win_rate']*100:.0f}%)"
-            elif top["effect"] == "down":
-                avoid = f"{top['factor']} aktifken long açma"
+        fp = self._fingerprint()
+        entry_hints: list[str] = []
+        avoid_hints: list[str] = []
+
+        for d in drivers[:4]:
+            label = d["label"]
+            wr_pct = d["win_rate"] * 100
+            if d["effect"] == "long_edge" and d["win_rate"] >= 0.52:
+                entry_hints.append(f"{label} (WR {wr_pct:.0f}%, n={d['samples']})")
+            elif d["effect"] == "short_edge" and d["win_rate"] >= 0.52:
+                avoid_hints.append(f"Long açma: {label} short edge %{wr_pct:.0f}")
+
+        if fp:
+            rsi_a = fp.get("rsi_avg", 50)
+            fund = fp.get("funding_avg", 0)
+            vol = fp.get("volume_ratio_avg", 1)
+            if rsi_a < 38 and not any("RSI" in h for h in entry_hints):
+                entry_hints.append(f"{self.symbol} düşük RSI ort. ({rsi_a}) — mean-reversion potansiyeli")
+            if rsi_a > 62 and not any("RSI" in h for h in avoid_hints):
+                avoid_hints.append(f"{self.symbol} yüksek RSI ort. ({rsi_a}) — long chase riski")
+            if fund > 0.0006:
+                avoid_hints.append(f"Funding ort. {fund*100:.3f}% — crowded long riski")
+            if vol > 1.8 and len(entry_hints) < 2:
+                entry_hints.append(f"Hacim patlaması ({vol}x) — momentum takibi")
+            if self.last_drift in ("DRIFTING", "SHOCK"):
+                avoid_hints.append(f"Drift={self.last_drift} — model güveni düşük")
+
+        stage = _learning_stage(self.updates, len(drivers))
+        depth = _depth_score(drivers, self.updates)
+
+        best_entry = " · ".join(entry_hints[:2]) if entry_hints else (
+            f"Gözlem devam ({self.updates} tick) — henüz %{52} üstü edge yok"
+        )
+        avoid = " · ".join(avoid_hints[:2]) if avoid_hints else (
+            f"Kriz≥2 veya {self.last_drift} iken agresif boyut yok"
+        )
 
         return {
             "symbol": self.symbol,
@@ -186,9 +271,14 @@ class SymbolLearner:
             "samples_in_memory": len(self.history),
             "current_regime": self.last_regime,
             "last_price": self.last_price,
+            "last_drift": self.last_drift,
+            "learning_stage": stage,
+            "depth_score": depth,
+            "fingerprint": fp,
             "drivers": drivers,
             "regime_transitions": regime_notes[:6],
             "best_entry_hint": best_entry,
             "avoid_hint": avoid,
             "updated_at": time.time(),
+            "llm_enrich_count": self.llm_enrich_count,
         }

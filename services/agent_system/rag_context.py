@@ -15,10 +15,12 @@ async def fetch_trade_lessons(redis, symbol: str, limit: int = 8) -> list[str]:
         if learn_raw:
             try:
                 prof = json.loads(learn_raw)
+                stage = prof.get("learning_stage", "L0")
+                ai = (prof.get("ai_insight") or "")[:200]
                 hint = (
-                    f"[Öğrenen AI] Rejim={prof.get('current_regime')} | "
-                    f"Al:{prof.get('best_entry_hint', '')} | "
-                    f"Kaçın:{prof.get('avoid_hint', '')}"
+                    f"[Öğrenen AI {stage}] Rejim={prof.get('current_regime')} | "
+                    f"Al:{prof.get('best_entry_hint', '')} | Kaçın:{prof.get('avoid_hint', '')}"
+                    + (f" | {ai}" if ai else "")
                 )
                 lessons_prefill = [hint]
                 for d in prof.get("drivers", [])[:2]:

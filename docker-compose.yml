@@ -181,12 +181,18 @@ services:
       - LEARNING_SCAN_SEC=${LEARNING_SCAN_SEC:-2}
       - LEARNING_SCAN_BATCH=${LEARNING_SCAN_BATCH:-100}
       - LEARNING_CONCURRENCY=${LEARNING_CONCURRENCY:-80}
-      - LEARNING_PROFILE_EVERY_N=${LEARNING_PROFILE_EVERY_N:-15}
+      - LEARNING_PROFILE_EVERY_N=${LEARNING_PROFILE_EVERY_N:-30}
+      - LEARNING_LLM_EVERY_N=${LEARNING_LLM_EVERY_N:-90}
       - LEARNING_GLOBAL_SYNC_SEC=${LEARNING_GLOBAL_SYNC_SEC:-30}
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - GROQ_LEARN_MODEL=${GROQ_LEARN_MODEL:-llama-3.1-70b-versatile}
+      - OLLAMA_URL=http://ollama:11434
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3.1:8b}
     depends_on:
       - redis
       - feature_engine
       - context_engine
+      - ollama
     networks:
       - prometheus_net
 

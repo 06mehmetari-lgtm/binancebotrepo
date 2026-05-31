@@ -17,6 +17,7 @@ import redis.asyncio as aioredis
 
 from behavior_tracker import SymbolLearner, TickSample
 from lesson_writer import persist_global, persist_profile
+from llm_synthesizer import synthesize_coin_insight
 
 logging.basicConfig(
     level=logging.INFO,
@@ -26,7 +27,8 @@ log = logging.getLogger(__name__)
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379")
 GLOBAL_SYNC_SEC = int(os.getenv("LEARNING_GLOBAL_SYNC_SEC", "30"))
-PROFILE_WRITE_EVERY = int(os.getenv("LEARNING_PROFILE_EVERY_N", "15"))
+PROFILE_WRITE_EVERY = int(os.getenv("LEARNING_PROFILE_EVERY_N", "30"))
+LLM_EVERY_N = int(os.getenv("LEARNING_LLM_EVERY_N", "90"))
 
 
 class LearningEngine:
@@ -85,11 +87,26 @@ class LearningEngine:
 
         if learner.updates % PROFILE_WRITE_EVERY == 0:
             profile = learner.build_profile()
+
+            stage = profile.get("learning_stage", "L0")
+            if stage in ("L2", "L3") and learner.updates % LLM_EVERY_N == 0:
+                llm = await asyncio.get_event_loop().run_in_executor(
+                    None, synthesize_coin_insight, symbol, profile
+                )
+                if llm:
+                    profile["ai_insight"] = llm.get("ai_insight", "")
+                    if llm.get("best_entry_hint"):
+                        profile["best_entry_hint"] = llm["best_entry_hint"]
+                    if llm.get("avoid_hint"):
+                        profile["avoid_hint"] = llm["avoid_hint"]
+                    profile["llm_provider"] = llm.get("llm_provider")
+                    learner.llm_enrich_count += 1
+
             await persist_profile(redis, profile, new_lessons)
-            if learner.updates % (PROFILE_WRITE_EVERY * 10) == 0:
+            if learner.updates % (PROFILE_WRITE_EVERY * 20) == 0:
                 log.info(
-                    f"[learn] {symbol} regime={profile['current_regime']} "
-                    f"drivers={len(profile['drivers'])} samples={profile['samples_in_memory']}"
+                    f"[learn] {symbol} {stage} depth={profile.get('depth_score')} "
+                    f"drivers={len(profile['drivers'])} llm={bool(profile.get('ai_insight'))}"
                 )
         return True
 
@@ -201,7 +218,12 @@ async def global_sync_loop(engine: LearningEngine, redis: aioredis.Redis):
 
 
 async def main():
-    log.info("learning_engine starting — continual behavior learning")
+    groq = bool(os.getenv("GROQ_API_KEY", ""))
+    ollama = os.getenv("OLLAMA_URL", "")
+    log.info(
+        f"learning_engine starting — Groq={'on' if groq else 'off'} "
+        f"Ollama={'on' if ollama else 'off'}"
+    )
     redis = await aioredis.from_url(REDIS_URL)
     redis_sub = await aioredis.from_url(REDIS_URL)
     redis_trade = await aioredis.from_url(REDIS_URL)
