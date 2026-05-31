@@ -32,11 +32,11 @@ STATS: dict[str, dict] = {}
 
 def _get_kelly_stats(symbol: str) -> dict:
     s = STATS.get(symbol, {})
-    return {
-        "win_rate": s.get("win_rate", 0.55),
-        "avg_win": s.get("avg_win", 0.02),
-        "avg_loss": s.get("avg_loss", 0.01),
-    }
+    avg_loss = max(float(s.get("avg_loss", 0.01) or 0.01), 1e-6)
+    avg_win = max(float(s.get("avg_win", 0.02) or 0.02), 1e-6)
+    win_rate = float(s.get("win_rate", 0.55) or 0.55)
+    win_rate = min(max(win_rate, 0.05), 0.95)
+    return {"win_rate": win_rate, "avg_win": avg_win, "avg_loss": avg_loss}
 
 
 async def load_stats(redis: aioredis.Redis):
@@ -268,7 +268,7 @@ async def stats_listener(redis: aioredis.Redis):
             total = s["wins"] + s["losses"]
             s["win_rate"] = s["wins"] / total if total > 0 else 0.55
             s["avg_win"] = s["total_win"] / max(s["wins"], 1)
-            s["avg_loss"] = s["total_loss"] / max(s["losses"], 1)
+            s["avg_loss"] = max(s["total_loss"] / max(s["losses"], 1), 1e-6)
 
             save_interval += 1
             if save_interval % 10 == 0:
@@ -320,7 +320,7 @@ async def main():
                         await redis.publish(f"ch:signal:{symbol}", symbol)
                         all_sigs.append(sig)
                 except Exception as e:
-                    log.error(f"Signal error for {symbol}: {e}")
+                    log.exception(f"Signal error for {symbol}: {e}")
 
             symbols_list = list(active_set)
             for i in range(0, len(symbols_list), BATCH_SIZE):

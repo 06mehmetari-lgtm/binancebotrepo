@@ -25,6 +25,28 @@ GUARD_STATUS_KEY = "guard:status:v1"
 MAX_LOSS_PCT = float(os.getenv("GUARD_MAX_LOSS_PCT", "1.5"))
 EMERGENCY_LOSS_PCT = float(os.getenv("GUARD_EMERGENCY_LOSS_PCT", "2.5"))
 MIN_HOLD_CONFIDENCE = float(os.getenv("GUARD_MIN_HOLD_CONFIDENCE", "0.45"))
+GUARD_DEBATE_MAX_AGE = float(os.getenv("GUARD_DEBATE_MAX_AGE", "8"))
+_guard_sem: asyncio.Semaphore | None = None
+
+
+def _guard_semaphore() -> asyncio.Semaphore:
+    global _guard_sem
+    if _guard_sem is None:
+        n = int(os.getenv("GUARD_DEBATE_CONCURRENCY", "2"))
+        _guard_sem = asyncio.Semaphore(max(1, n))
+    return _guard_sem
+
+
+async def _verdict_is_fresh(redis: aioredis.Redis, symbol: str) -> bool:
+    raw = await redis.get(f"agents:verdict:{symbol}")
+    if not raw:
+        return False
+    try:
+        v = json.loads(raw)
+        ts = float(v.get("timestamp", 0))
+        return ts > 0 and (time.time() - ts) < GUARD_DEBATE_MAX_AGE
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return False
 
 
 @dataclass
@@ -214,10 +236,12 @@ async def run_guard_cycle(
         symbol = str(pos.get("symbol", ""))
         if not symbol.endswith("USDT"):
             continue
-        try:
-            await debate_fn(redis, symbol)
-        except Exception as e:
-            log.debug(f"guard debate {symbol}: {e}")
+        if not await _verdict_is_fresh(redis, symbol):
+            try:
+                async with _guard_semaphore():
+                    await debate_fn(redis, symbol)
+            except Exception as e:
+                log.debug(f"guard debate {symbol}: {e}")
 
         pipe = redis.pipeline()
         pipe.get(f"features:latest:{symbol}")
@@ -276,10 +300,16 @@ async def run_guard_cycle(
 
 async def position_guard_loop(redis: aioredis.Redis, debate_fn) -> None:
     interval = float(os.getenv("POSITION_GUARD_SEC", "1.0"))
-    log.info(f"position_guard active — every {interval}s on open positions")
+    log.info(
+        f"position_guard active — every {interval}s "
+        f"(debate refresh >{GUARD_DEBATE_MAX_AGE}s)"
+    )
     while True:
         try:
             await run_guard_cycle(redis, debate_fn)
+            await asyncio.sleep(interval)
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
-            log.error(f"position_guard cycle: {e}")
-        await asyncio.sleep(interval)
+            log.exception(f"position_guard cycle: {e}")
+            await asyncio.sleep(min(interval, 5.0))

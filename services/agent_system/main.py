@@ -307,15 +307,25 @@ async def main():
             await asyncio.gather(*[_debate_one(s) for s in batch])
             await asyncio.sleep(AGENT_CYCLE_SEC)
 
+    async def _supervise(name: str, coro):
+        while True:
+            try:
+                await coro
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.exception(f"{name} task crashed — retry in 5s")
+                await asyncio.sleep(5)
+
     redis_fb = await aioredis.from_url(REDIS_URL)
     redis_learn = await aioredis.from_url(REDIS_URL)
     redis_guard = await aioredis.from_url(REDIS_URL)
     await asyncio.gather(
-        debate_loop(),
-        position_guard_loop(redis_guard, run_debate_for_symbol),
-        weight_update_loop(redis),
-        trade_feedback_loop(redis_fb),
-        learn_update_listener(redis_learn),
+        _supervise("debate_loop", debate_loop()),
+        _supervise("position_guard", position_guard_loop(redis_guard, run_debate_for_symbol)),
+        _supervise("weight_update", weight_update_loop(redis)),
+        _supervise("trade_feedback", trade_feedback_loop(redis_fb)),
+        _supervise("learn_update", learn_update_listener(redis_learn)),
     )
 
 
