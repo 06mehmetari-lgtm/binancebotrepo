@@ -385,6 +385,25 @@ services:
       - prometheus_net
 
   # ═══════════════════════════════════════
+  # BACKTEST — runs 1-year historical simulation
+  # Fetches Binance Futures klines, computes metrics, saves to Redis
+  # ═══════════════════════════════════════
+  backtest:
+    build: ./services/backtest
+    container_name: prometheus_backtest
+    restart: unless-stopped
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - BACKTEST_SYMBOLS=${BACKTEST_SYMBOLS:-25}
+      - BACKTEST_DAYS=${BACKTEST_DAYS:-365}
+      - BACKTEST_INTERVAL_H=${BACKTEST_INTERVAL_H:-24}
+      - PORTFOLIO_VALUE=${PORTFOLIO_VALUE:-10000}
+    depends_on:
+      - redis
+    networks:
+      - prometheus_net
+
+  # ═══════════════════════════════════════
   # HISTORICAL BACKFILL (one-shot, tools profile)
   # Run: docker compose run --rm backfill
   # ═══════════════════════════════════════

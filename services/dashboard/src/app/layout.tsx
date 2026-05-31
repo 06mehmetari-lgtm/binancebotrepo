@@ -13,6 +13,7 @@ const NAV_LINKS = [
   { href: '/shadow', label: 'Shadow' },
   { href: '/risk', label: 'Risk' },
   { href: '/memory', label: 'AI Memory' },
+  { href: '/backtest', label: '📈 Backtest' },
 ]
 
 function NavLink({ href, label, active, onClick }: {
