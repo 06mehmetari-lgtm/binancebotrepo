@@ -31,6 +31,9 @@ interface Coin {
   drift: string
   regime: string | null
   timestamp: number | null
+  sqs: number
+  sharpe: number | null
+  win_rate: number | null
 }
 
 interface ScannerData {
@@ -95,6 +98,18 @@ function VolBadge({ v }: { v: number | null }) {
   if (v == null) return <span className="text-gray-600">—</span>
   const color = v > 2 ? 'text-orange-400 font-bold' : v > 1.3 ? 'text-yellow-400' : 'text-gray-500'
   return <span className={`font-mono text-xs ${color}`}>{v.toFixed(2)}×</span>
+}
+
+function SqsBadge({ v }: { v: number }) {
+  if (v === 0) return <span className="text-gray-600 text-xs">—</span>
+  const color = v >= 70 ? 'text-green-400 bg-green-900/30 border-green-700/50'
+    : v >= 50 ? 'text-yellow-400 bg-yellow-900/20 border-yellow-700/40'
+    : 'text-red-400 bg-red-900/20 border-red-700/40'
+  return (
+    <span className={`inline-flex items-center px-1.5 py-0.5 rounded border text-xs font-bold font-mono ${color}`}>
+      {v}
+    </span>
+  )
 }
 
 function timeAgo(ts: number | null): string {
@@ -252,6 +267,7 @@ export default function ScannerPage() {
                 <th className="text-left px-4 py-2.5">Coin</th>
                 <th className="text-left px-4 py-2.5">Sinyal</th>
                 <th className="text-left px-4 py-2.5 w-36">Güven</th>
+                <th className="hidden sm:table-cell text-left px-4 py-2.5">SQS</th>
                 <th className="text-left px-4 py-2.5">RSI-14</th>
                 <th className="text-left px-4 py-2.5">MACD</th>
                 <th className="hidden md:table-cell text-left px-4 py-2.5">Hacim</th>
@@ -263,7 +279,7 @@ export default function ScannerPage() {
             <tbody>
               {pagedCoins.length === 0 ? (
                 <tr>
-                  <td colSpan={9} className="text-center py-12 text-gray-500">
+                  <td colSpan={10} className="text-center py-12 text-gray-500">
                     {!data.total
                       ? 'Henüz tarama verisi yok — feature_engine başlatılıyor...'
                       : 'Filtreyle eşleşen coin bulunamadı'}
@@ -286,6 +302,9 @@ export default function ScannerPage() {
                   </td>
                   <td className="px-4 py-2.5">
                     <ConfBar v={c.confidence} dir={c.direction} />
+                  </td>
+                  <td className="hidden sm:table-cell px-4 py-2.5">
+                    <SqsBadge v={c.sqs ?? 0} />
                   </td>
                   <td className="px-4 py-2.5">
                     <RsiCell v={c.rsi} />

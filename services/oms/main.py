@@ -4,6 +4,7 @@ import logging
 import os
 import time
 import uuid
+from datetime import datetime, timezone
 
 import redis.asyncio as aioredis
 
@@ -177,6 +178,33 @@ async def process_signal(redis: aioredis.Redis, symbol: str):
     }), ex=86400)
 
 
+async def snapshot_portfolio(redis: aioredis.Redis):
+    """Write hourly equity snapshot for portfolio equity curve."""
+    while True:
+        try:
+            trade_hist_raw = await redis.lrange("oms:trade_history", 0, 999)
+            trades = []
+            for r in trade_hist_raw:
+                try:
+                    trades.append(json.loads(r))
+                except Exception:
+                    pass
+            trades.sort(key=lambda t: t.get("closed_at", 0))
+            equity = PORTFOLIO_VALUE
+            for t in trades:
+                equity += t.get("pnl_usdt", 0)
+            snapshot = {
+                "ts": int(time.time()),
+                "equity": round(equity, 2),
+                "trade_count": len(trades),
+            }
+            await redis.lpush("portfolio:pnl:snapshots", json.dumps(snapshot))
+            await redis.ltrim("portfolio:pnl:snapshots", 0, 719)  # 30 days × 24h
+        except Exception as e:
+            log.warning(f"Snapshot error: {e}")
+        await asyncio.sleep(3600)  # hourly
+
+
 async def main():
     mode = "DRY_RUN" if DRY_RUN else "LIVE"
     log.info(f"OMS starting — {mode} mode — portfolio=${PORTFOLIO_VALUE:.0f}")
@@ -185,19 +213,23 @@ async def main():
     symbols: list[str] = []
     last_refresh = 0.0
 
-    while True:
-        now = time.time()
-        if now - last_refresh > SYMBOL_REFRESH_INTERVAL or not symbols:
-            symbols = await discover_symbols(redis)
-            last_refresh = now
-            log.info(f"OMS tracking {len(symbols)} symbols")
+    async def signal_loop():
+        nonlocal symbols, last_refresh
+        while True:
+            now = time.time()
+            if now - last_refresh > SYMBOL_REFRESH_INTERVAL or not symbols:
+                symbols = await discover_symbols(redis)
+                last_refresh = now
+                log.info(f"OMS tracking {len(symbols)} symbols")
 
-        for symbol in symbols:
-            try:
-                await process_signal(redis, symbol)
-            except Exception as e:
-                log.error(f"OMS error for {symbol}: {e}")
-        await asyncio.sleep(5)
+            for symbol in symbols:
+                try:
+                    await process_signal(redis, symbol)
+                except Exception as e:
+                    log.error(f"OMS error for {symbol}: {e}")
+            await asyncio.sleep(5)
+
+    await asyncio.gather(signal_loop(), snapshot_portfolio(redis))
 
 
 if __name__ == "__main__":

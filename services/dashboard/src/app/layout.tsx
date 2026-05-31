@@ -2,6 +2,7 @@
 import './globals.css'
 import { usePathname } from 'next/navigation'
 import { useState, useEffect, useRef, useCallback } from 'react'
+import SmartAlerts from './components/SmartAlerts'
 
 const NAV_LINKS = [
   { href: '/', label: 'Dashboard' },
@@ -277,6 +278,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body className="min-h-screen bg-gray-950 text-gray-100 font-mono">
         <Nav />
         <main className="p-3 md:p-4 lg:p-6">{children}</main>
+        <SmartAlerts />
       </body>
     </html>
   )

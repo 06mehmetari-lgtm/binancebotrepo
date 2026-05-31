@@ -1,5 +1,9 @@
 'use client'
 import { useEffect, useState } from 'react'
+import {
+  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
+  ReferenceLine, Area, AreaChart,
+} from 'recharts'
 
 interface Position {
   symbol: string; direction: string; size_usd: number
@@ -20,6 +24,17 @@ interface PositionData {
   position_count: number
 }
 
+interface CurvePoint { ts: number; equity: number; pnl: number; symbol: string; direction: string }
+
+interface PortfolioData {
+  curve: CurvePoint[]
+  stats: {
+    start_equity: number; current_equity: number; total_pnl: number; total_pnl_pct: number
+    daily_pnl: number; total_trades: number; win_rate: number; avg_win_usdt: number
+    avg_loss_usdt: number; profit_factor: number | null; max_drawdown_pct: number
+  }
+}
+
 const DIR_STYLE: Record<string, string> = {
   long: 'text-green-400 bg-green-900/30 border border-green-800/50',
   short: 'text-red-400 bg-red-900/30 border border-red-800/50',
@@ -38,6 +53,10 @@ function timeAgo(ts: number) {
   if (s < 3600) return `${Math.floor(s / 60)}m ago`
   if (s < 86400) return `${Math.floor(s / 3600)}h ago`
   return `${Math.floor(s / 86400)}d ago`
+}
+
+function fmtTs(ts: number) {
+  return new Date(ts * 1000).toLocaleDateString('tr-TR', { month: 'short', day: 'numeric' })
 }
 
 function PnLBar({ pct }: { pct: number }) {
@@ -74,18 +93,74 @@ function EmptyState() {
   )
 }
 
+function EquityCurve({ curve }: { curve: CurvePoint[] }) {
+  if (curve.length < 2) {
+    return (
+      <div className="h-40 flex items-center justify-center text-gray-600 text-sm">
+        Equity curve will appear after first closed trade
+      </div>
+    )
+  }
+  const start = curve[0]?.equity ?? 10000
+  const isPositive = (curve[curve.length - 1]?.equity ?? start) >= start
+  const gradId = 'eqGrad'
+
+  const CustomTooltip = ({ active, payload }: { active?: boolean; payload?: { payload: CurvePoint }[] }) => {
+    if (!active || !payload?.length) return null
+    const d = payload[0].payload
+    const pnl = d.equity - start
+    return (
+      <div className="bg-gray-900 border border-gray-700 rounded-lg p-2.5 text-xs shadow-xl">
+        <p className="text-gray-400">{fmtTs(d.ts)}</p>
+        <p className="text-white font-bold font-mono">${d.equity.toLocaleString('en-US', { maximumFractionDigits: 2 })}</p>
+        <p className={`font-mono font-bold ${pnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+          {pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}
+        </p>
+        {d.symbol && <p className="text-gray-500 mt-0.5">{d.symbol} {d.direction}</p>}
+      </div>
+    )
+  }
+
+  return (
+    <ResponsiveContainer width="100%" height={180}>
+      <AreaChart data={curve} margin={{ top: 4, right: 4, left: 0, bottom: 0 }}>
+        <defs>
+          <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="5%" stopColor={isPositive ? '#16a34a' : '#dc2626'} stopOpacity={0.25} />
+            <stop offset="95%" stopColor={isPositive ? '#16a34a' : '#dc2626'} stopOpacity={0.02} />
+          </linearGradient>
+        </defs>
+        <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" vertical={false} />
+        <XAxis dataKey="ts" tickFormatter={fmtTs} tick={{ fill: '#6b7280', fontSize: 10 }}
+          tickLine={false} axisLine={false} interval="preserveStartEnd" />
+        <YAxis tick={{ fill: '#6b7280', fontSize: 10 }} tickLine={false} axisLine={false}
+          tickFormatter={v => `$${(v / 1000).toFixed(1)}K`} width={52} domain={['auto', 'auto']} />
+        <Tooltip content={<CustomTooltip />} />
+        <ReferenceLine y={start} stroke="#374151" strokeDasharray="4 4" strokeWidth={1} />
+        <Area
+          type="monotone" dataKey="equity" stroke={isPositive ? '#16a34a' : '#dc2626'}
+          strokeWidth={2} fill={`url(#${gradId})`} dot={false} activeDot={{ r: 4, fill: isPositive ? '#16a34a' : '#dc2626' }}
+        />
+      </AreaChart>
+    </ResponsiveContainer>
+  )
+}
+
 export default function PositionsPage() {
   const [data, setData] = useState<PositionData | null>(null)
+  const [portfolio, setPortfolio] = useState<PortfolioData | null>(null)
   const [loading, setLoading] = useState(true)
   const [lastUpdate, setLastUpdate] = useState('')
 
   const fetchData = async () => {
     try {
-      const res = await fetch('/api/positions')
-      if (res.ok) {
-        setData(await res.json())
-        setLastUpdate(new Date().toLocaleTimeString())
-      }
+      const [posRes, portRes] = await Promise.all([
+        fetch('/api/positions'),
+        fetch('/api/portfolio'),
+      ])
+      if (posRes.ok) setData(await posRes.json())
+      if (portRes.ok) setPortfolio(await portRes.json())
+      setLastUpdate(new Date().toLocaleTimeString())
     } catch { /* retry */ } finally {
       setLoading(false)
     }
@@ -109,6 +184,8 @@ export default function PositionsPage() {
   const totalExposed = positions.reduce((s, p) => s + p.size_usd, 0)
   const winTrades = trade_history.filter(t => t.pnl_pct > 0).length
   const winRate = trade_history.length > 0 ? (winTrades / trade_history.length * 100) : 0
+  const stats = portfolio?.stats
+  const curve = portfolio?.curve ?? []
 
   return (
     <div className="space-y-5">
@@ -120,7 +197,7 @@ export default function PositionsPage() {
         <span className="text-xs text-gray-600">{lastUpdate}</span>
       </div>
 
-      {/* ── Summary stats ── */}
+      {/* Summary stats */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
           <p className="text-gray-500 text-xs uppercase tracking-wider mb-1">Open Positions</p>
@@ -149,7 +226,54 @@ export default function PositionsPage() {
         </div>
       </div>
 
-      {/* ── Exposure bar ── */}
+      {/* Portfolio equity curve */}
+      <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
+        <div className="px-4 py-3 border-b border-gray-800 flex items-center justify-between flex-wrap gap-2">
+          <h2 className="text-blue-400 font-semibold text-sm uppercase tracking-wider">📈 Equity Curve</h2>
+          {stats && (
+            <div className="flex items-center gap-4 text-xs">
+              <span className="text-gray-500">
+                Start: <span className="text-gray-300 font-mono">${stats.start_equity.toLocaleString()}</span>
+              </span>
+              <span className="text-gray-500">
+                Now: <span className="text-white font-bold font-mono">${stats.current_equity.toLocaleString('en-US', { maximumFractionDigits: 2 })}</span>
+              </span>
+              <span className={stats.total_pnl >= 0 ? 'text-green-400 font-bold' : 'text-red-400 font-bold'}>
+                {stats.total_pnl >= 0 ? '+' : ''}${stats.total_pnl.toFixed(2)} ({stats.total_pnl_pct >= 0 ? '+' : ''}{stats.total_pnl_pct.toFixed(2)}%)
+              </span>
+            </div>
+          )}
+        </div>
+        <div className="p-4">
+          <EquityCurve curve={curve} />
+        </div>
+        {stats && stats.total_trades > 0 && (
+          <div className="px-4 pb-4 grid grid-cols-2 sm:grid-cols-4 gap-3">
+            <div className="bg-gray-800/50 rounded-lg p-2.5 text-center">
+              <p className="text-gray-500 text-xs">Total Trades</p>
+              <p className="text-white font-bold">{stats.total_trades}</p>
+            </div>
+            <div className="bg-gray-800/50 rounded-lg p-2.5 text-center">
+              <p className="text-gray-500 text-xs">Win Rate</p>
+              <p className={`font-bold ${stats.win_rate >= 52 ? 'text-green-400' : 'text-yellow-400'}`}>{stats.win_rate.toFixed(1)}%</p>
+            </div>
+            <div className="bg-gray-800/50 rounded-lg p-2.5 text-center">
+              <p className="text-gray-500 text-xs">Profit Factor</p>
+              <p className={`font-bold font-mono ${stats.profit_factor != null && stats.profit_factor >= 1.5 ? 'text-green-400' : 'text-yellow-400'}`}>
+                {stats.profit_factor != null ? stats.profit_factor.toFixed(2) : '—'}
+              </p>
+            </div>
+            <div className="bg-gray-800/50 rounded-lg p-2.5 text-center">
+              <p className="text-gray-500 text-xs">Max Drawdown</p>
+              <p className={`font-bold font-mono ${stats.max_drawdown_pct < 5 ? 'text-green-400' : stats.max_drawdown_pct < 10 ? 'text-yellow-400' : 'text-red-400'}`}>
+                {stats.max_drawdown_pct.toFixed(2)}%
+              </p>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Exposure bar */}
       {totalExposed > 0 && (
         <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 space-y-2">
           <div className="flex justify-between text-xs text-gray-400">
@@ -166,7 +290,7 @@ export default function PositionsPage() {
         </div>
       )}
 
-      {/* ── Open Positions ── */}
+      {/* Open Positions */}
       <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
         <div className="px-4 py-3 border-b border-gray-800 flex items-center justify-between">
           <h2 className="text-orange-400 font-semibold text-sm uppercase tracking-wider">⚡ Open Positions</h2>
@@ -200,9 +324,7 @@ export default function PositionsPage() {
                       pos.unrealized_pct < -0.5 ? 'bg-red-950/10' : ''
                     }`}
                     onClick={() => window.location.href = `/coin/${pos.symbol}`}>
-                    <td className="px-4 py-3 font-bold text-white hover:text-orange-400 transition-colors">
-                      {pos.symbol}
-                    </td>
+                    <td className="px-4 py-3 font-bold text-white hover:text-orange-400 transition-colors">{pos.symbol}</td>
                     <td className="px-4 py-3">
                       <span className={`text-xs px-2 py-0.5 rounded font-bold border ${DIR_STYLE[pos.direction] ?? ''}`}>
                         {pos.direction === 'long' ? '▲ LONG' : '▼ SHORT'}
@@ -236,7 +358,7 @@ export default function PositionsPage() {
         )}
       </div>
 
-      {/* ── Recent Trade History ── */}
+      {/* Trade History */}
       <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
         <div className="px-4 py-3 border-b border-gray-800 flex items-center justify-between">
           <h2 className="text-blue-400 font-semibold text-sm uppercase tracking-wider">📋 Recent Trades</h2>
@@ -265,9 +387,7 @@ export default function PositionsPage() {
                   <tr key={i}
                     className="border-b border-gray-800/40 hover:bg-gray-800/20 transition-colors cursor-pointer"
                     onClick={() => window.location.href = `/coin/${trade.symbol}`}>
-                    <td className="px-4 py-2.5 font-bold text-white hover:text-orange-400 transition-colors">
-                      {trade.symbol}
-                    </td>
+                    <td className="px-4 py-2.5 font-bold text-white hover:text-orange-400 transition-colors">{trade.symbol}</td>
                     <td className="px-4 py-2.5">
                       <span className={`text-xs px-1.5 py-0.5 rounded font-bold border ${DIR_STYLE[trade.direction] ?? 'text-gray-400'}`}>
                         {trade.direction === 'long' ? '▲' : '▼'} {trade.direction?.toUpperCase()}

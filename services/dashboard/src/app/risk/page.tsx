@@ -13,15 +13,21 @@ interface RiskData {
   recent_liquidations: Array<{ symbol: string; side: string; value_usdt: number; time: string }>
   drift_summary: Record<string, number>
   limits: {
-    max_drawdown: number
-    max_daily_loss: number
-    max_position_pct: number
-    min_confidence: number
-    max_trades_per_day: number
-    max_leverage: number
-    max_open_positions: number
+    max_drawdown: number; max_daily_loss: number; max_position_pct: number
+    min_confidence: number; max_trades_per_day: number; max_leverage: number; max_open_positions: number
   }
-  crisis_scale: Record<string, { label: string; multiplier: number; color: string }>
+}
+
+interface Position {
+  symbol: string; direction: string; size_usd: number
+  entry_price: number; current_price: number | null
+  unrealized_pct: number; unrealized_usdt: number; age_hours: number
+  entry_signal?: { confidence: number; regime: string }
+}
+
+interface SqsEntry {
+  symbol: string; sqs: number; direction: string; confidence: number
+  sharpe: number | null; win_rate: number | null; regime: string | null; drift: string
 }
 
 const CRISIS_COLORS = ['text-green-400', 'text-yellow-400', 'text-orange-400', 'text-red-400', 'text-red-500 animate-pulse']
@@ -33,7 +39,6 @@ const DRIFT_COLORS: Record<string, string> = { STABLE: 'text-green-400', WARNING
 function GaugeBar({ value, max, color, danger, label }: { value: number; max: number; color: string; danger?: number; label: string }) {
   const pct = Math.min(100, (value / max) * 100)
   const isDanger = danger !== undefined && value >= danger
-  const barColor = isDanger ? 'bg-red-500' : color
   return (
     <div>
       <div className="flex justify-between items-center mb-1.5">
@@ -43,7 +48,7 @@ function GaugeBar({ value, max, color, danger, label }: { value: number; max: nu
         </span>
       </div>
       <div className="relative w-full h-3 bg-gray-800 rounded-full overflow-hidden">
-        <div className={`absolute left-0 h-full rounded-full transition-all duration-500 ${barColor}`} style={{ width: `${pct}%` }} />
+        <div className={`absolute left-0 h-full rounded-full transition-all duration-500 ${isDanger ? 'bg-red-500' : color}`} style={{ width: `${pct}%` }} />
         {danger !== undefined && (
           <div className="absolute h-full w-0.5 bg-red-500/50" style={{ left: `${(danger / max) * 100}%` }} />
         )}
@@ -67,15 +72,45 @@ function LimitCard({ label, value, description, icon }: { label: string; value: 
   )
 }
 
+function SqsBar({ v }: { v: number }) {
+  const color = v >= 70 ? 'bg-green-500' : v >= 50 ? 'bg-yellow-500' : v >= 30 ? 'bg-orange-500' : 'bg-red-500'
+  const textColor = v >= 70 ? 'text-green-400' : v >= 50 ? 'text-yellow-400' : v >= 30 ? 'text-orange-400' : 'text-red-400'
+  return (
+    <div className="flex items-center gap-2">
+      <div className="flex-1 h-1.5 bg-gray-800 rounded-full overflow-hidden">
+        <div className={`h-full rounded-full ${color}`} style={{ width: `${v}%` }} />
+      </div>
+      <span className={`text-xs font-bold font-mono w-7 text-right ${textColor}`}>{v}</span>
+    </div>
+  )
+}
+
+function fmtPrice(p: number | null) {
+  if (!p) return '—'
+  if (p >= 1000) return p.toLocaleString('en-US', { maximumFractionDigits: 2 })
+  if (p >= 1) return p.toFixed(4)
+  return p.toFixed(6)
+}
+
 export default function RiskPage() {
   const [data, setData] = useState<Partial<RiskData>>({})
+  const [positions, setPositions] = useState<Position[]>([])
+  const [sqsTop, setSqsTop] = useState<SqsEntry[]>([])
   const [loading, setLoading] = useState(true)
   const [lastUpdate, setLastUpdate] = useState('')
 
   const fetchData = async () => {
     try {
-      const d = await fetch('/api/risk').then(r => r.json())
-      setData(d || {})
+      const [riskJson, posJson, sqsJson] = await Promise.all([
+        fetch('/api/risk').then(r => r.json()),
+        fetch('/api/positions').then(r => r.json()),
+        fetch('/api/sqs').then(r => r.json()),
+      ])
+      setData(riskJson || {})
+      setPositions(posJson?.positions ?? [])
+      if (Array.isArray(sqsJson)) {
+        setSqsTop(sqsJson.filter((s: SqsEntry) => s.direction !== 'flat').slice(0, 8))
+      }
       setLastUpdate(new Date().toLocaleTimeString())
     } catch { } finally { setLoading(false) }
   }
@@ -90,6 +125,14 @@ export default function RiskPage() {
   const isHalted = data.immunity_halted ?? false
   const driftSummary = data.drift_summary ?? {}
   const totalDriftSamples = Object.values(driftSummary).reduce((a, b) => a + b, 0)
+  const totalUnrealized = positions.reduce((s, p) => s + p.unrealized_usdt, 0)
+
+  if (loading) return (
+    <div className="flex items-center justify-center mt-32 gap-3 text-gray-500">
+      <span className="animate-spin text-red-400">⚡</span>
+      <span>Loading risk data...</span>
+    </div>
+  )
 
   return (
     <div className="space-y-5">
@@ -98,7 +141,18 @@ export default function RiskPage() {
           <h1 className="text-white font-bold text-base">Risk & Immunity System</h1>
           <p className="text-gray-500 text-xs mt-0.5">Hard limits enforced on every order — cannot be bypassed by any AI component</p>
         </div>
-        <span className="text-xs text-gray-600 shrink-0">{lastUpdate ? `${lastUpdate} · 5s` : '5s refresh'}</span>
+        <div className="flex items-center gap-3 shrink-0">
+          {data.vix != null && (
+            <span className={`text-xs font-mono px-2 py-1 rounded border ${
+              data.vix > 40 ? 'text-red-400 border-red-700/50 bg-red-900/20' :
+              data.vix > 25 ? 'text-yellow-400 border-yellow-700/50 bg-yellow-900/20' :
+              'text-green-400 border-green-700/50 bg-green-900/20'
+            }`}>
+              VIX {data.vix.toFixed(1)}
+            </span>
+          )}
+          <span className="text-xs text-gray-600">{lastUpdate ? `${lastUpdate} · 5s` : '5s refresh'}</span>
+        </div>
       </div>
 
       {isHalted && (
@@ -111,12 +165,23 @@ export default function RiskPage() {
         </div>
       )}
 
+      {/* Crisis Level */}
       <div className={`rounded-xl border p-4 ${CRISIS_BG[crisis] ?? CRISIS_BG[0]}`}>
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-white font-semibold text-sm">Crisis Level</h2>
-          <span className={`text-2xl font-black ${CRISIS_COLORS[crisis]}`}>
-            {CRISIS_LABELS[crisis]} (L{crisis})
-          </span>
+          <div className="flex items-center gap-3">
+            {data.regime && (
+              <span className={`text-xs px-2 py-0.5 rounded border ${
+                data.regime === 'trending_up' ? 'text-green-400 border-green-700/50 bg-green-900/20' :
+                data.regime === 'trending_down' ? 'text-red-400 border-red-700/50 bg-red-900/20' :
+                data.regime === 'volatile' ? 'text-orange-400 border-orange-700/50 bg-orange-900/20' :
+                'text-blue-400 border-blue-700/50 bg-blue-900/20'
+              }`}>{data.regime.replace('_', ' ')}</span>
+            )}
+            <span className={`text-2xl font-black ${CRISIS_COLORS[crisis]}`}>
+              {CRISIS_LABELS[crisis]} (L{crisis})
+            </span>
+          </div>
         </div>
         <div className="grid grid-cols-5 gap-1.5">
           {CRISIS_LABELS.map((label, i) => (
@@ -138,23 +203,90 @@ export default function RiskPage() {
         </p>
       </div>
 
+      {/* Active Positions + SQS Top Signals */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        {/* Open positions */}
+        <div className="bg-gray-900 border border-gray-800 rounded-lg overflow-hidden">
+          <div className="px-4 py-3 border-b border-gray-800 flex items-center justify-between">
+            <h2 className="text-orange-400 font-semibold text-sm uppercase tracking-wider">⚡ Open Positions</h2>
+            <div className="flex items-center gap-2 text-xs">
+              <span className={totalUnrealized >= 0 ? 'text-green-400 font-bold' : 'text-red-400 font-bold'}>
+                {totalUnrealized >= 0 ? '+' : ''}${totalUnrealized.toFixed(2)}
+              </span>
+              <span className="text-gray-600">{positions.length} / 3</span>
+            </div>
+          </div>
+          {positions.length === 0 ? (
+            <p className="text-gray-500 text-sm p-5 text-center">No open positions</p>
+          ) : (
+            <div className="divide-y divide-gray-800/40">
+              {positions.map(pos => (
+                <a key={pos.symbol} href={`/coin/${pos.symbol}`}
+                  className="flex items-center justify-between px-4 py-3 hover:bg-gray-800/30 transition-colors">
+                  <div className="flex items-center gap-3">
+                    <span className={`text-xs px-1.5 py-0.5 rounded border font-bold ${
+                      pos.direction === 'long' ? 'text-green-400 border-green-700/50 bg-green-900/20' : 'text-red-400 border-red-700/50 bg-red-900/20'
+                    }`}>{pos.direction === 'long' ? '▲' : '▼'}</span>
+                    <div>
+                      <p className="text-white font-bold text-sm">{pos.symbol}</p>
+                      <p className="text-gray-500 text-xs">
+                        {fmtPrice(pos.entry_price)} → {fmtPrice(pos.current_price)}
+                        {' · '}
+                        {pos.age_hours < 1 ? `${Math.round(pos.age_hours * 60)}m` : `${pos.age_hours.toFixed(1)}h`}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="text-right">
+                    <p className={`font-bold font-mono text-sm ${pos.unrealized_usdt >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                      {pos.unrealized_usdt >= 0 ? '+' : ''}${pos.unrealized_usdt.toFixed(2)}
+                    </p>
+                    <p className={`text-xs font-mono ${pos.unrealized_pct >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                      {pos.unrealized_pct >= 0 ? '+' : ''}{pos.unrealized_pct.toFixed(2)}%
+                    </p>
+                  </div>
+                </a>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Top SQS signals */}
+        <div className="bg-gray-900 border border-gray-800 rounded-lg overflow-hidden">
+          <div className="px-4 py-3 border-b border-gray-800 flex items-center justify-between">
+            <h2 className="text-purple-400 font-semibold text-sm uppercase tracking-wider">🏆 Top Signal Quality</h2>
+            <span className="text-xs text-gray-600">SQS score (0–100)</span>
+          </div>
+          {sqsTop.length === 0 ? (
+            <p className="text-gray-500 text-sm p-5 text-center">Computing SQS scores...</p>
+          ) : (
+            <div className="divide-y divide-gray-800/40">
+              {sqsTop.map(s => (
+                <a key={s.symbol} href={`/coin/${s.symbol}`}
+                  className="flex items-center gap-3 px-4 py-2.5 hover:bg-gray-800/30 transition-colors">
+                  <span className={`text-xs font-bold w-4 ${s.direction === 'long' ? 'text-green-400' : 'text-red-400'}`}>
+                    {s.direction === 'long' ? '▲' : '▼'}
+                  </span>
+                  <span className="text-white font-bold text-xs w-20 shrink-0">{s.symbol.replace('USDT', '')}</span>
+                  <div className="flex-1 min-w-0">
+                    <SqsBar v={s.sqs} />
+                  </div>
+                  <div className="text-right shrink-0 text-xs text-gray-500 space-y-0.5">
+                    {s.sharpe != null && <p>Sharpe {s.sharpe.toFixed(2)}</p>}
+                    {s.win_rate != null && <p>WR {s.win_rate.toFixed(0)}%</p>}
+                  </div>
+                </a>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Daily Limits + Drift */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <div className="bg-gray-900 border border-gray-800 rounded-lg p-4 space-y-4">
           <h2 className="text-red-400 font-semibold text-sm uppercase tracking-wider">Daily Limits</h2>
-          <GaugeBar
-            label="Daily Loss"
-            value={dailyLoss}
-            max={maxDailyLoss}
-            color="bg-orange-500"
-            danger={maxDailyLoss}
-          />
-          <GaugeBar
-            label="Trades Today"
-            value={dailyTrades}
-            max={maxTrades}
-            color="bg-blue-500"
-            danger={maxTrades}
-          />
+          <GaugeBar label="Daily Loss" value={dailyLoss} max={maxDailyLoss} color="bg-orange-500" danger={maxDailyLoss} />
+          <GaugeBar label="Trades Today" value={dailyTrades} max={maxTrades} color="bg-blue-500" danger={maxTrades} />
           <div className="pt-2 border-t border-gray-800/60 text-xs text-gray-500">
             Limits reset at 00:00 UTC daily. Exceeding daily loss triggers trading suspension for the day.
           </div>
@@ -174,7 +306,8 @@ export default function RiskPage() {
                     <span className={`w-16 font-semibold ${DRIFT_COLORS[status]}`}>{status}</span>
                     <div className="flex-1 bg-gray-800 rounded-full h-2 overflow-hidden">
                       <div className={`h-full rounded-full ${
-                        status === 'STABLE' ? 'bg-green-500' : status === 'WARNING' ? 'bg-yellow-500' : status === 'DRIFTING' ? 'bg-orange-500' : 'bg-red-500'
+                        status === 'STABLE' ? 'bg-green-500' : status === 'WARNING' ? 'bg-yellow-500' :
+                        status === 'DRIFTING' ? 'bg-orange-500' : 'bg-red-500'
                       }`} style={{ width: `${pct}%` }} />
                     </div>
                     <span className="text-gray-400 w-16 text-right font-mono">{count} ({pct.toFixed(0)}%)</span>
@@ -189,6 +322,7 @@ export default function RiskPage() {
         </div>
       </div>
 
+      {/* Hard Limits */}
       <div className="bg-gray-900 border border-gray-800 rounded-lg overflow-hidden">
         <div className="px-4 py-3 border-b border-gray-800">
           <h2 className="text-orange-400 font-semibold text-sm uppercase tracking-wider">Absolute Hard Limits</h2>
@@ -245,9 +379,7 @@ export default function RiskPage() {
                   <span className={`font-bold ${liq.side === 'BUY' ? 'text-green-400' : 'text-red-400'}`}>{liq.side}</span>
                   <span className="text-white font-semibold">{liq.symbol}</span>
                 </div>
-                <span className="font-mono text-orange-400 font-bold">
-                  ${(liq.value_usdt / 1000).toFixed(1)}K
-                </span>
+                <span className="font-mono text-orange-400 font-bold">${(liq.value_usdt / 1000).toFixed(1)}K</span>
               </div>
             ))}
           </div>

@@ -178,16 +178,6 @@ export async function GET(
     }))
 
     // ── 5. Parse Redis data ──
-    const [featRaw, sigRaw, verdictRaw, verdictsRaw, btRaw, shadowRaw, contextRaw] = await Promise.all([
-      redis.get(`features:latest:${symbol}`),
-      redis.get(`signal:latest:${symbol}`),
-      redis.get(`agents:verdict:${symbol}`),
-      redis.get(`agents:verdicts:${symbol}`),
-      redis.get('backtest:results'),
-      redis.get('shadow:leaderboard'),
-      redis.get(`context:latest:${symbol}`),
-    ])
-
     const features = featRaw ? JSON.parse(featRaw) : null
     const signal = sigRaw ? JSON.parse(sigRaw) : null
     const verdict = verdictRaw ? JSON.parse(verdictRaw) : null
