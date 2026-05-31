@@ -15,15 +15,24 @@ log = logging.getLogger(__name__)
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379")
 POSTGRES_URL = os.getenv("POSTGRES_URL", "")
 TIMESCALE_URL = os.getenv("TIMESCALE_URL", "")
-SYMBOLS_RAW = os.getenv("SYMBOLS", "BTCUSDT,ETHUSDT,BNBUSDT")
-SYMBOLS = [s.strip() for s in SYMBOLS_RAW.split(",") if s.strip()]
+
+
+async def discover_symbols(redis: aioredis.Redis) -> list[str]:
+    keys = await redis.keys("features:latest:*")
+    symbols = [
+        (k.decode() if isinstance(k, bytes) else k).split(":")[-1]
+        for k in keys
+    ]
+    return sorted(symbols) if symbols else ["BTCUSDT", "ETHUSDT", "BNBUSDT"]
 
 EVOLUTION_INTERVAL = 3 * 3600
 GENERATIONS = 30
 
 
 async def evolution_cycle(redis: aioredis.Redis, gm: GenomeManager):
-    for symbol in SYMBOLS:
+    symbols = await discover_symbols(redis)
+    log.info(f"neat_evolution cycle: {len(symbols)} symbols")
+    for symbol in symbols:
         log.info(f"Starting NEAT evolution: {symbol}")
         engine = NEATTradingEngine(db_url=TIMESCALE_URL or None, symbol=symbol)
         await engine.load_training_data()

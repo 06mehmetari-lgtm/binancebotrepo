@@ -14,9 +14,17 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname
 log = logging.getLogger(__name__)
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379")
-SYMBOLS_RAW = os.getenv("SYMBOLS", "BTCUSDT,ETHUSDT,BNBUSDT")
-SYMBOLS = [s.strip() for s in SYMBOLS_RAW.split(",") if s.strip()]
 PORTFOLIO_VALUE = float(os.getenv("PORTFOLIO_VALUE", "10000"))
+SYMBOL_REFRESH_INTERVAL = 300
+
+
+async def discover_symbols(redis: aioredis.Redis) -> list[str]:
+    keys = await redis.keys("features:latest:*")
+    symbols = [
+        (k.decode() if isinstance(k, bytes) else k).split(":")[-1]
+        for k in keys
+    ]
+    return sorted(symbols) if symbols else ["BTCUSDT", "ETHUSDT", "BNBUSDT"]
 
 trader = PaperTrader(initial_capital=PORTFOLIO_VALUE)
 SHADOW_IDS = ["SHADOW_A", "SHADOW_B", "SHADOW_C"]
@@ -93,8 +101,17 @@ async def main():
 
 
 async def _trading_loop(redis: aioredis.Redis):
+    symbols: list[str] = []
+    last_refresh = 0.0
+
     while True:
-        for symbol in SYMBOLS:
+        now = time.time()
+        if now - last_refresh > SYMBOL_REFRESH_INTERVAL or not symbols:
+            symbols = await discover_symbols(redis)
+            last_refresh = now
+            log.info(f"shadow_system tracking {len(symbols)} symbols")
+
+        for symbol in symbols:
             try:
                 await simulate_tick(redis, symbol)
             except Exception as e:

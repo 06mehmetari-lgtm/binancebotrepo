@@ -14,13 +14,21 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname
 log = logging.getLogger(__name__)
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379")
-SYMBOLS_RAW = os.getenv("SYMBOLS", "BTCUSDT,ETHUSDT,BNBUSDT")
-SYMBOLS = [s.strip() for s in SYMBOLS_RAW.split(",") if s.strip()]
+SYMBOL_REFRESH_INTERVAL = 300
 
 regime_classifier = RegimeClassifier()
 crisis_detector = CrisisDetector()
 
-FEATURE_HISTORY: dict[str, list] = {s: [] for s in SYMBOLS}
+FEATURE_HISTORY: dict[str, list] = {}
+
+
+async def discover_symbols(redis: aioredis.Redis) -> list[str]:
+    keys = await redis.keys("features:latest:*")
+    symbols = [
+        (k.decode() if isinstance(k, bytes) else k).split(":")[-1]
+        for k in keys
+    ]
+    return sorted(symbols) if symbols else ["BTCUSDT", "ETHUSDT", "BNBUSDT"]
 
 
 async def compute_context(redis: aioredis.Redis, symbol: str) -> dict | None:
@@ -79,11 +87,20 @@ async def compute_context(redis: aioredis.Redis, symbol: str) -> dict | None:
 
 
 async def main():
-    log.info(f"context_engine starting — symbols: {SYMBOLS}")
+    log.info("context_engine starting — discovering symbols dynamically")
     redis = await aioredis.from_url(REDIS_URL)
 
+    symbols: list[str] = []
+    last_refresh = 0.0
+
     while True:
-        for symbol in SYMBOLS:
+        now = time.time()
+        if now - last_refresh > SYMBOL_REFRESH_INTERVAL or not symbols:
+            symbols = await discover_symbols(redis)
+            last_refresh = now
+            log.info(f"context_engine tracking {len(symbols)} symbols")
+
+        for symbol in symbols:
             ctx = await compute_context(redis, symbol)
             if ctx:
                 await redis.set(f"context:latest:{symbol}", json.dumps(ctx), ex=120)
