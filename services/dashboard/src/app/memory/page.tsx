@@ -1,5 +1,7 @@
 'use client'
 import { useEffect, useState, useRef } from 'react'
+import { PositionDecisionPanel } from '@/components/PositionDecisionPanel'
+import type { PositionDecision } from '@/lib/positions'
 
 interface ActivityEvent {
   type: string
@@ -28,6 +30,8 @@ interface ActiveSignal {
   rsi?: number
   crisis_level?: number
   source?: string
+  trade_action?: string
+  open_reason?: string
   timestamp?: number
 }
 
@@ -67,8 +71,13 @@ interface MemoryData {
     close_actions?: number; hold_actions?: number
     avg_confidence: number; tracked_symbols: number
     context_symbols: number; agent_symbols: number
+    open_positions?: number
+    position_long?: number
+    position_short?: number
     snapshot_at?: number | null
   }
+  open_positions?: PositionDecision[]
+  portfolio?: { total_open?: number; long_positions?: number; short_positions?: number }
   learning?: {
     global?: { message?: string; symbols_tracked?: number; top_drivers?: { factor: string; avg_win_rate: number }[] }
     profiles?: LearnProfile[]
@@ -213,9 +222,9 @@ function ActivityRow({ ev }: { ev: ActivityEvent }) {
   )
 }
 
-function StatPill({ label, value, color }: { label: string; value: string | number; color: string }) {
+function StatPill({ label, value, color, highlight }: { label: string; value: string | number; color: string; highlight?: boolean }) {
   return (
-    <div className="bg-gray-900 border border-gray-800 rounded-lg p-3 text-center">
+    <div className={`rounded-lg p-3 text-center border ${highlight ? 'bg-yellow-950/30 border-yellow-700/50' : 'bg-gray-900 border-gray-800'}`}>
       <p className="text-gray-500 text-[10px] uppercase tracking-wider mb-1">{label}</p>
       <p className={`text-xl font-black ${color}`}>{value}</p>
     </div>
@@ -277,6 +286,7 @@ export default function MemoryPage() {
   const [loading, setLoading] = useState(true)
   const [lastUpdate, setLastUpdate] = useState('')
   const [tab, setTab] = useState<'live' | 'pipeline' | 'learning' | 'memories' | 'stats'>('live')
+  const [expandedPos, setExpandedPos] = useState<string | null>(null)
   const feedRef = useRef<HTMLDivElement>(null)
 
   const fetchData = async () => {
@@ -297,6 +307,7 @@ export default function MemoryPage() {
   const summary = data.signal_summary
   const activity = data.activity ?? []
   const activeSignals = data.active_signals ?? []
+  const openPositions = data.open_positions ?? []
   const currentState = data.current_state
   const genomes = data.genomes
   const winRate = (data.win_count ?? 0) + (data.loss_count ?? 0) > 0
@@ -308,8 +319,7 @@ export default function MemoryPage() {
   const crisis = currentState?.crisis_level ?? 0
   const learning = data.learning
   const scanning = data.scanning
-  const activeSignalCount = (summary?.long ?? 0) + (summary?.short ?? 0) + (summary?.close_actions ?? 0) + (summary?.hold_actions ?? 0)
-
+  const openPosCount = summary?.open_positions ?? data.portfolio?.total_open ?? openPositions.length
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -334,11 +344,12 @@ export default function MemoryPage() {
       </div>
 
       {/* Summary Stats */}
-      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-2">
+      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-9 gap-2">
         <StatPill label="Takip Edilen" value={summary?.tracked_symbols ?? 0} color="text-blue-400" />
-        <StatPill label="Aktif Sinyal" value={activeSignalCount} color="text-orange-400" />
-        <StatPill label="Long" value={summary?.long ?? 0} color="text-green-400" />
-        <StatPill label="Short" value={summary?.short ?? 0} color="text-red-400" />
+        <StatPill label="Açık Pozisyon" value={openPosCount} color="text-yellow-400" highlight={openPosCount > 0} />
+        <StatPill label="Poz L/S" value={`${summary?.position_long ?? 0}/${summary?.position_short ?? 0}`} color="text-yellow-300" />
+        <StatPill label="Sinyal L/S" value={`${summary?.long ?? 0}/${summary?.short ?? 0}`} color="text-orange-400" />
+        <StatPill label="Aktif" value={activeSignals.length} color="text-orange-300" />
         <StatPill label="Ort Güven" value={summary?.avg_confidence ? `${Math.round(summary.avg_confidence * 100)}%` : '—'} color={(summary?.avg_confidence ?? 0) >= 0.7 ? 'text-green-400' : 'text-orange-400'} />
         <StatPill label="Kapat" value={summary?.close_actions ?? 0} color="text-yellow-400" />
         <StatPill label="Öğrenilen Coin" value={learning?.profiles_count ?? 0} color="text-purple-400" />
@@ -365,6 +376,44 @@ export default function MemoryPage() {
 
       {/* TAB: Live */}
       {tab === 'live' && (
+        <div className="space-y-4">
+          {openPositions.length > 0 && (
+            <div className="bg-gray-900 border border-yellow-700/40 rounded-xl overflow-hidden">
+              <div className="px-4 py-3 border-b border-gray-800 flex items-center justify-between">
+                <div>
+                  <h2 className="text-yellow-400 font-semibold text-sm uppercase tracking-wider">Açık Pozisyonlar — AI Gerekçesi</h2>
+                  <p className="text-gray-600 text-xs mt-0.5">Ana sayfa ile aynı kaynak (portfolio:state:v1) · satıra tıkla</p>
+                </div>
+                <span className="text-yellow-400 font-bold text-lg">{openPositions.length}</span>
+              </div>
+              <div className="divide-y divide-gray-800/50">
+                {openPositions.map(pos => {
+                  const exp = expandedPos === pos.symbol
+                  return (
+                    <div key={pos.symbol}>
+                      <button
+                        type="button"
+                        onClick={() => setExpandedPos(exp ? null : pos.symbol)}
+                        className="w-full px-4 py-3 flex flex-wrap items-center gap-3 hover:bg-gray-800/30 text-left text-xs"
+                      >
+                        <span className="font-bold text-white w-24">{pos.symbol}</span>
+                        <span className={`px-2 py-0.5 rounded border font-bold ${DIR_BG[pos.direction] ?? ''}`}>
+                          {pos.direction === 'long' ? '▲ LONG' : '▼ SHORT'}
+                        </span>
+                        <span className={`font-mono font-bold ${(pos.unrealized_pct ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                          {(pos.unrealized_pct ?? 0) >= 0 ? '+' : ''}{pos.unrealized_pct?.toFixed(2)}%
+                        </span>
+                        <span className="text-gray-500 flex-1 min-w-[200px] line-clamp-1">{pos.open_reason}</span>
+                        <span className="text-gray-600">{exp ? '▲ gizle' : '▼ detay'}</span>
+                      </button>
+                      {exp && <PositionDecisionPanel pos={pos} />}
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          )}
+
         <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
           {/* Activity Feed */}
           <div className="bg-gray-900 border border-gray-800 rounded-lg overflow-hidden">
@@ -467,7 +516,16 @@ export default function MemoryPage() {
                 </div>
                 <div className="divide-y divide-gray-800/40">
                   {activeSignals.map(sig => (
-                    <div key={sig.symbol} className="px-4 py-2.5 flex items-center gap-3 hover:bg-gray-800/20 text-xs">
+                    <button
+                      type="button"
+                      key={sig.symbol}
+                      onClick={() => {
+                        const p = openPositions.find(o => o.symbol === sig.symbol)
+                        if (p) setExpandedPos(expandedPos === sig.symbol ? null : sig.symbol)
+                        else window.location.href = `/coin/${sig.symbol}`
+                      }}
+                      className="w-full px-4 py-2.5 flex items-center gap-3 hover:bg-gray-800/20 text-xs text-left"
+                    >
                       <span className="font-bold text-white w-20 shrink-0">{sig.symbol}</span>
                       <span className={`px-1.5 rounded font-bold text-[10px] shrink-0 ${DIR_BG[sig.direction] ?? DIR_BG.flat}`}>
                         {sig.direction === 'long' ? '▲' : '▼'} {sig.direction.toUpperCase()}
@@ -487,12 +545,16 @@ export default function MemoryPage() {
                       {sig.drift_status && (
                         <span className={`text-[10px] shrink-0 ${DRIFT_COLOR[sig.drift_status] ?? 'text-gray-500'}`}>{sig.drift_status}</span>
                       )}
-                    </div>
+                      {sig.trade_action === 'hold' && (
+                        <span className="text-yellow-500 text-[10px] shrink-0">HOLD</span>
+                      )}
+                    </button>
                   ))}
                 </div>
               </div>
             )}
           </div>
+        </div>
         </div>
       )}
 

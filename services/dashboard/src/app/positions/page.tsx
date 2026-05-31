@@ -1,16 +1,13 @@
 'use client'
-import { useEffect, useState } from 'react'
+import { useEffect, useState, Fragment } from 'react'
 import {
-  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
+  XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   ReferenceLine, Area, AreaChart,
 } from 'recharts'
+import { PositionDecisionPanel } from '@/components/PositionDecisionPanel'
+import type { PositionDecision } from '@/lib/positions'
 
-interface Position {
-  symbol: string; direction: string; size_usd: number
-  entry_price: number; current_price: number | null
-  entry_time: number; unrealized_pct: number; unrealized_usdt: number
-  age_hours: number; entry_signal?: { confidence: number; regime: string; drift_status: string }
-}
+type Position = PositionDecision
 
 interface Trade {
   symbol: string; direction: string; entry_price: number; exit_price: number
@@ -42,8 +39,8 @@ const DIR_STYLE: Record<string, string> = {
   short: 'text-red-400 bg-red-900/30 border border-red-800/50',
 }
 
-function fmtPrice(p: number | null) {
-  if (!p) return '—'
+function fmtPrice(p: number | null | undefined) {
+  if (p == null || !p) return '—'
   if (p >= 1000) return p.toLocaleString('en-US', { maximumFractionDigits: 2 })
   if (p >= 1) return p.toFixed(4)
   return p.toFixed(6)
@@ -155,6 +152,7 @@ export default function PositionsPage() {
   const [lastUpdate, setLastUpdate] = useState('')
   const [emergencyBusy, setEmergencyBusy] = useState(false)
   const [emergencyMsg, setEmergencyMsg] = useState('')
+  const [expandedSymbol, setExpandedSymbol] = useState<string | null>(null)
 
   const fetchData = async () => {
     try {
@@ -223,7 +221,7 @@ export default function PositionsPage() {
   )
 
   const { positions = [], daily_pnl = 0, trade_history = [], trading_halted = false, halt_reason } = data ?? {}
-  const totalUnrealized = positions.reduce((s, p) => s + p.unrealized_usdt, 0)
+  const totalUnrealized = positions.reduce((s, p) => s + (p.unrealized_usdt ?? 0), 0)
   const totalExposed = positions.reduce((s, p) => s + p.size_usd, 0)
   const winTrades = trade_history.filter(t => t.pnl_pct > 0).length
   const winRate = trade_history.length > 0 ? (winTrades / trade_history.length * 100) : 0
@@ -388,17 +386,23 @@ export default function PositionsPage() {
                   <th className="text-left px-4 py-2.5">Age</th>
                   <th className="text-left px-4 py-2.5">Confidence</th>
                   <th className="text-left px-4 py-2.5">Regime</th>
+                  <th className="text-left px-4 py-2.5">AI</th>
                 </tr>
               </thead>
               <tbody>
-                {positions.map(pos => (
-                  <tr key={pos.symbol}
+                {positions.map(pos => {
+                  const exp = expandedSymbol === pos.symbol
+                  const entry = pos.entry_signal ?? {}
+                  const regime = String(entry.regime ?? pos.verdict?.direction ?? '—')
+                  return (
+                  <Fragment key={pos.symbol}>
+                  <tr
                     className={`border-b border-gray-800/40 hover:bg-gray-800/20 transition-colors cursor-pointer ${
-                      pos.unrealized_pct > 0.5 ? 'bg-green-950/10' :
-                      pos.unrealized_pct < -0.5 ? 'bg-red-950/10' : ''
+                      (pos.unrealized_pct ?? 0) > 0.5 ? 'bg-green-950/10' :
+                      (pos.unrealized_pct ?? 0) < -0.5 ? 'bg-red-950/10' : ''
                     }`}
-                    onClick={() => window.location.href = `/coin/${pos.symbol}`}>
-                    <td className="px-4 py-3 font-bold text-white hover:text-orange-400 transition-colors">{pos.symbol}</td>
+                    onClick={() => setExpandedSymbol(exp ? null : pos.symbol)}>
+                    <td className="px-4 py-3 font-bold text-white">{pos.symbol}</td>
                     <td className="px-4 py-3">
                       <span className={`text-xs px-2 py-0.5 rounded font-bold border ${DIR_STYLE[pos.direction] ?? ''}`}>
                         {pos.direction === 'long' ? '▲ LONG' : '▼ SHORT'}
@@ -407,25 +411,36 @@ export default function PositionsPage() {
                     <td className="px-4 py-3 font-mono text-xs text-gray-300">{fmtPrice(pos.entry_price)}</td>
                     <td className="px-4 py-3 font-mono text-xs text-white">{fmtPrice(pos.current_price)}</td>
                     <td className="px-4 py-3 text-xs text-gray-300">${pos.size_usd.toFixed(0)}</td>
-                    <td className="px-4 py-3"><PnLBar pct={pos.unrealized_pct} /></td>
-                    <td className={`px-4 py-3 font-mono text-xs font-bold ${pos.unrealized_usdt >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                      {pos.unrealized_usdt >= 0 ? '+' : ''}${pos.unrealized_usdt.toFixed(2)}
+                    <td className="px-4 py-3"><PnLBar pct={pos.unrealized_pct ?? 0} /></td>
+                    <td className={`px-4 py-3 font-mono text-xs font-bold ${(pos.unrealized_usdt ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                      {(pos.unrealized_usdt ?? 0) >= 0 ? '+' : ''}${(pos.unrealized_usdt ?? 0).toFixed(2)}
                     </td>
                     <td className="px-4 py-3 text-xs text-gray-500">
-                      {pos.age_hours < 1 ? `${Math.round(pos.age_hours * 60)}m` : `${pos.age_hours.toFixed(1)}h`}
+                      {(pos.age_hours ?? 0) < 1 ? `${Math.round((pos.age_hours ?? 0) * 60)}m` : `${(pos.age_hours ?? 0).toFixed(1)}h`}
                     </td>
                     <td className="px-4 py-3 text-xs text-gray-400">
-                      {pos.entry_signal ? `${Math.round(pos.entry_signal.confidence * 100)}%` : '—'}
+                      {entry.confidence != null ? `${Math.round(Number(entry.confidence) <= 1 ? Number(entry.confidence) * 100 : Number(entry.confidence))}%` : '—'}
                     </td>
                     <td className={`px-4 py-3 text-xs ${
-                      pos.entry_signal?.regime === 'trending_up' ? 'text-green-400' :
-                      pos.entry_signal?.regime === 'trending_down' ? 'text-red-400' :
-                      pos.entry_signal?.regime === 'volatile' ? 'text-yellow-400' : 'text-blue-400'
+                      regime === 'trending_up' ? 'text-green-400' :
+                      regime === 'trending_down' ? 'text-red-400' :
+                      regime === 'volatile' ? 'text-yellow-400' : 'text-blue-400'
                     }`}>
-                      {pos.entry_signal?.regime ?? '—'}
+                      {regime}
+                    </td>
+                    <td className="px-4 py-3 text-xs text-gray-500 max-w-[200px] truncate" title={pos.open_reason}>
+                      {exp ? '▲' : '▼'} {pos.open_reason?.slice(0, 48) ?? '—'}
                     </td>
                   </tr>
-                ))}
+                  {exp && (
+                    <tr className="bg-gray-950/50">
+                      <td colSpan={10}>
+                        <PositionDecisionPanel pos={pos} />
+                      </td>
+                    </tr>
+                  )}
+                  </Fragment>
+                )})}
               </tbody>
             </table>
           </div>

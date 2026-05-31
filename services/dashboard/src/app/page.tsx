@@ -219,7 +219,12 @@ export default function Home() {
           sub={`${signals.length || status.total_signals || 0} coin · kapat:${status.close_actions ?? 0}`}
           color="text-orange-400"
         />
-        <StatCard label="Açık Pozisyon" value={String(status.open_positions ?? 0)} color="text-yellow-400" />
+        <a href="/positions" className="block">
+          <StatCard label="Açık Pozisyon" value={String(status.open_positions ?? 0)} sub="tıkla → gerekçe" color="text-yellow-400" />
+        </a>
+        <a href="/memory" className="block">
+          <StatCard label="Sistem İzleme" value="→" sub="pozisyon + AI" color="text-purple-400" />
+        </a>
         <StatCard label="Best Genome" value={status.best_genome_fitness?.toFixed(4) ?? '—'} color="text-purple-400" />
         <StatCard label="Fear & Greed" value={String(status.fear_greed?.value ?? '—')} sub={status.fear_greed?.classification} color="text-yellow-400" />
         <StatCard label="VIX" value={vixVal ? vixVal.toFixed(1) : '—'} sub={vixVal > 40 ? 'EXTREME' : vixVal > 25 ? 'ELEVATED' : 'NORMAL'} color={vixVal > 40 ? 'text-red-400 animate-pulse' : vixVal > 25 ? 'text-orange-400' : 'text-green-400'} />

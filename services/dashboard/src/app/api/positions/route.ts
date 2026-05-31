@@ -1,79 +1,29 @@
 import { NextResponse } from 'next/server'
 export const dynamic = 'force-dynamic'
 import { createRedis } from '../_redis'
+import { fetchOpenPositions } from '@/lib/positions'
 
 export async function GET() {
   const redis = createRedis()
   try {
-    // OMS paper positions
-    const posKeys = await redis.keys('oms:position:*')
-    const [posRaws, dailyPnlRaw, tradeHistRaw] = await Promise.all([
-      Promise.all(posKeys.map(k => redis.get(k))),
+    const { positions, portfolio } = await fetchOpenPositions(redis)
+
+    const [dailyPnlRaw, tradeHistRaw, haltRaw] = await Promise.all([
       redis.get('oms:daily_pnl'),
       redis.lrange('oms:trade_history', 0, 19),
+      redis.get('system:trading:halted'),
     ])
 
-    const positions = posRaws
-      .map((raw, i) => {
-        if (!raw) return null
+    const tradeHistory = (tradeHistRaw as string[])
+      .map(r => {
         try {
-          const pos = JSON.parse(raw)
-          const key = typeof posKeys[i] === 'string' ? posKeys[i] : (posKeys[i] as Buffer).toString()
-          const symbol = key.split(':').pop() ?? pos.symbol
-          return { ...pos, symbol, key }
+          return JSON.parse(r)
         } catch {
           return null
         }
       })
       .filter(Boolean)
 
-    // Get current prices for P&L calculation
-    const priceRaws = await Promise.all(
-      positions.map(p => redis.get(`binance:ticker:${(p!.symbol as string).toLowerCase()}`))
-    )
-
-    const enriched = positions.map((pos, i) => {
-      const tickerRaw = priceRaws[i]
-      let currentPrice = 0
-      if (tickerRaw) {
-        try {
-          const t = JSON.parse(tickerRaw)
-          const d = t.data ?? t
-          const bid = parseFloat(d.b ?? 0)
-          const ask = parseFloat(d.a ?? bid)
-          currentPrice = bid > 0 && ask > 0 ? (bid + ask) / 2 : bid || ask
-        } catch { /* ignore */ }
-      }
-
-      const entryPrice = pos!.entry_price ?? 0
-      const direction = pos!.direction ?? 'long'
-      const sizeUsd = pos!.size_usd ?? 0
-
-      let unrealizedPct = 0
-      let unrealizedUsdt = 0
-      if (currentPrice > 0 && entryPrice > 0 && sizeUsd > 0) {
-        unrealizedPct = direction === 'long'
-          ? (currentPrice - entryPrice) / entryPrice
-          : (entryPrice - currentPrice) / entryPrice
-        unrealizedUsdt = sizeUsd * unrealizedPct
-      }
-
-      const ageSeconds = pos!.entry_time ? Date.now() / 1000 - pos!.entry_time : 0
-
-      return {
-        ...pos,
-        current_price: currentPrice > 0 ? currentPrice : null,
-        unrealized_pct: +(unrealizedPct * 100).toFixed(3),
-        unrealized_usdt: +unrealizedUsdt.toFixed(4),
-        age_hours: +(ageSeconds / 3600).toFixed(1),
-      }
-    })
-
-    const tradeHistory = tradeHistRaw.map(r => {
-      try { return JSON.parse(r) } catch { return null }
-    }).filter(Boolean)
-
-    const haltRaw = await redis.get('system:trading:halted')
     let trading_halted = false
     let halt_reason: string | null = null
     if (haltRaw) {
@@ -87,14 +37,17 @@ export async function GET() {
     }
 
     return NextResponse.json({
-      positions: enriched,
+      positions,
+      portfolio,
       daily_pnl: dailyPnlRaw ? parseFloat(dailyPnlRaw) : 0,
       trade_history: tradeHistory,
-      position_count: enriched.length,
+      position_count: positions.length,
       trading_halted,
       halt_reason,
     })
+  } catch (e) {
+    return NextResponse.json({ error: String(e) }, { status: 500 })
   } finally {
-    await redis.quit()
+    redis.disconnect()
   }
 }

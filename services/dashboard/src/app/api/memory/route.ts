@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 export const dynamic = 'force-dynamic'
 import { createRedis } from '../_redis'
 import { discoverSymbols, getUniverseSnapshot, scanKeys } from '@/lib/universe'
+import { fetchOpenPositions } from '@/lib/positions'
 
 const QDRANT_URL = process.env.QDRANT_URL || 'http://qdrant:6333'
 
@@ -192,7 +193,8 @@ export async function GET() {
     const ingestionRaw = safeJson(results?.[off]?.[1] as string | null) as { count?: number; symbols?: string[] } | null
 
     const learnGlobal = safeJson(learnGlobalRaw) as Record<string, unknown> | null
-    const portfolio = safeJson(portfolioRaw) as Record<string, unknown> | null
+
+    const { positions: openPositions, portfolio: portfolioState } = await fetchOpenPositions(redis)
 
     const backtestLogs = backtestLogRaw
       .map(r => { try { return JSON.parse(r as string) } catch { return null } })
@@ -230,9 +232,37 @@ export async function GET() {
     const topRegime = Object.entries(regimeCounts).sort((a, b) => b[1] - a[1])[0]?.[0] ?? null
     const tracked = ingestionRaw?.count ?? symbols.length
 
+    type ActiveRow = Record<string, unknown>
+    const activeBySymbol = new Map<string, ActiveRow>(
+      activeSignals.map(s => [String(s.symbol), s as ActiveRow])
+    )
+    for (const pos of openPositions) {
+      if (!activeBySymbol.has(pos.symbol)) {
+        const entry = pos.entry_signal ?? {}
+        activeBySymbol.set(pos.symbol, {
+          symbol: pos.symbol,
+          direction: pos.direction,
+          confidence: Number(entry.confidence ?? pos.verdict?.confidence ?? 0),
+          regime: entry.regime,
+          drift_status: entry.drift_status ?? pos.current_signal?.drift_status,
+          crisis_level: entry.crisis_level,
+          source: String(entry.source ?? 'open_position'),
+          trade_action: pos.trade_action ?? 'hold',
+          open_reason: pos.open_reason,
+        })
+      }
+    }
+    const mergedActive = Array.from(activeBySymbol.values()).sort(
+      (a, b) => (b.confidence as number) - (a.confidence as number)
+    )
+
+    const positionLong = portfolioState.long_positions
+    const positionShort = portfolioState.short_positions
+
     return NextResponse.json({
       activity,
-      active_signals: activeSignals,
+      active_signals: mergedActive.slice(0, 25),
+      open_positions: openPositions,
       signal_summary: {
         total: allSignals.length,
         long: directionCounts.long,
@@ -244,6 +274,9 @@ export async function GET() {
         tracked_symbols: tracked,
         context_symbols: symbols.length,
         agent_symbols: learnProfileKeys.length,
+        open_positions: portfolioState.total_open,
+        position_long: positionLong,
+        position_short: positionShort,
         snapshot_at: snap?.updated_at ?? (snapRaw as { updated_at?: number })?.updated_at ?? null,
       },
       drift_summary: driftCounts,
@@ -277,7 +310,7 @@ export async function GET() {
         engine_active: Boolean(hbLearn && now - parseFloat(hbLearn) < 60),
         last_heartbeat: hbLearn ? parseFloat(hbLearn) : null,
       },
-      portfolio,
+      portfolio: portfolioState,
       services,
       scanning: {
         active: Boolean(hbSignal && now - parseFloat(hbSignal) < 15),
