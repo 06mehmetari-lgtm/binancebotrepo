@@ -1,7 +1,7 @@
 """
 Debate Agent — orchestrates 9 agents and synthesizes a final verdict.
 Primary voting is rule-based (fast, no API cost per tick).
-Optionally uses Anthropic Claude for high-stakes synthesis.
+Uses Groq (Llama 3.1 70B) for high-stakes LLM synthesis when key is set.
 """
 
 import asyncio
@@ -10,10 +10,8 @@ import logging
 import os
 from dataclasses import dataclass
 
-import anthropic
-
 logger = logging.getLogger(__name__)
-MODEL = "claude-sonnet-4-6"
+GROQ_MODEL = "llama-3.1-70b-versatile"
 
 
 @dataclass
@@ -51,9 +49,13 @@ class DebateAgent:
 
     def _get_client(self):
         if self._client is None:
-            api_key = os.getenv("ANTHROPIC_API_KEY", "")
+            api_key = os.getenv("GROQ_API_KEY", "")
             if api_key:
-                self._client = anthropic.Anthropic(api_key=api_key)
+                try:
+                    from groq import Groq
+                    self._client = Groq(api_key=api_key)
+                except ImportError:
+                    logger.warning("groq package not installed")
         return self._client
 
     async def run_debate(self, symbol: str, features: dict, context: dict) -> DebateResult:
@@ -71,7 +73,61 @@ class DebateAgent:
         valid = [v for v in votes if isinstance(v, AgentVote)]
         if not valid:
             return DebateResult("flat", 0, 0, [], "no votes")
-        return self._aggregate(valid)
+
+        result = self._aggregate(valid)
+
+        # Groq LLM synthesis — only for high-confidence non-flat signals
+        client = self._get_client()
+        if client and result.final_signal != "flat" and result.final_confidence > 0.65:
+            try:
+                result = await asyncio.get_event_loop().run_in_executor(
+                    None, self._llm_synthesize, client, symbol, features, context, result
+                )
+            except Exception as e:
+                logger.debug(f"LLM synthesis skipped for {symbol}: {e}")
+
+        return result
+
+    def _llm_synthesize(self, client, symbol: str, features: dict,
+                        context: dict, base: DebateResult) -> DebateResult:
+        rsi = round(float(features.get("rsi_14", 50)), 1)
+        macd = round(float(features.get("macd_hist", 0)), 4)
+        regime = context.get("regime", "unknown")
+        crisis = context.get("crisis_level", 0)
+        fg = context.get("fear_greed", 50)
+
+        prompt = (
+            f"Crypto trading signal for {symbol}. Rule-based agents voted: {base.final_signal.upper()} "
+            f"with {base.final_confidence:.0%} confidence ({base.consensus_strength:.0%} consensus).\n"
+            f"Key data: RSI={rsi}, MACD_hist={macd}, regime={regime}, "
+            f"crisis_level={crisis}, fear_greed={fg}, "
+            f"agent_reasoning='{base.majority_reasoning}'\n"
+            f"Respond with JSON only: "
+            f'{{\"signal\":\"long|short|flat\",\"confidence\":0.0-1.0,\"reasoning\":\"one sentence\"}}'
+        )
+
+        resp = client.chat.completions.create(
+            model=GROQ_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.1,
+            max_tokens=100,
+        )
+        raw = resp.choices[0].message.content.strip()
+        data = json.loads(raw)
+        signal = data.get("signal", base.final_signal)
+        confidence = float(data.get("confidence", base.final_confidence))
+        reasoning = data.get("reasoning", base.majority_reasoning)
+
+        if signal not in ("long", "short", "flat"):
+            signal = base.final_signal
+
+        return DebateResult(
+            final_signal=signal,
+            final_confidence=confidence,
+            consensus_strength=base.consensus_strength,
+            all_votes=base.all_votes,
+            majority_reasoning=f"[Groq] {reasoning}",
+        )
 
     def _aggregate(self, votes: list[AgentVote]) -> DebateResult:
         scores = {"long": 0.0, "short": 0.0, "flat": 0.0}
