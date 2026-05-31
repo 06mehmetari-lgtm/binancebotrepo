@@ -63,7 +63,9 @@ class DebateAgent:
     def _ollama_url(self) -> str | None:
         return os.getenv("OLLAMA_URL", "http://ollama:11434") or None
 
-    async def run_debate(self, symbol: str, features: dict, context: dict) -> DebateResult:
+    async def run_debate(
+        self, symbol: str, features: dict, context: dict, lessons: list[str] | None = None
+    ) -> DebateResult:
         votes = await asyncio.gather(
             self._technical_vote(features),
             self._onchain_vote(context),
@@ -80,6 +82,16 @@ class DebateAgent:
             return DebateResult("flat", 0, 0, [], "no votes")
 
         result = self._aggregate(valid)
+
+        if lessons and result.final_signal != "flat":
+            lesson_hint = " | ".join(lessons[:2])
+            result = DebateResult(
+                final_signal=result.final_signal,
+                final_confidence=result.final_confidence,
+                consensus_strength=result.consensus_strength,
+                all_votes=result.all_votes,
+                majority_reasoning=f"{result.majority_reasoning} | Lessons: {lesson_hint}",
+            )
 
         # LLM synthesis — only for high-confidence non-flat signals
         if result.final_signal != "flat" and result.final_confidence > 0.65:

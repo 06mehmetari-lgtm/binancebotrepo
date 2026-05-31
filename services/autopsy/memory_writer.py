@@ -25,7 +25,7 @@ class MemoryWriter:
         except Exception as e:
             logger.warning(f"Qdrant init: {e}")
 
-    async def write(self, trade: dict, autopsy: dict, context: dict):
+    async def write(self, trade: dict, autopsy: dict, context: dict, redis=None):
         text = (
             f"symbol={trade.get('symbol', '')} side={trade.get('side', '')} "
             f"result={'WIN' if autopsy.get('was_winner') else 'LOSS'} "
@@ -54,6 +54,25 @@ class MemoryWriter:
             )
         except Exception as e:
             logger.error(f"Memory write error: {e}")
+
+        if redis and trade.get("symbol"):
+            import json
+            lesson = {
+                "symbol": trade.get("symbol"),
+                "was_winner": autopsy.get("was_winner"),
+                "pnl_pct": autopsy.get("pnl_pct", 0),
+                "error_category": autopsy.get("error_category"),
+                "regime": autopsy.get("entry_regime"),
+                "confidence": autopsy.get("confidence", 0),
+                "summary": (
+                    f"{'Kazanç' if autopsy.get('was_winner') else 'Zarar'} "
+                    f"{autopsy.get('pnl_pct', 0):+.2%} — {autopsy.get('error_category', '')}"
+                ),
+                "time": time.time(),
+            }
+            sym = trade["symbol"]
+            await redis.lpush(f"trade:lessons:{sym}", json.dumps(lesson))
+            await redis.ltrim(f"trade:lessons:{sym}", 0, 19)
 
     def _embed(self, text: str) -> list[float]:
         arr = np.zeros(384)

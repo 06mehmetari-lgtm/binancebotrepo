@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 
 import asyncpg
 import redis.asyncio as aioredis
@@ -31,7 +32,21 @@ async def process_closed_trade(redis: aioredis.Redis, db, trade_data: dict):
     log.info(f"Autopsy: {symbol} pnl={result['pnl_pct']:.2%} cat={result['error_category']}")
 
     # Write to memory
-    await memory_writer.write(trade_data, result, ctx)
+    await memory_writer.write(trade_data, result, ctx, redis=redis)
+
+    lesson_text = (
+        f"{symbol}: {'WIN' if result['was_winner'] else 'LOSS'} "
+        f"{result['pnl_pct']:+.2%} — {result['error_category']}"
+    )
+    await redis.lpush("activity:feed", json.dumps({
+        "type": "autopsy",
+        "symbol": symbol,
+        "title": f"Autopsy {'✓' if result['was_winner'] else '✗'} {symbol}",
+        "body": lesson_text,
+        "level": "success" if result["was_winner"] else "warning",
+        "time": time.time(),
+    }))
+    await redis.ltrim("activity:feed", 0, 499)
 
     # Penalize genome if loss
     genome_id = trade_data.get("genome_id")

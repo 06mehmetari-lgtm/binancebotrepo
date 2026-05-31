@@ -23,9 +23,26 @@ export async function GET(req: Request) {
     pipeline.get(`neat:best_genome:${symbol}`)
     const results = await pipeline.exec()
 
-    const votes = safeJson(results?.[0]?.[1] as string | null) ?? []
-    const verdict = safeJson(results?.[1]?.[1] as string | null) ?? null
+    const votesRaw = (safeJson(results?.[0]?.[1] as string | null) ?? []) as Array<Record<string, unknown>>
+    const verdictRaw = safeJson(results?.[1]?.[1] as string | null) as Record<string, unknown> | null
     const genome = safeJson(results?.[2]?.[1] as string | null) ?? null
+
+    const votes = Array.isArray(votesRaw)
+      ? votesRaw.map(v => ({
+          ...v,
+          agent: String(v.agent ?? '').endsWith('_agent') ? v.agent : `${v.agent}_agent`,
+          reasoning: v.reasoning ?? '',
+        }))
+      : []
+
+    const verdict = verdictRaw
+      ? {
+          ...verdictRaw,
+          direction: verdictRaw.direction ?? verdictRaw.final_signal ?? 'flat',
+          consensus_reasoning: verdictRaw.consensus_reasoning ?? verdictRaw.reasoning ?? '',
+          dissent_risk: verdictRaw.dissent_risk ?? '',
+        }
+      : null
 
     return NextResponse.json({ symbol, votes, verdict, genome })
   } catch (e) {

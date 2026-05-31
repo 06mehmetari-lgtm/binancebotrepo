@@ -7,6 +7,14 @@ import time
 import redis.asyncio as aioredis
 
 from debate_agent import DebateAgent
+from explanation_builder import (
+    build_consensus_reasoning,
+    build_dissent_risk,
+    build_probability_breakdown,
+    build_trade_targets,
+    format_vote_reasoning,
+)
+from rag_context import fetch_trade_lessons
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
@@ -37,28 +45,74 @@ async def run_debate_for_symbol(redis: aioredis.Redis, symbol: str):
     features = json.loads(feat_raw)
     context = json.loads(ctx_raw)
 
-    result = await debate.run_debate(symbol, features, context)
+    lessons = await fetch_trade_lessons(redis, symbol)
+    result = await debate.run_debate(symbol, features, context, lessons=lessons)
 
-    # Serialize votes
     votes_payload = [
         {
-            "agent": v.agent_name,
+            "agent": f"{v.agent_name}_agent",
             "signal": v.signal,
             "confidence": v.confidence,
             "direction": v.signal,
+            "reasoning": format_vote_reasoning(
+                v.agent_name, v.signal, v.confidence, v.reasoning
+            ),
         }
         for v in result.all_votes
     ]
 
     await redis.set(f"agents:verdicts:{symbol}", json.dumps(votes_payload), ex=180)
 
-    # Also store final verdict for signal engine
+    ticker_raw = await redis.get(f"binance:ticker:{symbol.lower()}")
+    price = float(features.get("close") or features.get("last_price") or 0)
+    if not price and ticker_raw:
+        try:
+            td = json.loads(ticker_raw)
+            d = td.get("data", td)
+            bid = float(d.get("b", 0) or 0)
+            ask = float(d.get("a", bid) or bid)
+            price = (bid + ask) / 2 if bid else 0
+        except Exception:
+            pass
+    atr = float(features.get("atr") or features.get("atr_14") or 0)
+    if not atr and price:
+        atr = price * 0.01
+
+    consensus_reasoning = build_consensus_reasoning(
+        symbol,
+        result.final_signal,
+        result.final_confidence,
+        result.majority_reasoning,
+        features,
+        context,
+        lessons=lessons or None,
+    )
+    dissent_risk = build_dissent_risk(result.all_votes, result.final_signal)
+    probabilities = build_probability_breakdown(
+        result.all_votes,
+        result.final_signal,
+        result.final_confidence,
+        result.consensus_strength,
+    )
+    targets = build_trade_targets(
+        result.final_signal,
+        price,
+        atr,
+        result.final_confidence,
+        min(result.final_confidence * 0.05, 0.05),
+    )
+
     verdict = {
         "symbol": symbol,
         "direction": result.final_signal,
         "confidence": result.final_confidence,
         "consensus": result.consensus_strength,
         "reasoning": result.majority_reasoning,
+        "consensus_reasoning": consensus_reasoning,
+        "dissent_risk": dissent_risk,
+        "probabilities": probabilities,
+        "targets": targets,
+        "trade_lessons": lessons,
         "vote_count": len(result.all_votes),
         "timestamp": time.time(),
     }
@@ -80,6 +134,45 @@ async def weight_update_loop(redis: aioredis.Redis):
             weights = json.loads(weights_raw)
             debate.weights.update(weights)
         await asyncio.sleep(300)
+
+
+async def trade_feedback_loop(redis: aioredis.Redis):
+    """Adjust agent weights when shadow/OMS closes a trade."""
+    pubsub = redis.pubsub()
+    await pubsub.subscribe("ch:trade_closed")
+    log.info("agent_system: listening for trade feedback")
+    async for msg in pubsub.listen():
+        if msg.get("type") != "message":
+            continue
+        try:
+            trade = json.loads(msg["data"])
+            symbol = trade.get("symbol")
+            if not symbol:
+                continue
+            pnl = float(trade.get("pnl_pct", 0))
+            pos_dir = trade.get("direction") or trade.get("side", "long")
+            if pos_dir in ("BUY", "SELL_SHORT"):
+                continue
+            was_win = pnl > 0
+
+            votes_raw = await redis.get(f"agents:verdicts:{symbol}")
+            if not votes_raw:
+                continue
+            votes = json.loads(votes_raw)
+            weights = dict(debate.weights)
+            for v in votes:
+                agent_key = (v.get("agent") or "").replace("_agent", "")
+                if not agent_key:
+                    continue
+                voted = v.get("signal", "flat")
+                if voted == "flat":
+                    continue
+                correct = (voted == pos_dir) == was_win
+                debate.update_weights(agent_key, correct)
+                weights[agent_key] = debate.weights.get(agent_key, 1.0)
+            await redis.set("agents:weights", json.dumps(weights), ex=86400 * 7)
+        except Exception as e:
+            log.error(f"Trade feedback error: {e}")
 
 
 async def main():
@@ -112,7 +205,12 @@ async def main():
             await asyncio.gather(*[_debate_one(s) for s in list(active_set)])
             await asyncio.sleep(10)
 
-    await asyncio.gather(debate_loop(), weight_update_loop(redis))
+    redis_fb = await aioredis.from_url(REDIS_URL)
+    await asyncio.gather(
+        debate_loop(),
+        weight_update_loop(redis),
+        trade_feedback_loop(redis_fb),
+    )
 
 
 if __name__ == "__main__":

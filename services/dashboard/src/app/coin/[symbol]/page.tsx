@@ -29,12 +29,17 @@ interface Signal {
   regime: string; crisis_level: number; drift_status: string
   rsi: number; macd_hist: number; volume_ratio: number
   is_valid: boolean; reject_reason: string; source: string; timestamp: number
+  consensus_reasoning?: string; dissent_risk?: string
+  probabilities?: { long_pct: number; short_pct: number; ai_confidence_pct: number }
+  targets?: { risk_reward?: number; position_pct?: number }
 }
 
 interface Vote { agent: string; signal: string; confidence: number; reasoning: string }
 interface Verdict {
   direction: string; confidence: number
   consensus_reasoning: string; dissent_risk: string
+  probabilities?: { long_pct: number; short_pct: number; ai_confidence_pct: number }
+  targets?: { risk_reward?: number; position_pct?: number; stop_loss?: number; take_profit?: number }
 }
 
 interface BacktestStats {
@@ -617,16 +622,40 @@ export default function CoinPage() {
 
             <ConfidenceMeter value={conf} label="Signal Confidence" />
 
-            {verdict?.consensus_reasoning && (
+            {(verdict?.consensus_reasoning || signal?.consensus_reasoning) && (
               <div className="bg-gray-800/60 rounded-lg p-3 border border-gray-700/40">
-                <p className="text-xs text-gray-500 uppercase tracking-wide mb-1.5">AI Reasoning</p>
-                <p className="text-xs text-gray-300 leading-relaxed">{verdict.consensus_reasoning}</p>
+                <p className="text-xs text-gray-500 uppercase tracking-wide mb-1.5">AI Karar Özeti</p>
+                <p className="text-xs text-gray-300 leading-relaxed">
+                  {verdict?.consensus_reasoning || signal?.consensus_reasoning}
+                </p>
               </div>
             )}
-            {verdict?.dissent_risk && (
+            {(verdict?.dissent_risk || signal?.dissent_risk) && (
               <div className="bg-yellow-900/20 rounded-lg p-2.5 border border-yellow-800/40">
-                <p className="text-xs text-yellow-400">⚠ {verdict.dissent_risk}</p>
+                <p className="text-xs text-yellow-400">⚠ {verdict?.dissent_risk || signal?.dissent_risk}</p>
               </div>
+            )}
+            {verdict?.probabilities && (
+              <div className="grid grid-cols-3 gap-2 text-center text-xs">
+                <div className="bg-green-950/40 rounded p-2 border border-green-900/40">
+                  <p className="text-gray-500">Long</p>
+                  <p className="text-green-400 font-bold">{verdict.probabilities.long_pct}%</p>
+                </div>
+                <div className="bg-red-950/40 rounded p-2 border border-red-900/40">
+                  <p className="text-gray-500">Short</p>
+                  <p className="text-red-400 font-bold">{verdict.probabilities.short_pct}%</p>
+                </div>
+                <div className="bg-gray-800/60 rounded p-2 border border-gray-700/40">
+                  <p className="text-gray-500">AI Güven</p>
+                  <p className="text-orange-400 font-bold">{verdict.probabilities.ai_confidence_pct}%</p>
+                </div>
+              </div>
+            )}
+            {verdict?.targets?.risk_reward != null && dir !== 'flat' && (
+              <p className="text-xs text-gray-500">
+                Hedef R/R: <span className="text-white font-mono">{verdict.targets.risk_reward}</span>
+                {' · '}Pozisyon: <span className="text-white">{verdict.targets.position_pct}%</span>
+              </p>
             )}
 
             {/* Vote tally */}

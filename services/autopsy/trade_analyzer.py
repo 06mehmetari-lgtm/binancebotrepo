@@ -11,7 +11,13 @@ class TradeAnalyzer:
     def analyze(self, trade: dict, market_context: dict) -> dict:
         entry = float(trade.get("entry_price", 0))
         exit_ = float(trade.get("exit_price", 0))
-        side = trade.get("side", "long")
+        side = trade.get("direction") or trade.get("side", "long")
+        if side in ("BUY", "SELL"):
+            side = "long" if side == "BUY" else "short"
+        if side == "SELL_SHORT":
+            side = "short"
+        if side == "BUY_COVER":
+            side = "short"
         pnl_pct = ((exit_ - entry) / entry * (1 if side == "long" else -1)) if entry else 0
 
         was_profitable = pnl_pct > 0

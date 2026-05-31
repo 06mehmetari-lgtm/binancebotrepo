@@ -7,74 +7,91 @@ function safeJson(raw: string | null | undefined): unknown {
   try { return JSON.parse(raw) } catch { return null }
 }
 
+function macroVixNumber(raw: unknown): number | null {
+  if (typeof raw === 'number' && Number.isFinite(raw)) return raw
+  if (raw && typeof raw === 'object' && 'value' in raw) {
+    const v = (raw as { value?: unknown }).value
+    return typeof v === 'number' && Number.isFinite(v) ? v : null
+  }
+  return null
+}
+
 export async function GET() {
   const redis = createRedis()
   try {
+    const featureKeys = (await redis.keys('features:latest:*')).slice(0, 50)
+
     const pipeline = redis.pipeline()
     pipeline.get('immunity:status')
-    pipeline.get('immunity:daily_loss')
-    pipeline.get('immunity:daily_trades')
-    pipeline.get('context:crisis_level')
-    pipeline.get('context:regime')
     pipeline.get('macro:vix')
     pipeline.lrange('alerts:funding', 0, 9)
     pipeline.lrange('liquidations:large', 0, 9)
     pipeline.get('ws:status')
-    // Aggregate daily loss across signals
-    const featureKeys = await redis.keys('features:latest:*')
-    for (const k of featureKeys.slice(0, 10)) {
+    for (const k of featureKeys.slice(0, 20)) {
       pipeline.get(k)
+    }
+    for (const k of featureKeys.slice(0, 5)) {
+      const sym = k.replace('features:latest:', '')
+      pipeline.get(`context:latest:${sym}`)
     }
     const results = await pipeline.exec()
 
     const immunityStatus = safeJson(results?.[0]?.[1] as string | null) as Record<string, unknown> | null
-    const dailyLoss = safeJson(results?.[1]?.[1] as string | null)
-    const dailyTrades = safeJson(results?.[2]?.[1] as string | null)
-    const crisisLevel = safeJson(results?.[3]?.[1] as string | null)
-    const regime = safeJson(results?.[4]?.[1] as string | null)
-    const vixRaw = safeJson(results?.[5]?.[1] as string | null) as Record<string, unknown> | null
-    const fundingAlertsRaw = (results?.[6]?.[1] as string[] | null) ?? []
-    const liquidationsRaw = (results?.[7]?.[1] as string[] | null) ?? []
-    const wsStatus = safeJson(results?.[8]?.[1] as string | null) as Record<string, unknown> | null
+    const vixRaw = safeJson(results?.[1]?.[1] as string | null)
+    const fundingAlertsRaw = (results?.[2]?.[1] as string[] | null) ?? []
+    const liquidationsRaw = (results?.[3]?.[1] as string[] | null) ?? []
+    const wsStatus = safeJson(results?.[4]?.[1] as string | null) as Record<string, unknown> | null
 
-    // Parse funding alerts
-    const fundingAlerts = fundingAlertsRaw
-      .map(s => safeJson(s))
-      .filter(Boolean)
-
-    // Parse liquidations
-    const recentLiquidations = liquidationsRaw
-      .map(s => safeJson(s))
-      .filter(Boolean)
-
-    // Extract drift status from features
     const driftCounts: Record<string, number> = { STABLE: 0, WARNING: 0, DRIFTING: 0, SHOCK: 0 }
-    for (let i = 9; i < 9 + featureKeys.slice(0, 10).length; i++) {
-      const feat = safeJson(results?.[i]?.[1] as string | null) as Record<string, unknown> | null
-      if (feat?.drift_status && typeof feat.drift_status === 'string') {
-        driftCounts[feat.drift_status] = (driftCounts[feat.drift_status] ?? 0) + 1
-      }
+    const featOffset = 5
+    for (let i = 0; i < Math.min(20, featureKeys.length); i++) {
+      const feat = safeJson(results?.[featOffset + i]?.[1] as string | null) as Record<string, unknown> | null
+      const drift = typeof feat?.drift_status === 'string' ? feat.drift_status : 'STABLE'
+      driftCounts[drift] = (driftCounts[drift] ?? 0) + 1
     }
 
-    const vixValue = typeof vixRaw?.value === 'number' ? vixRaw.value : null
+    let maxCrisis = 0
+    let dominantRegime: string | null = null
+    const regimeCounts: Record<string, number> = {}
+    const ctxOffset = featOffset + Math.min(20, featureKeys.length)
+    for (let i = 0; i < Math.min(5, featureKeys.length); i++) {
+      const ctx = safeJson(results?.[ctxOffset + i]?.[1] as string | null) as Record<string, unknown> | null
+      if (!ctx) continue
+      const c = typeof ctx.crisis_level === 'number' ? ctx.crisis_level : 0
+      maxCrisis = Math.max(maxCrisis, c)
+      const r = typeof ctx.regime === 'string' ? ctx.regime : null
+      if (r) {
+        regimeCounts[r] = (regimeCounts[r] ?? 0) + 1
+      }
+    }
+    dominantRegime = Object.entries(regimeCounts).sort((a, b) => b[1] - a[1])[0]?.[0] ?? null
+
+    const fundingAlerts = fundingAlertsRaw.map(s => safeJson(s)).filter(Boolean)
+    const recentLiquidations = liquidationsRaw.map(s => safeJson(s)).filter(Boolean)
+
+    const dailyLossPctRaw = typeof immunityStatus?.daily_loss_pct === 'number'
+      ? immunityStatus.daily_loss_pct
+      : 0
+    const dailyTrades = typeof immunityStatus?.daily_trades === 'number'
+      ? immunityStatus.daily_trades
+      : 0
 
     return NextResponse.json({
-      immunity_halted: immunityStatus?.halted ?? false,
-      daily_loss_pct: typeof dailyLoss === 'number' ? dailyLoss : 0,
-      daily_trades: typeof dailyTrades === 'number' ? dailyTrades : 0,
-      crisis_level: typeof crisisLevel === 'number' ? crisisLevel : 0,
-      regime: typeof regime === 'string' ? regime : null,
-      vix: vixValue,
+      immunity_halted: Boolean(immunityStatus?.system_halted ?? immunityStatus?.halted ?? false),
+      daily_loss_pct: dailyLossPctRaw > 1 ? dailyLossPctRaw / 100 : dailyLossPctRaw,
+      daily_trades: dailyTrades,
+      crisis_level: maxCrisis,
+      regime: dominantRegime,
+      vix: macroVixNumber(vixRaw),
       ws_status: wsStatus?.status ?? 'UNKNOWN',
       funding_alerts: fundingAlerts,
       recent_liquidations: recentLiquidations,
       drift_summary: driftCounts,
-      // Hard-coded limits from immunity.py
       limits: {
         max_drawdown: 0.10,
         max_daily_loss: 0.02,
-        max_position_pct: 0.07,
-        min_confidence: 0.52,
+        max_position_pct: 0.05,
+        min_confidence: 0.60,
         max_trades_per_day: 50,
         max_leverage: 3.0,
         max_open_positions: 3,

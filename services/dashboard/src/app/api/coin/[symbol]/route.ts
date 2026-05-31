@@ -181,17 +181,29 @@ export async function GET(
     // ── 5. Parse Redis data ──
     const features = featRaw ? JSON.parse(featRaw) : null
     const signal = sigRaw ? JSON.parse(sigRaw) : null
-    const verdict = verdictRaw ? JSON.parse(verdictRaw) : null
+    const verdictParsed = verdictRaw ? JSON.parse(verdictRaw) : null
+    const verdict = verdictParsed
+      ? {
+          ...verdictParsed,
+          consensus_reasoning: verdictParsed.consensus_reasoning ?? verdictParsed.reasoning ?? '',
+          dissent_risk: verdictParsed.dissent_risk ?? '',
+        }
+      : null
     const votes: { agent: string; signal: string; confidence: number; reasoning: string }[] = verdictsRaw
       ? JSON.parse(verdictsRaw)
       : []
     const context = contextRaw ? JSON.parse(contextRaw) : null
 
-    // Per-symbol backtest stats
+    // Per-symbol backtest stats (supports symbols[] or legacy dict)
     let backtestStats: Record<string, unknown> | null = null
     if (btRaw) {
       const bt = JSON.parse(btRaw)
-      if (bt.results?.[symbol]) backtestStats = bt.results[symbol]
+      const results = bt.results ?? bt
+      if (Array.isArray(results?.symbols)) {
+        backtestStats = results.symbols.find((r: { symbol?: string }) => r?.symbol === symbol) ?? null
+      } else if (results?.[symbol]) {
+        backtestStats = results[symbol]
+      }
     }
 
     // Latest ATR for SL/TP levels
@@ -199,9 +211,10 @@ export async function GET(
     const latestClose = rawKlines[rawKlines.length - 1]?.close ?? ticker24h?.lastPrice ?? 0
     const signalDir = signal?.direction ?? 'flat'
 
-    let slLevel: number | null = null
-    let tpLevel: number | null = null
-    if (latestClose && latestATR && signalDir !== 'flat') {
+    const verdictTargets = verdict?.targets as { stop_loss?: number; take_profit?: number; entry?: number } | undefined
+    let slLevel: number | null = verdictTargets?.stop_loss ?? null
+    let tpLevel: number | null = verdictTargets?.take_profit ?? null
+    if (latestClose && latestATR && signalDir !== 'flat' && (slLevel == null || tpLevel == null)) {
       slLevel = signalDir === 'long'
         ? +(latestClose - latestATR * 2.0).toFixed(4)
         : +(latestClose + latestATR * 2.0).toFixed(4)
@@ -223,6 +236,13 @@ export async function GET(
 
     const shadowList: { shadow_id: string; sharpe: number; win_rate: number; trades: number; return: number }[] =
       shadowRaw ? JSON.parse(shadowRaw) : []
+
+    if (signal && verdict) {
+      signal.consensus_reasoning = signal.consensus_reasoning ?? verdict.consensus_reasoning
+      signal.dissent_risk = signal.dissent_risk ?? verdict.dissent_risk
+      signal.probabilities = signal.probabilities ?? verdict.probabilities
+      signal.targets = signal.targets ?? verdict.targets
+    }
 
     return NextResponse.json({
       symbol,

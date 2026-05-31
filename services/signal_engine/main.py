@@ -67,10 +67,12 @@ async def push_activity(redis: aioredis.Redis, event: dict):
 async def generate_signal(redis: aioredis.Redis, symbol: str) -> dict | None:
     context_raw = await redis.get(f"context:latest:{symbol}")
     agents_raw = await redis.get(f"agents:verdicts:{symbol}")
+    verdict_raw = await redis.get(f"agents:verdict:{symbol}")
     features_raw = await redis.get(f"features:latest:{symbol}")
 
     context = json.loads(context_raw) if context_raw else {}
     agent_verdicts = json.loads(agents_raw) if agents_raw else []
+    verdict = json.loads(verdict_raw) if verdict_raw else {}
     features = json.loads(features_raw) if features_raw else None
 
     if not features:
@@ -104,6 +106,17 @@ async def generate_signal(redis: aioredis.Redis, symbol: str) -> dict | None:
     is_valid, reason = validator.validate(signal_dict, context)
     signal_dict["is_valid"] = is_valid
     signal_dict["reject_reason"] = "" if is_valid else reason
+
+    if verdict:
+        signal_dict["consensus_reasoning"] = verdict.get("consensus_reasoning") or verdict.get("reasoning", "")
+        signal_dict["dissent_risk"] = verdict.get("dissent_risk", "")
+        signal_dict["probabilities"] = verdict.get("probabilities")
+        signal_dict["targets"] = verdict.get("targets")
+        signal_dict["trade_lessons"] = verdict.get("trade_lessons", [])
+
+    sym_stats = STATS.get(symbol, {})
+    if sym_stats.get("wins", 0) + sym_stats.get("losses", 0) >= 5:
+        signal_dict["live_win_rate"] = round(sym_stats.get("win_rate", 0) * 100, 1)
 
     return signal_dict
 
