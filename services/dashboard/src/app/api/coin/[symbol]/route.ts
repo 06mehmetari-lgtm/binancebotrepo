@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server'
-import { createRedis } from '../../../_redis'
+import { createRedis } from '../../_redis'
 
 // ── Indicator helpers ────────────────────────────────────────────────────────
 
