@@ -349,3 +349,24 @@ services:
       - redis
     networks:
       - prometheus_net
+
+  # ═══════════════════════════════════════
+  # HISTORICAL BACKFILL (one-shot, tools profile)
+  # Run: docker compose run --rm backfill
+  # ═══════════════════════════════════════
+  backfill:
+    build: ./services/backfill
+    container_name: prometheus_backfill
+    restart: "no"
+    profiles:
+      - tools
+    environment:
+      - DATABASE_URL=postgresql://prometheus:prometheus@postgres:5432/prometheus_trading
+      - QDRANT_URL=http://qdrant:6333
+      - BACKFILL_DAYS=${BACKFILL_DAYS:-30}
+      - MAX_SYMBOLS=${MAX_SYMBOLS:-50}
+    depends_on:
+      - postgres
+      - qdrant
+    networks:
+      - prometheus_net
