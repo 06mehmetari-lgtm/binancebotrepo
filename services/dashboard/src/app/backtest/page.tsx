@@ -117,6 +117,7 @@ export default function BacktestPage() {
   const [data, setData] = useState<{ results: BacktestData | null; status: BacktestStatus | null }>({ results: null, status: null })
   const [loading, setLoading] = useState(true)
   const [triggering, setTriggering] = useState(false)
+  const [queued, setQueued] = useState(false)
   const [sortKey, setSortKey] = useState<SortKey>('sharpe_ratio')
   const [sortAsc, setSortAsc] = useState(false)
   const [expandedSymbol, setExpandedSymbol] = useState<string | null>(null)
@@ -139,7 +140,8 @@ export default function BacktestPage() {
   const triggerBacktest = async () => {
     setTriggering(true)
     try {
-      await fetch('/api/backtest', { method: 'POST' })
+      const res = await fetch('/api/backtest', { method: 'POST' })
+      if (res.ok) setQueued(true)
       setTimeout(fetchData, 2000)
     } finally { setTriggering(false) }
   }
@@ -150,6 +152,7 @@ export default function BacktestPage() {
   const config = results?.config
   const isRunning = status?.status === 'running'
   const isComplete = status?.status === 'complete' || !!results
+  if (isRunning && queued) setQueued(false)
 
   const symbols = (results?.symbols ?? []).slice().sort((a, b) => {
     const av = a[sortKey] as number
@@ -182,13 +185,14 @@ export default function BacktestPage() {
           <span className="text-xs text-gray-600">{lastUpdate ? `${lastUpdate} · 10s` : ''}</span>
           <button
             onClick={triggerBacktest}
-            disabled={triggering || isRunning}
+            disabled={triggering || isRunning || queued}
             className={`px-4 py-2 rounded text-xs font-bold transition-colors border ${
               isRunning ? 'border-orange-700/50 text-orange-400 bg-orange-900/20 cursor-wait'
+                : queued ? 'border-yellow-700/50 text-yellow-400 bg-yellow-900/20 cursor-wait'
                 : 'border-blue-700/50 text-blue-400 bg-blue-900/20 hover:bg-blue-900/40'
             }`}
           >
-            {triggering ? 'Başlatılıyor...' : isRunning ? '⟳ Çalışıyor...' : '▶ Yeni Backtest'}
+            {triggering ? 'Başlatılıyor...' : isRunning ? '⟳ Çalışıyor...' : queued ? '⏳ Sırada...' : '▶ Yeni Backtest'}
           </button>
         </div>
       </div>
@@ -212,8 +216,19 @@ export default function BacktestPage() {
         </div>
       )}
 
+      {/* Queued banner */}
+      {queued && !isRunning && (
+        <div className="bg-yellow-900/20 border border-yellow-700/40 rounded-xl p-4 flex items-center gap-3">
+          <span className="text-yellow-400 text-base">⏳</span>
+          <div>
+            <p className="text-yellow-300 font-semibold text-sm">Tetikleyici gönderildi</p>
+            <p className="text-yellow-600 text-xs mt-0.5">Backtest servisi sinyali aldığında (max 60s) başlayacak. Sayfa otomatik güncellenir.</p>
+          </div>
+        </div>
+      )}
+
       {/* No results yet */}
-      {!loading && !isRunning && !results && (
+      {!loading && !isRunning && !queued && !results && (
         <div className="bg-gray-900 border border-gray-800 rounded-xl p-10 text-center">
           <p className="text-gray-400 text-sm font-semibold">Backtest henüz çalışmadı</p>
           <p className="text-gray-600 text-xs mt-2 max-w-sm mx-auto">
