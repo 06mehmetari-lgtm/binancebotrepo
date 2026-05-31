@@ -169,7 +169,9 @@ function ConsensusWheel({ votes }: { votes: Vote[] }) {
 
 export default function AgentsPage() {
   const [symbols, setSymbols] = useState<string[]>([])
+  const [signals, setSignals] = useState<Record<string, { direction: string; confidence: number }>>({})
   const [symbol, setSymbol] = useState('BTCUSDT')
+  const [search, setSearch] = useState('')
   const [data, setData] = useState<Partial<AgentData>>({})
   const [loading, setLoading] = useState(true)
   const [lastUpdate, setLastUpdate] = useState('')
@@ -178,6 +180,14 @@ export default function AgentsPage() {
     fetch('/api/symbols').then(r => r.json()).then(d => {
       if (Array.isArray(d) && d.length > 0) { setSymbols(d); setSymbol(d[0]) }
     }).catch(() => setSymbols(['BTCUSDT', 'ETHUSDT', 'BNBUSDT']))
+    // Fetch live signals to show direction badges
+    fetch('/api/signals').then(r => r.json()).then((d: any[]) => {
+      if (Array.isArray(d)) {
+        const map: Record<string, { direction: string; confidence: number }> = {}
+        d.forEach(s => { map[s.symbol] = { direction: s.direction, confidence: s.confidence } })
+        setSignals(map)
+      }
+    }).catch(() => {})
   }, [])
 
   useEffect(() => {
@@ -207,17 +217,44 @@ export default function AgentsPage() {
         <span className="text-xs text-gray-600">{lastUpdate ? `${lastUpdate} · 10s` : '10s refresh'}</span>
       </div>
 
-      <div className="flex flex-wrap gap-1.5 items-center">
-        <span className="text-gray-600 text-xs mr-1">Symbol:</span>
-        {(symbols.length ? symbols : ['BTCUSDT', 'ETHUSDT', 'BNBUSDT']).slice(0, 20).map(s => (
-          <button key={s} onClick={() => setSymbol(s)}
-            className={`px-2.5 py-1 rounded text-xs transition-colors ${symbol === s
-              ? 'bg-purple-600/30 text-purple-300 border border-purple-600/50 font-bold'
-              : 'bg-gray-800/80 text-gray-400 hover:text-white border border-transparent'}`}>
-            {s.replace('USDT', '')}
-          </button>
-        ))}
-        {symbols.length > 20 && <span className="text-gray-600 text-xs">+{symbols.length - 20} more</span>}
+      {/* Symbol Selector with search */}
+      <div className="bg-gray-900 border border-gray-800 rounded-xl p-3 space-y-2.5">
+        <div className="flex items-center gap-3">
+          <input
+            value={search}
+            onChange={e => setSearch(e.target.value.toUpperCase())}
+            placeholder="Search symbol (e.g. BTC, ETH, SOL)..."
+            className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-purple-500 transition-colors"
+          />
+          <div className="flex items-center gap-2 text-xs text-gray-600 shrink-0">
+            <span className="text-green-400 font-semibold">▲ {Object.values(signals).filter(s => s.direction === 'long').length}</span>
+            <span className="text-red-400 font-semibold">▼ {Object.values(signals).filter(s => s.direction === 'short').length}</span>
+            <span>{symbols.length} tracked</span>
+          </div>
+        </div>
+
+        <div className="flex flex-wrap gap-1.5 max-h-28 overflow-y-auto">
+          {(symbols.length ? symbols : ['BTCUSDT', 'ETHUSDT', 'BNBUSDT'])
+            .filter(s => !search || s.includes(search))
+            .slice(0, 60)
+            .map(s => {
+              const sig = signals[s]
+              const dirColor = sig?.direction === 'long' ? 'text-green-400' : sig?.direction === 'short' ? 'text-red-400' : ''
+              const dirArrow = sig?.direction === 'long' ? '▲' : sig?.direction === 'short' ? '▼' : ''
+              return (
+                <button key={s} onClick={() => { setSymbol(s); setSearch('') }}
+                  className={`px-2.5 py-1.5 rounded text-xs transition-all flex items-center gap-1 ${symbol === s
+                    ? 'bg-purple-600/30 text-purple-300 border border-purple-600/50 font-bold'
+                    : 'bg-gray-800/80 text-gray-400 hover:text-white border border-transparent hover:border-gray-600'}`}>
+                  {s.replace('USDT', '')}
+                  {dirArrow && <span className={`text-[10px] ${dirColor}`}>{dirArrow}</span>}
+                </button>
+              )
+            })}
+          {symbols.filter(s => !search || s.includes(search)).length === 0 && (
+            <p className="text-gray-600 text-xs py-2">No symbols match "{search}"</p>
+          )}
+        </div>
       </div>
 
       {loading ? (

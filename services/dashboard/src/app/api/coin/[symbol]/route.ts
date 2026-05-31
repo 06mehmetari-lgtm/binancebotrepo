@@ -92,64 +92,92 @@ export async function GET(
 ) {
   const symbol = params.symbol.toUpperCase()
 
-  // Fetch 150 1h klines from Binance Futures public endpoint
   let rawKlines: { time: number; open: number; high: number; low: number; close: number; volume: number }[] = []
   let ticker24h: { lastPrice: number; priceChangePercent: number; quoteVolume: number } | null = null
 
-  try {
-    const [kRes, tRes] = await Promise.all([
-      fetch(`https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=1h&limit=150`, {
-        signal: AbortSignal.timeout(5000),
-      }),
-      fetch(`https://fapi.binance.com/fapi/v1/ticker/24hr?symbol=${symbol}`, {
-        signal: AbortSignal.timeout(5000),
-      }),
-    ])
-
-    if (kRes.ok) {
-      const raw: string[][] = await kRes.json()
-      rawKlines = raw.map(k => ({
-        time: Number(k[0]),
-        open: parseFloat(k[1]),
-        high: parseFloat(k[2]),
-        low: parseFloat(k[3]),
-        close: parseFloat(k[4]),
-        volume: parseFloat(k[5]),
-      }))
-    }
-    if (tRes.ok) {
-      const t = await tRes.json()
-      ticker24h = {
-        lastPrice: parseFloat(t.lastPrice),
-        priceChangePercent: parseFloat(t.priceChangePercent),
-        quoteVolume: parseFloat(t.quoteVolume),
-      }
-    }
-  } catch { /* network unavailable — continue with Redis data */ }
-
-  // Compute indicators on klines
-  const closes = rawKlines.map(k => k.close)
-  const rsiArr = computeRSI(closes)
-  const { macdLine, sigLine, hist: macdHist } = computeMACD(closes)
-  const atrArr = computeATR(rawKlines)
-  const { upper: bbUp, lower: bbLow, mid: bbMid } = computeBB(closes)
-
-  const enrichedKlines = rawKlines.map((k, i) => ({
-    ...k,
-    timeStr: new Date(k.time).toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit', day: '2-digit', month: 'short' }),
-    rsi: rsiArr[i] !== undefined ? +(rsiArr[i]?.toFixed(2) ?? NaN) : NaN,
-    macd: macdLine[i] !== undefined ? +(macdLine[i]?.toFixed(4) ?? NaN) : NaN,
-    macdSig: sigLine[i] !== undefined ? +(sigLine[i]?.toFixed(4) ?? NaN) : NaN,
-    macdHist: macdHist[i] !== undefined ? +(macdHist[i]?.toFixed(4) ?? NaN) : NaN,
-    atr: atrArr[i] !== undefined ? +(atrArr[i]?.toFixed(4) ?? NaN) : NaN,
-    bbUp: bbUp[i] !== undefined ? +(bbUp[i]?.toFixed(4) ?? NaN) : NaN,
-    bbLow: bbLow[i] !== undefined ? +(bbLow[i]?.toFixed(4) ?? NaN) : NaN,
-    bbMid: bbMid[i] !== undefined ? +(bbMid[i]?.toFixed(4) ?? NaN) : NaN,
-  }))
-
-  // Redis data
   const redis = createRedis()
   try {
+    // ── 1. Parallel: Redis kline cache + bookTicker + all signal data ──
+    const [cachedKlines, tickerRaw, featRaw, sigRaw, verdictRaw, verdictsRaw, btRaw, shadowRaw, contextRaw] =
+      await Promise.all([
+        redis.get(`klines:1h:${symbol}`),
+        redis.get(`binance:ticker:${symbol.toLowerCase()}`),
+        redis.get(`features:latest:${symbol}`),
+        redis.get(`signal:latest:${symbol}`),
+        redis.get(`agents:verdict:${symbol}`),
+        redis.get(`agents:verdicts:${symbol}`),
+        redis.get('backtest:results'),
+        redis.get('shadow:leaderboard'),
+        redis.get(`context:latest:${symbol}`),
+      ])
+
+    // ── 2. Parse klines (Redis cache → Binance REST fallback) ──
+    if (cachedKlines) {
+      rawKlines = JSON.parse(cachedKlines)
+    } else {
+      try {
+        const kRes = await fetch(
+          `https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=1h&limit=200`,
+          { signal: AbortSignal.timeout(5000) }
+        )
+        if (kRes.ok) {
+          const raw: string[][] = await kRes.json()
+          rawKlines = raw.map(k => ({
+            time: Number(k[0]), open: parseFloat(k[1]), high: parseFloat(k[2]),
+            low: parseFloat(k[3]), close: parseFloat(k[4]), volume: parseFloat(k[5]),
+          }))
+        }
+      } catch { /* network unavailable */ }
+    }
+
+    // ── 3. Ticker: Redis bookTicker (real-time bid/ask) → Binance REST fallback ──
+    if (tickerRaw) {
+      try {
+        const d = (JSON.parse(tickerRaw) as any).data ?? JSON.parse(tickerRaw)
+        const bid = parseFloat(d.b ?? 0)
+        const ask = parseFloat(d.a ?? bid)
+        const mid = bid > 0 && ask > 0 ? (bid + ask) / 2 : bid || ask
+        if (mid > 0) ticker24h = { lastPrice: mid, priceChangePercent: 0, quoteVolume: 0 }
+      } catch { /* ignore */ }
+    }
+    if (!ticker24h) {
+      try {
+        const tRes = await fetch(
+          `https://fapi.binance.com/fapi/v1/ticker/24hr?symbol=${symbol}`,
+          { signal: AbortSignal.timeout(4000) }
+        )
+        if (tRes.ok) {
+          const t = await tRes.json()
+          ticker24h = {
+            lastPrice: parseFloat(t.lastPrice),
+            priceChangePercent: parseFloat(t.priceChangePercent),
+            quoteVolume: parseFloat(t.quoteVolume),
+          }
+        }
+      } catch { /* ignore */ }
+    }
+
+    // ── 4. Compute technical indicators ──
+    const closes = rawKlines.map(k => k.close)
+    const rsiArr = computeRSI(closes)
+    const { macdLine, sigLine, hist: macdHist } = computeMACD(closes)
+    const atrArr = computeATR(rawKlines)
+    const { upper: bbUp, lower: bbLow, mid: bbMid } = computeBB(closes)
+
+    const enrichedKlines = rawKlines.map((k, i) => ({
+      ...k,
+      timeStr: new Date(k.time).toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit', day: '2-digit', month: 'short' }),
+      rsi: rsiArr[i] !== undefined ? +(rsiArr[i]?.toFixed(2) ?? NaN) : NaN,
+      macd: macdLine[i] !== undefined ? +(macdLine[i]?.toFixed(4) ?? NaN) : NaN,
+      macdSig: sigLine[i] !== undefined ? +(sigLine[i]?.toFixed(4) ?? NaN) : NaN,
+      macdHist: macdHist[i] !== undefined ? +(macdHist[i]?.toFixed(4) ?? NaN) : NaN,
+      atr: atrArr[i] !== undefined ? +(atrArr[i]?.toFixed(4) ?? NaN) : NaN,
+      bbUp: bbUp[i] !== undefined ? +(bbUp[i]?.toFixed(4) ?? NaN) : NaN,
+      bbLow: bbLow[i] !== undefined ? +(bbLow[i]?.toFixed(4) ?? NaN) : NaN,
+      bbMid: bbMid[i] !== undefined ? +(bbMid[i]?.toFixed(4) ?? NaN) : NaN,
+    }))
+
+    // ── 5. Parse Redis data ──
     const [featRaw, sigRaw, verdictRaw, verdictsRaw, btRaw, shadowRaw, contextRaw] = await Promise.all([
       redis.get(`features:latest:${symbol}`),
       redis.get(`signal:latest:${symbol}`),
