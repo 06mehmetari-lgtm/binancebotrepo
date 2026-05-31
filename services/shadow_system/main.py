@@ -9,6 +9,7 @@ import redis.asyncio as aioredis
 from paper_trader import PaperTrader
 from shadow_evaluator import ShadowEvaluator
 from promotion_engine import PromotionEngine
+from trade_store import schedule_save
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
@@ -68,10 +69,15 @@ async def simulate_tick(redis: aioredis.Redis, symbol: str):
                     await redis.delete(pos_key)
                     await redis.lpush(f"shadow:trades:{shadow_id}", json.dumps(result))
                     await redis.ltrim(f"shadow:trades:{shadow_id}", 0, 999)
-                    # Publish for autopsy
-                    await redis.publish("ch:trade_closed", json.dumps({
-                        "shadow_id": shadow_id, "symbol": symbol, **result
-                    }))
+                    closed = {
+                        "shadow_id": shadow_id,
+                        "symbol": symbol,
+                        "source": "shadow_system",
+                        "closed_at": time.time(),
+                        **result,
+                    }
+                    await redis.publish("ch:trade_closed", json.dumps(closed))
+                    schedule_save(closed)
             else:
                 continue  # Already in correct direction
 
@@ -87,17 +93,48 @@ async def simulate_tick(redis: aioredis.Redis, symbol: str):
 
 
 async def report_loop(redis: aioredis.Redis):
+    promo = PromotionEngine()
     while True:
         leaderboard = trader.leaderboard()
         await redis.set("shadow:leaderboard", json.dumps(leaderboard), ex=300)
-        for entry in leaderboard:
-            if entry["promotion_ready"]:
-                log.info(
-                    f"PROMOTION READY: {entry['shadow_id']} "
-                    f"Sharpe={entry['sharpe']:.2f} WR={entry['win_rate']:.1%}"
-                )
+
+        ready = [e for e in leaderboard if e.get("promotion_ready")]
+        best = ready[0] if ready else (leaderboard[0] if leaderboard else None)
+        approved = len(ready) > 0
+        reason = "promotion criteria met" if approved else (
+            f"best shadow {best['shadow_id']}: {best.get('checks', {})}" if best else "no shadow data"
+        )
+        if best and not approved:
+            ok, reason = promo.should_promote(
+                {
+                    "total_trades": best.get("trades", 0),
+                    "sharpe": best.get("sharpe", 0),
+                    "win_rate": best.get("win_rate", 0),
+                    "max_drawdown": best.get("metrics", {}).get("max_drawdown", 1),
+                },
+                PORTFOLIO_VALUE,
+            )
+
+        await redis.set(
+            "system:promotion:status",
+            json.dumps({
+                "approved": approved,
+                "reason": reason,
+                "best_shadow_id": best["shadow_id"] if best else None,
+                "ready_count": len(ready),
+                "leaderboard": leaderboard,
+                "updated_at": time.time(),
+            }),
+            ex=600,
+        )
+
+        for entry in ready:
+            log.info(
+                f"PROMOTION READY: {entry['shadow_id']} "
+                f"Sharpe={entry['sharpe']:.2f} WR={entry['win_rate']:.1%}"
+            )
         summary = ", ".join(f"{e['shadow_id']} S={e['sharpe']:.2f}" for e in leaderboard)
-        log.info(f"Shadow leaderboard: [{summary}]")
+        log.info(f"Shadow leaderboard: [{summary}] promotion_approved={approved}")
         await asyncio.sleep(300)
 
 

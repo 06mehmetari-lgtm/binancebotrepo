@@ -248,8 +248,8 @@ flowchart TB
 
 ### P1 — 2–4 hafta
 
-- Shadow `promotion_ready` → OMS `DRY_RUN` gate
-- Postgres `trades` kalıcı yazım (OMS/shadow)
+- [x] Shadow `promotion_ready` → `system:promotion:status` → OMS live gate (`LIVE_TRADING_CONFIRMED` + `DRY_RUN=false`)
+- [x] Postgres `trades` kalıcı yazım (OMS/shadow `trade_store.py`)
 - Signal validator: liquidity sweep, funding spike, OB imbalance shock
 - RAG: her kapanan trade embedding
 - Risk overlay: correlation + portfolio heat (immunity üstü öneri katmanı)

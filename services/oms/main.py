@@ -12,12 +12,13 @@ from order_manager import OrderManager
 from binance_executor import BinanceExecutor
 from position_tracker import PositionTracker
 from audit_logger import AuditLogger
+from promotion_gate import check_live_trading_allowed, DRY_RUN
+from trade_store import schedule_save
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379")
-DRY_RUN = os.getenv("DRY_RUN", "true").lower() == "true"
 PORTFOLIO_VALUE = float(os.getenv("PORTFOLIO_VALUE", "10000"))
 SYMBOL_REFRESH_INTERVAL = 300
 
@@ -84,10 +85,13 @@ async def close_position(redis: aioredis.Redis, symbol: str, pos: dict, current_
             "pnl_pct": round(pnl_pct, 6), "pnl_usdt": round(pnl_usdt, 4),
             "size_usd": size_usd, "source": "oms",
             "closed_at": time.time(),
+            "hold_seconds": time.time() - pos.get("entry_time", time.time()),
+            "entry_signal": pos.get("entry_signal"),
         }
         await redis.lpush("oms:trade_history", json.dumps(trade))
         await redis.ltrim("oms:trade_history", 0, 999)
         await redis.publish("ch:trade_closed", json.dumps(trade))
+        schedule_save(trade)
         log.info(f"Position CLOSED: {symbol} {direction} pnl={pnl_pct:.2%} (${pnl_usdt:+.2f})")
 
     await redis.delete(f"oms:position:{symbol}")
@@ -165,10 +169,21 @@ async def process_signal(redis: aioredis.Redis, symbol: str):
     if not approved:
         return
 
+    live_ok, live_reason = await check_live_trading_allowed(redis)
+    if not live_ok:
+        log.warning(f"Order blocked (live gate): {symbol} — {live_reason}")
+        await redis.set(
+            "system:live_trading:blocked",
+            json.dumps({"symbol": symbol, "reason": live_reason, "ts": time.time()}),
+            ex=120,
+        )
+        return
+
     if DRY_RUN:
         log.info(f"[DRY_RUN] {symbol} {direction.upper()} size=${size_usd:.2f} @ {price:.4f}")
     else:
         log.info(f"[LIVE] Executing {symbol} {direction.upper()} size=${size_usd:.2f} @ {price:.4f}")
+        # BinanceExecutor wired when API keys + promotion gate both pass
 
     # Track the paper/live position
     await redis.set(f"oms:position:{symbol}", json.dumps({

@@ -29,6 +29,7 @@ export async function GET() {
     pipeline.lrange('alerts:funding', 0, 9)
     pipeline.lrange('liquidations:large', 0, 9)
     pipeline.get('ws:status')
+    pipeline.get('system:promotion:status')
     const featSample = featureKeys.slice(0, 80)
     for (const k of featSample) {
       pipeline.get(k)
@@ -45,9 +46,10 @@ export async function GET() {
     const fundingAlertsRaw = (results?.[2]?.[1] as string[] | null) ?? []
     const liquidationsRaw = (results?.[3]?.[1] as string[] | null) ?? []
     const wsStatus = safeJson(results?.[4]?.[1] as string | null) as Record<string, unknown> | null
+    const promotionStatus = safeJson(results?.[5]?.[1] as string | null) as Record<string, unknown> | null
 
     const driftCounts: Record<string, number> = { STABLE: 0, WARNING: 0, DRIFTING: 0, SHOCK: 0 }
-    const featOffset = 5
+    const featOffset = 6
     for (let i = 0; i < featSample.length; i++) {
       const feat = safeJson(results?.[featOffset + i]?.[1] as string | null) as Record<string, unknown> | null
       const drift = typeof feat?.drift_status === 'string' ? feat.drift_status : 'STABLE'
@@ -92,6 +94,16 @@ export async function GET() {
       recent_liquidations: recentLiquidations,
       drift_summary: driftCounts,
       symbols_tracked: featureKeys.length,
+      promotion: promotionStatus
+        ? {
+            approved: Boolean(promotionStatus.approved),
+            reason: promotionStatus.reason ?? null,
+            best_shadow_id: promotionStatus.best_shadow_id ?? null,
+            ready_count: promotionStatus.ready_count ?? 0,
+            updated_at: promotionStatus.updated_at ?? null,
+          }
+        : { approved: false, reason: 'shadow_system not reporting', best_shadow_id: null, ready_count: 0 },
+      live_trading_requires: ['DRY_RUN=false', 'LIVE_TRADING_CONFIRMED=true', 'promotion.approved=true'],
       limits: {
         max_drawdown: 0.10,
         max_daily_loss: 0.02,
