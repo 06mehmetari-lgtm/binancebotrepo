@@ -94,7 +94,6 @@ export default function ScannerPage() {
   const [filterDir, setFilterDir] = useState<'all' | 'long' | 'short' | 'active'>('all')
   const [tick, setTick] = useState(0)          // forces timeAgo re-render
   const [lastUpdate, setLastUpdate] = useState('')
-  const [scanCount, setScanCount] = useState(0) // how many refreshes done
   const intervalRef = useRef<ReturnType<typeof setInterval>>()
 
   const fetchData = async () => {
@@ -103,7 +102,6 @@ export default function ScannerPage() {
       const json = await res.json()
       setData(json)
       setLastUpdate(new Date().toLocaleTimeString())
-      setScanCount(n => n + 1)
     } catch { } finally { setLoading(false) }
   }
 
@@ -163,7 +161,17 @@ export default function ScannerPage() {
           { label: 'Taranan Coin', value: String(data.total ?? 0), color: 'text-blue-400', sub: 'toplam' },
           { label: 'LONG Sinyal', value: String(data.long_count ?? 0), color: 'text-green-400', sub: 'alış' },
           { label: 'SHORT Sinyal', value: String(data.short_count ?? 0), color: 'text-red-400', sub: 'satış' },
-          { label: 'Tarama Sayısı', value: String(scanCount), color: 'text-purple-400', sub: 'bu oturum' },
+          {
+          label: 'Ort. Güven',
+          value: (() => {
+            const active = (data.coins ?? []).filter(c => c.direction !== 'flat')
+            if (!active.length) return '—'
+            const avg = active.reduce((s, c) => s + c.confidence, 0) / active.length
+            return `${(avg * 100).toFixed(0)}%`
+          })(),
+          color: 'text-purple-400',
+          sub: 'aktif sinyaller',
+        },
         ].map(s => (
           <div key={s.label} className="bg-gray-900 border border-gray-800 rounded-lg p-3">
             <p className="text-gray-500 text-xs uppercase tracking-wider">{s.label}</p>
