@@ -16,19 +16,36 @@ log = logging.getLogger(__name__)
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379")
 SYMBOL_REFRESH_INTERVAL = 300
 ACTIVITY_MAX = 500
-BATCH_SIZE = 50  # concurrent symbols per gather call
-SIG_TTL = 120   # seconds
+BATCH_SIZE = 50
+SIG_TTL = 120
+STATS_KEY = "signal_engine:stats"
 
 generator = SignalGenerator()
 kelly = KellyCalculator()
 validator = SignalValidator()
 
-# Running per-symbol stats updated from autopsy results
+# Per-symbol win/loss stats — persisted to Redis for survival across restarts
 STATS: dict[str, dict] = {}
 
 
-def _get_stats(symbol: str) -> dict:
-    return STATS.get(symbol, {"win_rate": 0.55, "avg_win": 0.02, "avg_loss": 0.01})
+def _get_kelly_stats(symbol: str) -> dict:
+    s = STATS.get(symbol, {})
+    return {
+        "win_rate": s.get("win_rate", 0.55),
+        "avg_win": s.get("avg_win", 0.02),
+        "avg_loss": s.get("avg_loss", 0.01),
+    }
+
+
+async def load_stats(redis: aioredis.Redis):
+    raw = await redis.get(STATS_KEY)
+    if raw:
+        STATS.update(json.loads(raw))
+        log.info(f"Loaded stats for {len(STATS)} symbols from Redis")
+
+
+async def save_stats(redis: aioredis.Redis):
+    await redis.set(STATS_KEY, json.dumps(STATS), ex=86400 * 14)
 
 
 async def discover_symbols(redis: aioredis.Redis) -> list[str]:
@@ -52,16 +69,14 @@ async def generate_signal(redis: aioredis.Redis, symbol: str) -> dict | None:
     agents_raw = await redis.get(f"agents:verdicts:{symbol}")
     features_raw = await redis.get(f"features:latest:{symbol}")
 
-    # context is optional but helpful; features are required for fallback
     context = json.loads(context_raw) if context_raw else {}
     agent_verdicts = json.loads(agents_raw) if agents_raw else []
     features = json.loads(features_raw) if features_raw else None
 
-    # Need at least features to generate a signal
     if not features:
         return None
 
-    stats = _get_stats(symbol)
+    stats = _get_kelly_stats(symbol)
     kelly_fraction = kelly.calculate(
         stats["win_rate"], stats["avg_win"], stats["avg_loss"], max_fraction=0.05
     )
@@ -90,13 +105,53 @@ async def generate_signal(redis: aioredis.Redis, symbol: str) -> dict | None:
     signal_dict["is_valid"] = is_valid
     signal_dict["reject_reason"] = "" if is_valid else reason
 
-    # Always return for dashboard/scanner visibility; OMS filters by is_valid
     return signal_dict
+
+
+async def stats_listener(redis: aioredis.Redis):
+    """Update per-symbol stats from closed trade events (published by shadow/OMS)."""
+    pubsub = redis.pubsub()
+    await pubsub.subscribe("ch:trade_closed")
+    log.info("Subscribed to ch:trade_closed for stats updates")
+    save_interval = 0
+    async for msg in pubsub.listen():
+        if msg.get("type") != "message":
+            continue
+        try:
+            trade = json.loads(msg["data"])
+            symbol = trade.get("symbol")
+            if not symbol:
+                continue
+            pnl_pct = float(trade.get("pnl_pct", 0))
+            win = pnl_pct > 0
+            s = STATS.setdefault(symbol, {
+                "wins": 0, "losses": 0, "total_win": 0.0, "total_loss": 0.0,
+                "win_rate": 0.55, "avg_win": 0.02, "avg_loss": 0.01,
+            })
+            if win:
+                s["wins"] += 1
+                s["total_win"] += pnl_pct
+            else:
+                s["losses"] += 1
+                s["total_loss"] += abs(pnl_pct)
+            total = s["wins"] + s["losses"]
+            s["win_rate"] = s["wins"] / total if total > 0 else 0.55
+            s["avg_win"] = s["total_win"] / max(s["wins"], 1)
+            s["avg_loss"] = s["total_loss"] / max(s["losses"], 1)
+
+            save_interval += 1
+            if save_interval % 10 == 0:
+                await save_stats(redis)
+        except Exception as e:
+            log.error(f"Stats listener error: {e}")
 
 
 async def main():
     log.info("signal_engine starting — dynamic symbol discovery")
     redis = await aioredis.from_url(REDIS_URL)
+    redis_sub = await aioredis.from_url(REDIS_URL)
+
+    await load_stats(redis)
 
     active_symbols: list[str] = []
     for attempt in range(12):
@@ -112,83 +167,80 @@ async def main():
 
     log.info(f"signal_engine ready — {len(active_symbols)} symbols")
 
-    active_set: set[str] = set(active_symbols)
-    last_refresh = time.time()
-    cycle = 0
+    async def signal_loop():
+        active_set: set[str] = set(active_symbols)
+        last_refresh = time.time()
+        cycle = 0
 
-    while True:
-        # Periodically refresh symbol list
-        if time.time() - last_refresh > SYMBOL_REFRESH_INTERVAL:
-            new_symbols = await discover_symbols(redis)
-            if new_symbols:
-                active_set = set(new_symbols)
-            last_refresh = time.time()
+        while True:
+            if time.time() - last_refresh > SYMBOL_REFRESH_INTERVAL:
+                new_symbols = await discover_symbols(redis)
+                if new_symbols:
+                    active_set = set(new_symbols)
+                last_refresh = time.time()
 
-        signal_count = 0
-        all_sigs: list[dict] = []
+            all_sigs: list[dict] = []
 
-        async def _gen(symbol: str):
-            try:
-                sig = await generate_signal(redis, symbol)
-                if sig is not None:
-                    await redis.set(f"signal:latest:{symbol}", json.dumps(sig), ex=SIG_TTL)
-                    await redis.publish(f"ch:signal:{symbol}", symbol)
-                    all_sigs.append(sig)
-            except Exception as e:
-                log.error(f"Signal error for {symbol}: {e}")
+            async def _gen(symbol: str):
+                try:
+                    sig = await generate_signal(redis, symbol)
+                    if sig is not None:
+                        await redis.set(f"signal:latest:{symbol}", json.dumps(sig), ex=SIG_TTL)
+                        await redis.publish(f"ch:signal:{symbol}", symbol)
+                        all_sigs.append(sig)
+                except Exception as e:
+                    log.error(f"Signal error for {symbol}: {e}")
 
-        symbols_list = list(active_set)
-        for i in range(0, len(symbols_list), BATCH_SIZE):
-            await asyncio.gather(*[_gen(s) for s in symbols_list[i:i + BATCH_SIZE]])
+            symbols_list = list(active_set)
+            for i in range(0, len(symbols_list), BATCH_SIZE):
+                await asyncio.gather(*[_gen(s) for s in symbols_list[i:i + BATCH_SIZE]])
 
-        for sig in all_sigs:
-            if sig["direction"] != "flat" and sig.get("is_valid"):
-                signal_count += 1
-                log.info(f"[{sig['symbol']}] {sig['direction'].upper()} conf={sig['confidence']:.2f} src={sig['source']}")
+            signal_count = 0
+            for sig in all_sigs:
+                if sig["direction"] != "flat" and sig.get("is_valid"):
+                    signal_count += 1
+                    log.info(f"[{sig['symbol']}] {sig['direction'].upper()} conf={sig['confidence']:.2f}")
+                    await push_activity(redis, {
+                        "type": "signal",
+                        "symbol": sig["symbol"],
+                        "direction": sig["direction"],
+                        "confidence": sig["confidence"],
+                        "source": sig["source"],
+                        "rsi": sig.get("rsi"),
+                        "regime": sig.get("regime"),
+                    })
+
+            cycle += 1
+            if cycle % 12 == 0:
+                long_c = sum(1 for s in all_sigs if s["direction"] == "long" and s.get("is_valid"))
+                short_c = sum(1 for s in all_sigs if s["direction"] == "short" and s.get("is_valid"))
+                log.info(f"Cycle {cycle}: {len(active_set)} symbols, {signal_count} active signals")
                 await push_activity(redis, {
-                    "type": "signal",
-                    "symbol": sig["symbol"],
-                    "direction": sig["direction"],
-                    "confidence": sig["confidence"],
-                    "source": sig["source"],
-                    "rsi": sig.get("rsi"),
-                    "regime": sig.get("regime"),
+                    "type": "scan_summary",
+                    "total": len(active_set),
+                    "long": long_c,
+                    "short": short_c,
+                    "flat": len(all_sigs) - long_c - short_c,
                 })
+                extremes = sorted(
+                    [s for s in all_sigs if s.get("rsi") is not None and (s["rsi"] < 32 or s["rsi"] > 68)],
+                    key=lambda s: abs(s["rsi"] - 50),
+                    reverse=True,
+                )[:5]
+                for s in extremes:
+                    await push_activity(redis, {
+                        "type": "rsi_alert",
+                        "symbol": s["symbol"],
+                        "direction": s["direction"],
+                        "confidence": s["confidence"],
+                        "source": "rsi_scan",
+                        "rsi": s["rsi"],
+                        "label": "Aşırı Satış" if s["rsi"] < 32 else "Aşırı Alış",
+                    })
 
-        cycle += 1
-        if cycle % 12 == 0:  # every ~60 seconds
-            long_c = sum(1 for s in all_sigs if s["direction"] == "long" and s.get("is_valid"))
-            short_c = sum(1 for s in all_sigs if s["direction"] == "short" and s.get("is_valid"))
-            log.info(f"Cycle {cycle}: {len(active_set)} symbols, {signal_count} active signals")
+            await asyncio.sleep(5)
 
-            # Push scan summary to activity feed
-            await push_activity(redis, {
-                "type": "scan_summary",
-                "total": len(active_set),
-                "long": long_c,
-                "short": short_c,
-                "flat": len(all_sigs) - long_c - short_c,
-            })
-
-            # Push top RSI extremes (most oversold / overbought)
-            extremes = sorted(
-                [s for s in all_sigs if s.get("rsi") is not None and (s["rsi"] < 32 or s["rsi"] > 68)],
-                key=lambda s: abs(s["rsi"] - 50),
-                reverse=True,
-            )[:5]
-            for s in extremes:
-                rsi = s["rsi"]
-                await push_activity(redis, {
-                    "type": "rsi_alert",
-                    "symbol": s["symbol"],
-                    "direction": s["direction"],
-                    "confidence": s["confidence"],
-                    "source": "rsi_scan",
-                    "rsi": rsi,
-                    "label": "Aşırı Satış" if rsi < 32 else "Aşırı Alış",
-                })
-
-        await asyncio.sleep(5)
+    await asyncio.gather(signal_loop(), stats_listener(redis_sub))
 
 
 if __name__ == "__main__":

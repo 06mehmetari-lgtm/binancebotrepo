@@ -26,6 +26,7 @@ async def discover_symbols(redis: aioredis.Redis) -> list[str]:
     ]
     return sorted(symbols) if symbols else ["BTCUSDT", "ETHUSDT", "BNBUSDT"]
 
+
 trader = PaperTrader(initial_capital=PORTFOLIO_VALUE)
 SHADOW_IDS = ["SHADOW_A", "SHADOW_B", "SHADOW_C"]
 
@@ -36,10 +37,10 @@ async def simulate_tick(redis: aioredis.Redis, symbol: str):
         return
     signal = json.loads(sig_raw)
     direction = signal.get("direction")
-    if direction == "flat":
+    if direction == "flat" or not signal.get("is_valid"):
         return
 
-    # Get current price from ticker
+    # Get current price
     ticker_raw = await redis.get(f"binance:ticker:{symbol.lower()}")
     if not ticker_raw:
         return
@@ -53,29 +54,35 @@ async def simulate_tick(redis: aioredis.Redis, symbol: str):
     size_usd = PORTFOLIO_VALUE * 0.05 * confidence
 
     for shadow_id in SHADOW_IDS:
-        # Close opposite positions first
         pos_key = f"shadow:positions:{shadow_id}:{symbol}"
         pos_raw = await redis.get(pos_key)
+
         if pos_raw:
             pos = json.loads(pos_raw)
             if pos.get("direction") != direction:
-                result = trader.execute(shadow_id, symbol, "SELL", price, 0)
+                # Close opposite position with correct side
+                pos_direction = pos.get("direction", "long")
+                close_side = "SELL" if pos_direction == "long" else "BUY_COVER"
+                result = trader.execute(shadow_id, symbol, close_side, price, 0)
                 if result:
                     await redis.delete(pos_key)
                     await redis.lpush(f"shadow:trades:{shadow_id}", json.dumps(result))
                     await redis.ltrim(f"shadow:trades:{shadow_id}", 0, 999)
+                    # Publish for autopsy
                     await redis.publish("ch:trade_closed", json.dumps({
                         "shadow_id": shadow_id, "symbol": symbol, **result
                     }))
+            else:
+                continue  # Already in correct direction
 
         # Open new position if none exists
         if not await redis.exists(pos_key):
-            side = "BUY" if direction == "long" else "SELL"
-            result = trader.execute(shadow_id, symbol, "BUY", price, size_usd)
+            open_side = "BUY" if direction == "long" else "SELL_SHORT"
+            result = trader.execute(shadow_id, symbol, open_side, price, size_usd)
             if result:
                 await redis.set(pos_key, json.dumps({
                     "direction": direction, "price": price,
-                    "size_usd": size_usd, "time": time.time()
+                    "size_usd": size_usd, "time": time.time(),
                 }), ex=86400)
 
 
@@ -85,7 +92,10 @@ async def report_loop(redis: aioredis.Redis):
         await redis.set("shadow:leaderboard", json.dumps(leaderboard), ex=300)
         for entry in leaderboard:
             if entry["promotion_ready"]:
-                log.info(f"PROMOTION READY: {entry['shadow_id']} Sharpe={entry['sharpe']:.2f} WR={entry['win_rate']:.1%}")
+                log.info(
+                    f"PROMOTION READY: {entry['shadow_id']} "
+                    f"Sharpe={entry['sharpe']:.2f} WR={entry['win_rate']:.1%}"
+                )
         summary = ", ".join(f"{e['shadow_id']} S={e['sharpe']:.2f}" for e in leaderboard)
         log.info(f"Shadow leaderboard: [{summary}]")
         await asyncio.sleep(300)

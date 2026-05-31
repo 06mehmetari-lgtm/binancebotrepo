@@ -181,6 +181,7 @@ export default function BacktestPage() {
   const [sortAsc, setSortAsc] = useState(false)
   const [expandedSymbol, setExpandedSymbol] = useState<string | null>(null)
   const [lastUpdate, setLastUpdate] = useState('')
+  const [queuedSince, setQueuedSince] = useState<number | null>(null)
   const firstLoadRef = useRef(true)
   const autoTriggeredRef = useRef(false)
 
@@ -225,6 +226,14 @@ export default function BacktestPage() {
   const isRunning = status?.status === 'running'
   const isQueued = data.trigger_pending && !isRunning
   const hasLogs = data.logs.length > 0
+
+  // Track how long we've been in queued state to detect missing container
+  useEffect(() => {
+    if (isQueued && !queuedSince) setQueuedSince(Date.now())
+    else if (!isQueued) setQueuedSince(null)
+  }, [isQueued])
+
+  const queuedTooLong = isQueued && queuedSince !== null && (Date.now() - queuedSince) > 180_000
 
   const symbols = (results?.symbols ?? []).slice().sort((a, b) => {
     const av = a[sortKey] as number
@@ -272,12 +281,30 @@ export default function BacktestPage() {
       </div>
 
       {/* Queued banner */}
-      {isQueued && (
+      {isQueued && !queuedTooLong && (
         <div className="bg-yellow-900/20 border border-yellow-700/40 rounded-xl p-4 flex items-center gap-3">
           <span className="text-yellow-400 text-base">⏳</span>
           <div>
             <p className="text-yellow-300 font-semibold text-sm">Tetikleyici gönderildi</p>
             <p className="text-yellow-600 text-xs mt-0.5">Backtest servisi sinyali alınca (max 60s) başlayacak. Sayfa otomatik güncellenir.</p>
+          </div>
+        </div>
+      )}
+
+      {/* Deployment error — container not running */}
+      {queuedTooLong && (
+        <div className="bg-red-900/20 border border-red-700/40 rounded-xl p-4">
+          <div className="flex items-center gap-2 mb-2">
+            <span className="text-red-400 text-base">⚠</span>
+            <p className="text-red-300 font-semibold text-sm">Backtest servisi yanıt vermiyor</p>
+          </div>
+          <p className="text-red-500 text-xs mb-3">Tetikleyici 3+ dakikadır bekleniyor. Backtest Docker container&apos;ı çalışmıyor olabilir.</p>
+          <div className="bg-gray-950 rounded p-3 font-mono text-[11px] text-green-400 space-y-1">
+            <p className="text-gray-500"># Sunucunda çalıştır:</p>
+            <p>cd ~/prometheus</p>
+            <p>git pull</p>
+            <p>docker compose build backtest dashboard</p>
+            <p>docker compose up -d backtest dashboard</p>
           </div>
         </div>
       )}

@@ -1,6 +1,7 @@
 """
 Shadow (Paper) Trading System — 3 parallel universes.
 Each shadow tracks its own portfolio. Promotion to live requires meeting performance criteria.
+Supports both LONG and SHORT positions with correct P&L calculation.
 """
 
 import json
@@ -79,39 +80,56 @@ class PaperTrader:
         }
 
     def execute(self, shadow_id: str, symbol: str, side: str, price: float, size_usd: float) -> dict | None:
+        """
+        side:
+          "BUY"        — open long position
+          "SELL_SHORT" — open short position
+          "SELL"       — close long position
+          "BUY_COVER"  — close short position
+        """
         p = self.portfolios.get(shadow_id)
-        if not p:
+        if not p or price <= 0:
             return None
 
-        if side == "BUY":
-            if size_usd > p.capital:
+        if side in ("BUY", "SELL_SHORT"):
+            direction = "long" if side == "BUY" else "short"
+            if size_usd <= 0 or size_usd > p.capital:
                 return None
             qty = size_usd / price
             p.positions[symbol] = {
                 "qty": qty, "entry_price": price,
-                "entry_time": time.time(), "entry_capital": size_usd
+                "entry_time": time.time(), "entry_capital": size_usd,
+                "direction": direction,
             }
             p.capital -= size_usd
-            logger.debug(f"[{shadow_id}] OPEN {symbol} qty={qty:.6f} @ {price}")
-            return {"action": "OPENED", "symbol": symbol, "qty": qty}
+            logger.debug(f"[{shadow_id}] OPEN {direction.upper()} {symbol} qty={qty:.6f} @ {price:.4f}")
+            return {"action": "OPENED", "symbol": symbol, "qty": qty, "direction": direction}
 
-        elif side == "SELL":
+        elif side in ("SELL", "BUY_COVER"):
             pos = p.positions.get(symbol)
             if not pos:
                 return None
-            exit_value = pos["qty"] * price
-            pnl_pct = (price - pos["entry_price"]) / pos["entry_price"]
+            pos_direction = pos.get("direction", "long")
+            if pos_direction == "long":
+                pnl_pct = (price - pos["entry_price"]) / pos["entry_price"]
+            else:
+                pnl_pct = (pos["entry_price"] - price) / pos["entry_price"]
+
+            # Apply round-trip fee (0.10%)
+            pnl_pct -= 0.001
+            exit_value = pos["entry_capital"] * (1 + pnl_pct)
             p.capital += exit_value
             trade = {
                 "symbol": symbol, "shadow_id": shadow_id,
+                "direction": pos_direction,
                 "entry_price": pos["entry_price"], "exit_price": price,
-                "pnl_pct": pnl_pct,
-                "pnl_usdt": exit_value - pos["entry_capital"],
-                "hold_seconds": time.time() - pos["entry_time"],
+                "pnl_pct": round(pnl_pct, 6),
+                "pnl_usdt": round(exit_value - pos["entry_capital"], 4),
+                "hold_seconds": round(time.time() - pos["entry_time"], 1),
             }
             p.trades.append(trade)
             del p.positions[symbol]
-            logger.info(f"[{shadow_id}] CLOSE {symbol} pnl={pnl_pct:.2%}")
+            logger.info(f"[{shadow_id}] CLOSE {pos_direction.upper()} {symbol} pnl={pnl_pct:.2%}")
             return trade
 
         return None
@@ -146,6 +164,7 @@ class PaperTrader:
             results.append({
                 "shadow_id": sid, "sharpe": p.sharpe_ratio,
                 "win_rate": p.win_rate, "trades": len(p.trades),
-                "return": p.total_return, "promotion_ready": promo["eligible"]
+                "return": p.total_return, "promotion_ready": promo["eligible"],
+                "checks": promo["checks"], "metrics": promo["metrics"],
             })
         return sorted(results, key=lambda x: x["sharpe"], reverse=True)
