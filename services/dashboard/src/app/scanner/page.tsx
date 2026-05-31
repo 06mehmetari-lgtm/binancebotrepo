@@ -1,6 +1,15 @@
 'use client'
 import { useEffect, useRef, useState } from 'react'
 
+interface ActivityEvent {
+  time: number
+  type: string
+  symbol: string
+  direction: string
+  confidence: number
+  source: string
+}
+
 interface Coin {
   symbol: string
   direction: 'long' | 'short' | 'flat'
@@ -89,18 +98,25 @@ function timeAgo(ts: number | null): string {
 
 export default function ScannerPage() {
   const [data, setData] = useState<Partial<ScannerData>>({})
+  const [activity, setActivity] = useState<ActivityEvent[]>([])
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
   const [filterDir, setFilterDir] = useState<'all' | 'long' | 'short' | 'active'>('all')
-  const [tick, setTick] = useState(0)          // forces timeAgo re-render
+  const [tick, setTick] = useState(0)
   const [lastUpdate, setLastUpdate] = useState('')
   const intervalRef = useRef<ReturnType<typeof setInterval>>()
+  const activityRef = useRef<HTMLDivElement>(null)
 
   const fetchData = async () => {
     try {
-      const res = await fetch('/api/scanner')
-      const json = await res.json()
-      setData(json)
+      const [scanRes, actRes] = await Promise.all([
+        fetch('/api/scanner'),
+        fetch('/api/activity'),
+      ])
+      const scanJson = await scanRes.json()
+      const actJson = await actRes.json()
+      setData(scanJson)
+      setActivity(Array.isArray(actJson) ? actJson : [])
       setLastUpdate(new Date().toLocaleTimeString())
     } catch { } finally { setLoading(false) }
   }
@@ -108,7 +124,6 @@ export default function ScannerPage() {
   useEffect(() => {
     fetchData()
     intervalRef.current = setInterval(fetchData, 5000)
-    // Re-render timeAgo every 10s without re-fetching
     const tickTimer = setInterval(() => setTick(t => t + 1), 10000)
     return () => {
       clearInterval(intervalRef.current)
@@ -292,6 +307,45 @@ export default function ScannerPage() {
               ))}
             </tbody>
           </table>
+        </div>
+      </div>
+
+      {/* Activity Feed */}
+      <div className="bg-gray-900 rounded-lg border border-gray-800 overflow-hidden">
+        <div className="px-4 py-3 border-b border-gray-800 flex items-center justify-between">
+          <div>
+            <h2 className="text-orange-400 font-semibold text-sm uppercase tracking-wider">Canlı Aktivite Akışı</h2>
+            <p className="text-gray-500 text-xs mt-0.5">Arka planda gerçekleşen sinyal olayları — siz burada olmasanız da devam eder</p>
+          </div>
+          <span className="text-xs text-gray-600">{activity.length} olay</span>
+        </div>
+        <div ref={activityRef} className="divide-y divide-gray-800/50 max-h-72 overflow-y-auto">
+          {activity.length === 0 ? (
+            <div className="px-4 py-6 text-center">
+              <p className="text-gray-500 text-sm">Henüz sinyal olayı yok</p>
+              <p className="text-gray-600 text-xs mt-1">signal_engine başladıktan sonra burada görünecek</p>
+            </div>
+          ) : activity.map((ev, i) => {
+            const isLong = ev.direction === 'long'
+            const isShort = ev.direction === 'short'
+            return (
+              <div key={i} className={`flex items-center gap-3 px-4 py-2.5 text-xs ${
+                isLong ? 'bg-green-950/10' : isShort ? 'bg-red-950/10' : ''
+              }`}>
+                <span className={`text-base shrink-0 ${isLong ? '' : isShort ? '' : ''}`}>
+                  {isLong ? '🟢' : isShort ? '🔴' : '⬜'}
+                </span>
+                <div className="flex-1 min-w-0">
+                  <span className="font-bold text-white">{ev.symbol.replace('USDT','')}</span>
+                  <span className={`ml-1.5 font-semibold uppercase ${isLong ? 'text-green-400' : isShort ? 'text-red-400' : 'text-gray-500'}`}>
+                    {ev.direction}
+                  </span>
+                  <span className="ml-1.5 text-gray-500">{(ev.confidence * 100).toFixed(0)}% · {ev.source}</span>
+                </div>
+                <span className="text-gray-600 shrink-0 font-mono">{timeAgo(ev.time)}</span>
+              </div>
+            )
+          })}
         </div>
       </div>
 

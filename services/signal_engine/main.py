@@ -6,7 +6,7 @@ import time
 
 import redis.asyncio as aioredis
 
-from signal_generator import SignalGenerator, Signal
+from signal_generator import SignalGenerator
 from kelly_calculator import KellyCalculator
 from signal_validator import SignalValidator
 
@@ -14,36 +14,65 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname
 log = logging.getLogger(__name__)
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379")
-SYMBOLS_RAW = os.getenv("SYMBOLS", "BTCUSDT,ETHUSDT,BNBUSDT")
-SYMBOLS = [s.strip() for s in SYMBOLS_RAW.split(",") if s.strip()]
+SYMBOL_REFRESH_INTERVAL = 300   # re-scan Redis every 5 minutes
+ACTIVITY_MAX = 200              # keep last 200 events in activity feed
 
 generator = SignalGenerator()
 kelly = KellyCalculator()
 validator = SignalValidator()
 
-# Running stats per symbol for Kelly (updated from trade results)
-STATS: dict[str, dict] = {s: {"win_rate": 0.55, "avg_win": 0.02, "avg_loss": 0.01} for s in SYMBOLS}
+# Running per-symbol stats updated from autopsy results
+STATS: dict[str, dict] = {}
+
+
+def _get_stats(symbol: str) -> dict:
+    return STATS.get(symbol, {"win_rate": 0.55, "avg_win": 0.02, "avg_loss": 0.01})
+
+
+async def discover_symbols(redis: aioredis.Redis) -> list[str]:
+    keys = await redis.keys("features:latest:*")
+    if not keys:
+        return []
+    return sorted(
+        (k.decode() if isinstance(k, bytes) else k).replace("features:latest:", "").upper()
+        for k in keys
+    )
+
+
+async def push_activity(redis: aioredis.Redis, event_type: str, symbol: str,
+                        direction: str, confidence: float, source: str):
+    event = json.dumps({
+        "time": time.time(),
+        "type": event_type,
+        "symbol": symbol,
+        "direction": direction,
+        "confidence": round(confidence, 3),
+        "source": source,
+    })
+    await redis.lpush("activity:feed", event)
+    await redis.ltrim("activity:feed", 0, ACTIVITY_MAX - 1)
 
 
 async def generate_signal(redis: aioredis.Redis, symbol: str) -> dict | None:
-    # Read agent verdicts and context
     context_raw = await redis.get(f"context:latest:{symbol}")
     agents_raw = await redis.get(f"agents:verdicts:{symbol}")
+    features_raw = await redis.get(f"features:latest:{symbol}")
 
-    if not context_raw:
+    # context is optional but helpful; features are required for fallback
+    context = json.loads(context_raw) if context_raw else {}
+    agent_verdicts = json.loads(agents_raw) if agents_raw else []
+    features = json.loads(features_raw) if features_raw else None
+
+    # Need at least features to generate a signal
+    if not features:
         return None
 
-    context = json.loads(context_raw)
-    agent_verdicts = json.loads(agents_raw) if agents_raw else []
-
-    # Kelly fraction
-    stats = STATS[symbol]
+    stats = _get_stats(symbol)
     kelly_fraction = kelly.calculate(
         stats["win_rate"], stats["avg_win"], stats["avg_loss"], max_fraction=0.05
     )
 
-    # Generate signal
-    signal = generator.generate(agent_verdicts, kelly_fraction)
+    signal = generator.generate(symbol, agent_verdicts, kelly_fraction, features)
     if signal is None:
         return None
 
@@ -55,11 +84,11 @@ async def generate_signal(redis: aioredis.Redis, symbol: str) -> dict | None:
         "source": signal.source,
         "timestamp": signal.timestamp,
         "crisis_level": context.get("crisis_level", 0),
-        "drift_status": context.get("drift_status", "STABLE"),
+        "drift_status": context.get("drift_status", features.get("drift_status", "STABLE")),
         "regime": context.get("regime", "unknown"),
+        "agent_count": len(agent_verdicts),
     }
 
-    # Validate
     is_valid, reason = validator.validate(signal_dict, context)
     if not is_valid:
         log.debug(f"Signal rejected for {symbol}: {reason}")
@@ -69,16 +98,59 @@ async def generate_signal(redis: aioredis.Redis, symbol: str) -> dict | None:
 
 
 async def main():
-    log.info(f"signal_engine starting — symbols: {SYMBOLS}")
+    log.info("signal_engine starting — dynamic symbol discovery")
     redis = await aioredis.from_url(REDIS_URL)
 
+    active_symbols: list[str] = []
+    for attempt in range(12):
+        active_symbols = await discover_symbols(redis)
+        if active_symbols:
+            break
+        log.info(f"Waiting for features in Redis (attempt {attempt + 1}/12)...")
+        await asyncio.sleep(10)
+
+    if not active_symbols:
+        log.warning("No symbols found — using fallback")
+        active_symbols = ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT"]
+
+    log.info(f"signal_engine ready — {len(active_symbols)} symbols")
+
+    active_set: set[str] = set(active_symbols)
+    last_refresh = time.time()
+    cycle = 0
+
     while True:
-        for symbol in SYMBOLS:
-            sig = await generate_signal(redis, symbol)
-            if sig:
-                await redis.set(f"signal:latest:{symbol}", json.dumps(sig), ex=60)
-                await redis.publish(f"ch:signal:{symbol}", symbol)
-                log.info(f"Signal: {symbol} {sig['direction']} conf={sig['confidence']:.2f}")
+        # Periodically refresh symbol list
+        if time.time() - last_refresh > SYMBOL_REFRESH_INTERVAL:
+            new_symbols = await discover_symbols(redis)
+            if new_symbols:
+                active_set = set(new_symbols)
+            last_refresh = time.time()
+
+        signal_count = 0
+        for symbol in list(active_set):
+            try:
+                sig = await generate_signal(redis, symbol)
+                if sig:
+                    await redis.set(f"signal:latest:{symbol}", json.dumps(sig), ex=90)
+                    await redis.publish(f"ch:signal:{symbol}", symbol)
+                    if sig["direction"] != "flat":
+                        signal_count += 1
+                        log.info(
+                            f"[{symbol}] {sig['direction'].upper()} "
+                            f"conf={sig['confidence']:.2f} src={sig['source']}"
+                        )
+                        await push_activity(
+                            redis, "signal", symbol,
+                            sig["direction"], sig["confidence"], sig["source"]
+                        )
+            except Exception as e:
+                log.error(f"Signal error for {symbol}: {e}")
+
+        cycle += 1
+        if cycle % 12 == 0:  # log summary every ~60s
+            log.info(f"Cycle {cycle}: {len(active_set)} symbols, {signal_count} active signals")
+
         await asyncio.sleep(5)
 
 

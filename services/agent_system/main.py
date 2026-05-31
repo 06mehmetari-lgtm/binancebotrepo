@@ -12,10 +12,19 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname
 log = logging.getLogger(__name__)
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379")
-SYMBOLS_RAW = os.getenv("SYMBOLS", "BTCUSDT,ETHUSDT,BNBUSDT")
-SYMBOLS = [s.strip() for s in SYMBOLS_RAW.split(",") if s.strip()]
+SYMBOL_REFRESH_INTERVAL = 300
 
 debate = DebateAgent()
+
+
+async def discover_symbols(redis: aioredis.Redis) -> list[str]:
+    keys = await redis.keys("features:latest:*")
+    if not keys:
+        return []
+    return sorted(
+        (k.decode() if isinstance(k, bytes) else k).replace("features:latest:", "").upper()
+        for k in keys
+    )
 
 
 async def run_debate_for_symbol(redis: aioredis.Redis, symbol: str):
@@ -74,12 +83,24 @@ async def weight_update_loop(redis: aioredis.Redis):
 
 
 async def main():
-    log.info(f"agent_system starting — 9-agent debate team — symbols: {SYMBOLS}")
+    log.info("agent_system starting — 9-agent debate team — dynamic symbols")
     redis = await aioredis.from_url(REDIS_URL)
 
+    active_set: set[str] = set()
+    last_refresh = 0.0
+
     async def debate_loop():
+        nonlocal active_set, last_refresh
         while True:
-            for symbol in SYMBOLS:
+            now = time.time()
+            if now - last_refresh > SYMBOL_REFRESH_INTERVAL or not active_set:
+                syms = await discover_symbols(redis)
+                if syms:
+                    active_set = set(syms)
+                    log.info(f"agent_system: {len(active_set)} symbols discovered")
+                last_refresh = now
+
+            for symbol in list(active_set):
                 try:
                     await run_debate_for_symbol(redis, symbol)
                 except Exception as e:

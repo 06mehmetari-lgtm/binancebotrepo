@@ -223,6 +223,22 @@ services:
     networks:
       - prometheus_net
 
+  # ═══════════════════════════════════════
+  # SIGNAL ENGINE
+  # ═══════════════════════════════════════
+  signal_engine:
+    build: ./services/signal_engine
+    container_name: prometheus_signal
+    restart: unless-stopped
+    environment:
+      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379
+      - POSTGRES_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/prometheus_trading
+    depends_on:
+      - redis
+      - feature_engine
+    networks:
+      - prometheus_net
+
   immunity_system:
     build: ./services/immunity_system
     container_name: prometheus_immunity
