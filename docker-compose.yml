@@ -9,6 +9,7 @@ volumes:
   qdrant_data:
   grafana_data:
   prometheus_data:
+  ollama_data:
 
 services:
 
@@ -208,6 +209,17 @@ services:
     networks:
       - prometheus_net
 
+  ollama:
+    image: ollama/ollama:latest
+    container_name: prometheus_ollama
+    restart: unless-stopped
+    volumes:
+      - ollama_data:/root/.ollama
+    ports:
+      - "11434:11434"
+    networks:
+      - prometheus_net
+
   agent_system:
     build: ./services/agent_system
     container_name: prometheus_agents
@@ -217,10 +229,13 @@ services:
       - POSTGRES_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/prometheus_trading
       - QDRANT_URL=http://qdrant:6333
       - GROQ_API_KEY=${GROQ_API_KEY}
+      - OLLAMA_URL=http://ollama:11434
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3.1:8b}
     depends_on:
       - redis
       - postgres
       - qdrant
+      - ollama
     networks:
       - prometheus_net
 
