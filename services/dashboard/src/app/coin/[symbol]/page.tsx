@@ -310,10 +310,16 @@ export default function CoinPage() {
   // Chart data (last 100 bars for readability)
   const chartData = klines.slice(-100)
 
-  // Determine price range for Y axis with BB bands
-  const priceMin = Math.min(...chartData.map(k => Math.min(k.low, k.bbLow || k.close))) * 0.998
-  const priceMax = Math.max(...chartData.map(k => Math.max(k.high, k.bbUp || k.close))) * 1.002
-  const volumeMax = Math.max(...chartData.map(k => k.volume)) * 4
+  // Determine price range for Y axis — guard against empty array (Infinity crash)
+  const priceMin = chartData.length > 0
+    ? Math.min(...chartData.map(k => Math.min(k.low, k.bbLow || k.close))) * 0.998
+    : 0
+  const priceMax = chartData.length > 0
+    ? Math.max(...chartData.map(k => Math.max(k.high, k.bbUp || k.close))) * 1.002
+    : 1
+  const volumeMax = chartData.length > 0
+    ? Math.max(...chartData.map(k => k.volume)) * 4
+    : 1
 
   // X axis: show every ~10th label
   const xTick = Math.ceil(chartData.length / 10)

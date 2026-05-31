@@ -179,13 +179,15 @@ export default function PositionsPage() {
     </div>
   )
 
-  const { positions = [], daily_pnl = 0, trade_history = [] } = data ?? {}
-  const totalUnrealized = positions.reduce((s, p) => s + p.unrealized_usdt, 0)
-  const totalExposed = positions.reduce((s, p) => s + p.size_usd, 0)
-  const winTrades = trade_history.filter(t => t.pnl_pct > 0).length
+  const positions: Position[] = Array.isArray(data?.positions) ? data!.positions : []
+  const daily_pnl: number = typeof data?.daily_pnl === 'number' ? data!.daily_pnl : 0
+  const trade_history: Trade[] = Array.isArray(data?.trade_history) ? data!.trade_history : []
+  const totalUnrealized = positions.reduce((s, p) => s + (p.unrealized_usdt ?? 0), 0)
+  const totalExposed = positions.reduce((s, p) => s + (p.size_usd ?? 0), 0)
+  const winTrades = trade_history.filter(t => (t.pnl_pct ?? 0) > 0).length
   const winRate = trade_history.length > 0 ? (winTrades / trade_history.length * 100) : 0
   const stats = portfolio?.stats
-  const curve = portfolio?.curve ?? []
+  const curve: CurvePoint[] = Array.isArray(portfolio?.curve) ? portfolio!.curve : []
 
   return (
     <div className="space-y-5">
@@ -230,16 +232,16 @@ export default function PositionsPage() {
       <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
         <div className="px-4 py-3 border-b border-gray-800 flex items-center justify-between flex-wrap gap-2">
           <h2 className="text-blue-400 font-semibold text-sm uppercase tracking-wider">📈 Equity Curve</h2>
-          {stats && (
+          {stats && typeof stats.total_pnl === 'number' && (
             <div className="flex items-center gap-4 text-xs">
               <span className="text-gray-500">
-                Start: <span className="text-gray-300 font-mono">${stats.start_equity.toLocaleString()}</span>
+                Start: <span className="text-gray-300 font-mono">${(stats.start_equity ?? 10000).toLocaleString()}</span>
               </span>
               <span className="text-gray-500">
-                Now: <span className="text-white font-bold font-mono">${stats.current_equity.toLocaleString('en-US', { maximumFractionDigits: 2 })}</span>
+                Now: <span className="text-white font-bold font-mono">${(stats.current_equity ?? 10000).toLocaleString('en-US', { maximumFractionDigits: 2 })}</span>
               </span>
               <span className={stats.total_pnl >= 0 ? 'text-green-400 font-bold' : 'text-red-400 font-bold'}>
-                {stats.total_pnl >= 0 ? '+' : ''}${stats.total_pnl.toFixed(2)} ({stats.total_pnl_pct >= 0 ? '+' : ''}{stats.total_pnl_pct.toFixed(2)}%)
+                {stats.total_pnl >= 0 ? '+' : ''}${stats.total_pnl.toFixed(2)} ({(stats.total_pnl_pct ?? 0) >= 0 ? '+' : ''}{(stats.total_pnl_pct ?? 0).toFixed(2)}%)
               </span>
             </div>
           )}
