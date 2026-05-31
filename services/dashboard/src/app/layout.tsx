@@ -6,6 +6,7 @@ import SmartAlerts from './components/SmartAlerts'
 
 const NAV_LINKS = [
   { href: '/', label: 'Dashboard' },
+  { href: '/system', label: '🖥 Sistem' },
   { href: '/positions', label: '💼 Positions' },
   { href: '/scanner', label: '🔍 Scanner' },
   { href: '/markets', label: 'Markets' },

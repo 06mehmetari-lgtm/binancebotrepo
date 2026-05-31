@@ -517,12 +517,15 @@ export default function MemoryPage() {
             </div>
           )}
 
-          {genomes && genomes.sample.length > 0 && (
-            <div className="bg-gray-900 border border-gray-800 rounded-lg p-4">
-              <h3 className="text-green-400 font-semibold text-xs uppercase tracking-wider mb-3">
+          <div className="bg-gray-900 border border-gray-800 rounded-lg p-4">
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-green-400 font-semibold text-xs uppercase tracking-wider">
                 NEAT Evrim — En İyi Genomlar
                 <span className="text-gray-600 font-normal ml-2">Fitness = Sharpe × WR × (1−MaxDD)</span>
               </h3>
+              <a href="/system" className="text-orange-400 text-[11px] hover:text-orange-300 transition-colors">Detaylı izleme →</a>
+            </div>
+            {genomes && genomes.sample.length > 0 ? (
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2">
                 {genomes.sample.map((g, i) => (
                   <div key={i} className="bg-gray-800/50 rounded p-2.5 text-xs">
@@ -532,8 +535,17 @@ export default function MemoryPage() {
                   </div>
                 ))}
               </div>
-            </div>
-          )}
+            ) : (
+              <div className="bg-gray-800/30 rounded-lg p-4 text-center space-y-1">
+                <p className="text-gray-400 text-sm">NEAT evrimi henüz başlamadı veya genomlar yükleniyor</p>
+                <p className="text-gray-600 text-xs">neat_evolution servisi çalışıyorsa ilk nesil birkaç dakika içinde hazır olur</p>
+                <div className="flex justify-center gap-3 mt-2 text-xs">
+                  <span className="bg-gray-800 px-2 py-1 rounded text-gray-500">Her 3 saatte bir nesil</span>
+                  <span className="bg-gray-800 px-2 py-1 rounded text-gray-500">Fitness = Sharpe × WR × (1−DD)</span>
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       )}
 
