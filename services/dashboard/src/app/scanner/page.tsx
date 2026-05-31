@@ -113,11 +113,9 @@ export default function ScannerPage() {
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
   const [filterDir, setFilterDir] = useState<'all' | 'long' | 'short' | 'active'>('all')
-  const [tick, setTick] = useState(0)
   const [lastUpdate, setLastUpdate] = useState('')
   const [page, setPage] = useState(0)
   const intervalRef = useRef<ReturnType<typeof setInterval>>()
-  const activityRef = useRef<HTMLDivElement>(null)
 
   const fetchData = async () => {
     try {
@@ -136,11 +134,7 @@ export default function ScannerPage() {
   useEffect(() => {
     fetchData()
     intervalRef.current = setInterval(fetchData, 5000)
-    const tickTimer = setInterval(() => setTick(t => t + 1), 10000)
-    return () => {
-      clearInterval(intervalRef.current)
-      clearInterval(tickTimer)
-    }
+    return () => clearInterval(intervalRef.current)
   }, [])
 
   const coins = (data.coins ?? []).filter(c => {
@@ -270,7 +264,7 @@ export default function ScannerPage() {
               {pagedCoins.length === 0 ? (
                 <tr>
                   <td colSpan={9} className="text-center py-12 text-gray-500">
-                    {data.total === 0
+                    {!data.total
                       ? 'Henüz tarama verisi yok — feature_engine başlatılıyor...'
                       : 'Filtreyle eşleşen coin bulunamadı'}
                   </td>
@@ -359,7 +353,7 @@ export default function ScannerPage() {
           </div>
           <span className="text-xs text-gray-600">{activity.length} olay</span>
         </div>
-        <div ref={activityRef} className="divide-y divide-gray-800/50 max-h-72 overflow-y-auto">
+        <div className="divide-y divide-gray-800/50 max-h-72 overflow-y-auto">
           {activity.length === 0 ? (
             <div className="px-4 py-6 text-center">
               <p className="text-gray-500 text-sm">Sistem çalışıyor — ilk tarama özeti ~60 saniye içinde gelecek</p>
