@@ -150,6 +150,8 @@ services:
       - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379
       - TIMESCALE_URL=postgresql://${TIMESCALE_USER}:${TIMESCALE_PASSWORD}@timescaledb:5432/prometheus_timeseries
       - POSTGRES_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/prometheus_trading
+      - SYMBOLS=${TRADING_SYMBOLS}
+      - TOP_SYMBOLS=${TOP_SYMBOLS:-100}
     depends_on:
       - redis
       - timescaledb
