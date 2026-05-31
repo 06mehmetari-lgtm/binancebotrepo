@@ -1,7 +1,7 @@
 """
 Debate Agent — orchestrates 9 agents and synthesizes a final verdict.
 Primary voting is rule-based (fast, no API cost per tick).
-LLM synthesis priority: Claude (Anthropic) → Groq (70B) → Ollama → rule-based only.
+LLM synthesis priority: Groq (70B) → Ollama → rule-based only.
 """
 
 import asyncio
@@ -14,8 +14,7 @@ from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
-CLAUDE_MODEL = "claude-sonnet-4-6"
-GROQ_MODEL   = "llama-3.1-70b-versatile"
+GROQ_MODEL = "llama-3.1-70b-versatile"
 
 
 @dataclass
@@ -43,22 +42,10 @@ class DebateAgent:
     }
 
     def __init__(self):
-        self._claude = None
         self._groq   = None
         self.weights = dict(self.DEFAULT_WEIGHTS)
 
     # ── LLM client helpers ────────────────────────────────────────────────────
-
-    def _get_claude(self):
-        if self._claude is None:
-            api_key = os.getenv("ANTHROPIC_API_KEY", "")
-            if api_key:
-                try:
-                    import anthropic
-                    self._claude = anthropic.Anthropic(api_key=api_key)
-                except ImportError:
-                    logger.warning("anthropic package not installed — pip install anthropic")
-        return self._claude
 
     def _get_groq(self):
         if self._groq is None:
@@ -104,17 +91,7 @@ class DebateAgent:
                           context: dict, base: DebateResult) -> DebateResult:
         loop = asyncio.get_event_loop()
 
-        # 1. Try Claude (Anthropic) first
-        claude = self._get_claude()
-        if claude:
-            try:
-                return await loop.run_in_executor(
-                    None, self._claude_synthesize, claude, symbol, features, context, base
-                )
-            except Exception as e:
-                logger.debug(f"Claude synthesis skipped for {symbol}: {e}")
-
-        # 2. Groq fallback
+        # 1. Groq
         groq = self._get_groq()
         if groq:
             try:
@@ -124,7 +101,7 @@ class DebateAgent:
             except Exception as e:
                 logger.debug(f"Groq synthesis skipped for {symbol}: {e}")
 
-        # 3. Ollama fallback
+        # 2. Ollama fallback
         ollama = self._ollama_url()
         if ollama:
             try:
@@ -178,17 +155,6 @@ class DebateAgent:
             all_votes=base.all_votes,
             majority_reasoning=f"[{tag}] {reasoning}",
         )
-
-    def _claude_synthesize(self, client, symbol: str, features: dict,
-                           context: dict, base: DebateResult) -> DebateResult:
-        prompt = self._build_prompt(symbol, features, context, base)
-        message = client.messages.create(
-            model=CLAUDE_MODEL,
-            max_tokens=150,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        raw = message.content[0].text
-        return self._parse_llm_response(raw, base, "Claude")
 
     def _groq_synthesize(self, client, symbol: str, features: dict,
                          context: dict, base: DebateResult) -> DebateResult:
