@@ -115,12 +115,12 @@ export default function Home() {
     ? Object.entries(backtest.results)
         .map(([sym, bt]) => ({
           symbol: sym,
-          win_rate: bt.win_rate_pct,
-          sharpe: bt.sharpe_ratio,
-          ret: bt.total_return_pct,
-          dd: bt.max_drawdown_pct,
-          trades: bt.total_trades,
-          score: bt.sharpe_ratio * (bt.win_rate_pct / 100),
+          win_rate: bt.win_rate_pct ?? 0,
+          sharpe: bt.sharpe_ratio ?? null,
+          ret: bt.total_return_pct ?? 0,
+          dd: bt.max_drawdown_pct ?? 0,
+          trades: bt.total_trades ?? 0,
+          score: (bt.sharpe_ratio ?? 0) * ((bt.win_rate_pct ?? 0) / 100),
           signal: signals.find(s => s.symbol === sym),
         }))
         .filter(p => p.trades > 0)
@@ -189,8 +189,8 @@ export default function Home() {
                       {p.symbol.replace('USDT', '')}<span className="text-gray-600">/USDT</span>
                     </td>
                     <td className="px-4 py-2.5"><WinRateBadge wr={p.win_rate} /></td>
-                    <td className={`px-4 py-2.5 font-mono font-bold text-xs ${p.sharpe >= 1.5 ? 'text-green-400' : p.sharpe >= 1 ? 'text-yellow-400' : 'text-gray-400'}`}>
-                      {p.sharpe.toFixed(2)}
+                    <td className={`px-4 py-2.5 font-mono font-bold text-xs ${(p.sharpe ?? 0) >= 1.5 ? 'text-green-400' : (p.sharpe ?? 0) >= 1 ? 'text-yellow-400' : 'text-gray-400'}`}>
+                      {p.sharpe != null ? p.sharpe.toFixed(2) : '—'}
                     </td>
                     <td className={`px-4 py-2.5 font-mono text-xs ${p.ret >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                       {p.ret >= 0 ? '+' : ''}{p.ret.toFixed(1)}%

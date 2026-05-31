@@ -355,35 +355,35 @@ export default function BacktestPage() {
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
             <StatCard
               label="Ort. Kazanma Oranı"
-              value={`${summary.avg_win_rate_pct.toFixed(1)}%`}
+              value={`${(summary.avg_win_rate_pct ?? 0).toFixed(1)}%`}
               sub="Tüm coinlerin ortalaması"
-              color={summary.avg_win_rate_pct >= 60 ? 'text-green-400' : summary.avg_win_rate_pct >= 52 ? 'text-orange-400' : 'text-red-400'}
+              color={(summary.avg_win_rate_pct ?? 0) >= 60 ? 'text-green-400' : (summary.avg_win_rate_pct ?? 0) >= 52 ? 'text-orange-400' : 'text-red-400'}
               highlight
             />
             <StatCard
               label="Portfolio Sharpe"
-              value={summary.portfolio_sharpe.toFixed(2)}
+              value={summary.portfolio_sharpe != null ? summary.portfolio_sharpe.toFixed(2) : '—'}
               sub="Ağırlıklı ortalama"
-              color={summary.portfolio_sharpe >= 2.0 ? 'text-green-400' : summary.portfolio_sharpe >= 1.0 ? 'text-orange-400' : 'text-red-400'}
+              color={(summary.portfolio_sharpe ?? 0) >= 2.0 ? 'text-green-400' : (summary.portfolio_sharpe ?? 0) >= 1.0 ? 'text-orange-400' : 'text-red-400'}
             />
             <StatCard
               label="Ort. Getiri"
-              value={`${summary.avg_return_pct >= 0 ? '+' : ''}${summary.avg_return_pct.toFixed(1)}%`}
-              sub={`${summary.days_tested} günde (1 yıl)`}
-              color={summary.avg_return_pct >= 0 ? 'text-green-400' : 'text-red-400'}
+              value={`${(summary.avg_return_pct ?? 0) >= 0 ? '+' : ''}${(summary.avg_return_pct ?? 0).toFixed(1)}%`}
+              sub={`${summary.days_tested ?? 0} günde (1 yıl)`}
+              color={(summary.avg_return_pct ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'}
             />
             <StatCard
               label="Ort. Max Drawdown"
-              value={`${summary.avg_max_drawdown_pct.toFixed(1)}%`}
+              value={`${(summary.avg_max_drawdown_pct ?? 0).toFixed(1)}%`}
               sub="Portföy risk seviyesi"
-              color={summary.avg_max_drawdown_pct < 10 ? 'text-green-400' : summary.avg_max_drawdown_pct < 20 ? 'text-yellow-400' : 'text-red-400'}
+              color={(summary.avg_max_drawdown_pct ?? 0) < 10 ? 'text-green-400' : (summary.avg_max_drawdown_pct ?? 0) < 20 ? 'text-yellow-400' : 'text-red-400'}
             />
           </div>
 
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
             <StatCard label="Test Edilen" value={String(summary.symbols_tested)} sub="coin / sembol" color="text-blue-400" />
             <StatCard label="Toplam İşlem" value={String(summary.total_trades)} sub="simüle edilen" color="text-purple-400" />
-            <StatCard label="Profit Factor" value={summary.avg_profit_factor.toFixed(2)} sub="kazanç/kayıp oranı" color={summary.avg_profit_factor >= 1.5 ? 'text-green-400' : 'text-orange-400'} />
+            <StatCard label="Profit Factor" value={summary.avg_profit_factor != null ? summary.avg_profit_factor.toFixed(2) : '—'} sub="kazanç/kayıp oranı" color={(summary.avg_profit_factor ?? 0) >= 1.5 ? 'text-green-400' : 'text-orange-400'} />
             <StatCard label="Test Süresi" value={`${Math.round(summary.elapsed_seconds / 60)}dk`} sub="fetch + simülasyon" color="text-gray-400" />
           </div>
 
@@ -434,8 +434,8 @@ export default function BacktestPage() {
                       </div>
                       {r && (
                         <div className="flex gap-3 text-right">
-                          <span className="text-green-400 font-mono">WR {r.win_rate_pct.toFixed(1)}%</span>
-                          <span className="text-blue-400 font-mono">SR {r.sharpe_ratio.toFixed(2)}</span>
+                          <span className="text-green-400 font-mono">WR {(r.win_rate_pct ?? 0).toFixed(1)}%</span>
+                          <span className="text-blue-400 font-mono">SR {(r.sharpe_ratio ?? 0).toFixed(2)}</span>
                         </div>
                       )}
                     </div>
@@ -456,8 +456,8 @@ export default function BacktestPage() {
                       </div>
                       {r && (
                         <div className="flex gap-3 text-right">
-                          <span className={`font-mono ${r.win_rate_pct >= 52 ? 'text-green-400' : 'text-red-400'}`}>WR {r.win_rate_pct.toFixed(1)}%</span>
-                          <span className={`font-mono ${r.sharpe_ratio >= 1 ? 'text-blue-400' : 'text-red-400'}`}>SR {r.sharpe_ratio.toFixed(2)}</span>
+                          <span className={`font-mono ${(r.win_rate_pct ?? 0) >= 52 ? 'text-green-400' : 'text-red-400'}`}>WR {(r.win_rate_pct ?? 0).toFixed(1)}%</span>
+                          <span className={`font-mono ${(r.sharpe_ratio ?? 0) >= 1 ? 'text-blue-400' : 'text-red-400'}`}>SR {(r.sharpe_ratio ?? 0).toFixed(2)}</span>
                         </div>
                       )}
                     </div>
@@ -507,26 +507,26 @@ export default function BacktestPage() {
                             <span className="font-bold text-white">{r.symbol}</span>
                             {idx === 0 && <span className="ml-1 text-yellow-400 text-[10px]">★</span>}
                           </td>
-                          <td className={`px-3 py-2.5 font-mono font-bold ${r.win_rate_pct >= 60 ? 'text-green-400' : r.win_rate_pct >= 52 ? 'text-orange-400' : 'text-red-400'}`}>
-                            {r.win_rate_pct.toFixed(1)}%
+                          <td className={`px-3 py-2.5 font-mono font-bold ${(r.win_rate_pct ?? 0) >= 60 ? 'text-green-400' : (r.win_rate_pct ?? 0) >= 52 ? 'text-orange-400' : 'text-red-400'}`}>
+                            {(r.win_rate_pct ?? 0).toFixed(1)}%
                           </td>
-                          <td className={`px-3 py-2.5 font-mono font-bold ${r.sharpe_ratio >= 2 ? 'text-green-400' : r.sharpe_ratio >= 1 ? 'text-blue-400' : 'text-gray-400'}`}>
-                            {r.sharpe_ratio.toFixed(2)}
+                          <td className={`px-3 py-2.5 font-mono font-bold ${(r.sharpe_ratio ?? 0) >= 2 ? 'text-green-400' : (r.sharpe_ratio ?? 0) >= 1 ? 'text-blue-400' : 'text-gray-400'}`}>
+                            {(r.sharpe_ratio ?? 0).toFixed(2)}
                           </td>
-                          <td className={`px-3 py-2.5 font-mono font-bold ${r.total_return_pct >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                            {r.total_return_pct >= 0 ? '+' : ''}{r.total_return_pct.toFixed(1)}%
+                          <td className={`px-3 py-2.5 font-mono font-bold ${(r.total_return_pct ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                            {(r.total_return_pct ?? 0) >= 0 ? '+' : ''}{(r.total_return_pct ?? 0).toFixed(1)}%
                           </td>
-                          <td className={`px-3 py-2.5 font-mono ${r.max_drawdown_pct < 10 ? 'text-green-400' : r.max_drawdown_pct < 20 ? 'text-yellow-400' : 'text-red-400'}`}>
-                            {r.max_drawdown_pct.toFixed(1)}%
+                          <td className={`px-3 py-2.5 font-mono ${(r.max_drawdown_pct ?? 0) < 10 ? 'text-green-400' : (r.max_drawdown_pct ?? 0) < 20 ? 'text-yellow-400' : 'text-red-400'}`}>
+                            {(r.max_drawdown_pct ?? 0).toFixed(1)}%
                           </td>
-                          <td className={`px-3 py-2.5 font-mono ${r.profit_factor >= 1.5 ? 'text-green-400' : r.profit_factor >= 1 ? 'text-yellow-400' : 'text-red-400'}`}>
-                            {r.profit_factor.toFixed(2)}
+                          <td className={`px-3 py-2.5 font-mono ${(r.profit_factor ?? 0) >= 1.5 ? 'text-green-400' : (r.profit_factor ?? 0) >= 1 ? 'text-yellow-400' : 'text-red-400'}`}>
+                            {(r.profit_factor ?? 0).toFixed(2)}
                           </td>
-                          <td className="px-3 py-2.5 text-gray-300">{r.total_trades}</td>
+                          <td className="px-3 py-2.5 text-gray-300">{r.total_trades ?? 0}</td>
                           <td className="px-3 py-2.5">
-                            <span className="text-green-400">{r.long_win_rate_pct.toFixed(0)}%</span>
+                            <span className="text-green-400">{(r.long_win_rate_pct ?? 0).toFixed(0)}%</span>
                             <span className="text-gray-600 mx-1">/</span>
-                            <span className="text-red-400">{r.short_win_rate_pct.toFixed(0)}%</span>
+                            <span className="text-red-400">{(r.short_win_rate_pct ?? 0).toFixed(0)}%</span>
                           </td>
                           <td className="px-3 py-2.5">
                             <div className="flex gap-1">
@@ -544,19 +544,19 @@ export default function BacktestPage() {
                                 <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
                                   <div className="bg-gray-800/50 rounded p-2">
                                     <p className="text-gray-500 mb-0.5">Long İşlemler</p>
-                                    <p className="text-green-400 font-mono font-bold">{r.long_trades} ({r.long_win_rate_pct.toFixed(1)}% WR)</p>
+                                    <p className="text-green-400 font-mono font-bold">{r.long_trades ?? 0} ({(r.long_win_rate_pct ?? 0).toFixed(1)}% WR)</p>
                                   </div>
                                   <div className="bg-gray-800/50 rounded p-2">
                                     <p className="text-gray-500 mb-0.5">Short İşlemler</p>
-                                    <p className="text-red-400 font-mono font-bold">{r.short_trades} ({r.short_win_rate_pct.toFixed(1)}% WR)</p>
+                                    <p className="text-red-400 font-mono font-bold">{r.short_trades ?? 0} ({(r.short_win_rate_pct ?? 0).toFixed(1)}% WR)</p>
                                   </div>
                                   <div className="bg-gray-800/50 rounded p-2">
                                     <p className="text-gray-500 mb-0.5">Ort. Kazanç / Kayıp</p>
-                                    <p className="text-white font-mono">{r.avg_win_pct.toFixed(2)}% / {r.avg_loss_pct.toFixed(2)}%</p>
+                                    <p className="text-white font-mono">{(r.avg_win_pct ?? 0).toFixed(2)}% / {(r.avg_loss_pct ?? 0).toFixed(2)}%</p>
                                   </div>
                                   <div className="bg-gray-800/50 rounded p-2">
                                     <p className="text-gray-500 mb-0.5">Ort. Tutma Süresi</p>
-                                    <p className="text-white font-mono">{r.avg_bars_held.toFixed(1)} bar ({r.avg_bars_held.toFixed(0)}sa)</p>
+                                    <p className="text-white font-mono">{(r.avg_bars_held ?? 0).toFixed(1)} bar ({(r.avg_bars_held ?? 0).toFixed(0)}sa)</p>
                                   </div>
                                 </div>
                                 {r.monthly_returns.length > 0 && (
