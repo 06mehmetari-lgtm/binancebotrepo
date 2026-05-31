@@ -2,7 +2,7 @@
 import { useEffect, useState, useCallback } from 'react'
 import { useParams } from 'next/navigation'
 import {
-  ComposedChart, Area, Bar, Line, Cell,
+  ComposedChart, Area, Bar, Line, Cell, BarChart,
   XAxis, YAxis, Tooltip, CartesianGrid,
   ResponsiveContainer, ReferenceLine, ReferenceArea,
 } from 'recharts'
