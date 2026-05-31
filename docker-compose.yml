@@ -393,7 +393,7 @@ services:
     container_name: prometheus_backtest
     restart: unless-stopped
     environment:
-      - REDIS_URL=redis://redis:6379
+      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379
       - BACKTEST_SYMBOLS=${BACKTEST_SYMBOLS:-25}
       - BACKTEST_DAYS=${BACKTEST_DAYS:-365}
       - BACKTEST_INTERVAL_H=${BACKTEST_INTERVAL_H:-24}
