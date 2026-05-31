@@ -276,7 +276,7 @@ export default function ScannerPage() {
                     c.direction === 'short' ? 'bg-red-950/10' : ''
                   }`}>
                   <td className="px-4 py-2.5">
-                    <span className="font-bold text-white text-sm">{c.symbol.replace('USDT','')}</span>
+                    <a href={`/coin/${c.symbol}`} className="font-bold text-white text-sm hover:text-orange-400 transition-colors">{c.symbol.replace('USDT','')}</a>
                     <span className="text-gray-600 text-xs ml-1">USDT</span>
                   </td>
                   <td className="px-4 py-2.5">

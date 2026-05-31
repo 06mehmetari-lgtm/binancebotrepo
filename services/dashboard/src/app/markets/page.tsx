@@ -236,7 +236,9 @@ export default function MarketsPage() {
               const conf = (m.confidence ?? 0) * 100
               return (
                 <tr key={m.symbol} className="border-b border-gray-800/40 hover:bg-gray-800/20 transition-colors">
-                  <td className="px-3 py-2 font-bold text-white whitespace-nowrap sticky left-0 bg-gray-950/90">{m.symbol}</td>
+                  <td className="px-3 py-2 font-bold text-white whitespace-nowrap sticky left-0 bg-gray-950/90">
+                    <a href={`/coin/${m.symbol}`} className="hover:text-orange-400 transition-colors">{m.symbol}</a>
+                  </td>
                   <td className="px-3 py-2">
                     <span className={`px-1.5 py-0.5 rounded font-bold text-xs ${DIR_STYLE[dir]}`}>
                       {dir === 'long' ? '▲ LONG' : dir === 'short' ? '▼ SHORT' : '— FLAT'}

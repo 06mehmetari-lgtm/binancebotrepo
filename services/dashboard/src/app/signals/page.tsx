@@ -58,7 +58,7 @@ function SignalCard({ sig }: { sig: Signal }) {
     }`}>
       <div className="px-4 py-3 flex items-center justify-between border-b border-gray-800/60">
         <div className="flex items-center gap-3">
-          <span className="font-bold text-white text-base">{sig.symbol}</span>
+          <a href={`/coin/${sig.symbol}`} className="font-bold text-white text-base hover:text-orange-400 transition-colors">{sig.symbol}</a>
           <span className={`px-2 py-0.5 rounded text-xs font-bold ${DIR_STYLE[dir]}`}>
             {dir === 'long' ? '▲ LONG' : dir === 'short' ? '▼ SHORT' : '— FLAT'}
           </span>
