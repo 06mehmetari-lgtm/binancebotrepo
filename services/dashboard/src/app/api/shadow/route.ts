@@ -1,13 +1,20 @@
 import { NextResponse } from 'next/server'
-import { Redis } from 'ioredis'
-
-const redis = new Redis({ host: process.env.REDIS_HOST || 'redis', port: 6379, password: process.env.REDIS_PASSWORD || undefined, lazyConnect: true })
+import { createRedis } from '../_redis'
 
 export async function GET() {
+  const redis = createRedis()
   try {
     const raw = await redis.get('shadow:leaderboard')
-    return NextResponse.json(raw ? JSON.parse(raw) : [])
+    if (!raw) return NextResponse.json([])
+    try {
+      const parsed = JSON.parse(raw)
+      return NextResponse.json(Array.isArray(parsed) ? parsed : [])
+    } catch {
+      return NextResponse.json([])
+    }
   } catch (e) {
     return NextResponse.json({ error: String(e) }, { status: 500 })
+  } finally {
+    redis.disconnect()
   }
 }
