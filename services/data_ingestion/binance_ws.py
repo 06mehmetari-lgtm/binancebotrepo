@@ -24,6 +24,8 @@ class BinanceWebSocketManager:
         self._running = False
         self._reconnect_delay = 1
         self._max_delay = 60
+        self._msg_count = 0
+        self._last_heartbeat = 0.0
 
     def _build_url(self) -> str:
         streams = []
@@ -56,6 +58,11 @@ class BinanceWebSocketManager:
 
     async def _process(self, raw: str):
         recv_ms = time.time() * 1000
+        # Refresh the CONNECTED heartbeat every 20 seconds so the key's TTL stays alive
+        now = recv_ms / 1000
+        if now - self._last_heartbeat >= 20:
+            await self._set_status("CONNECTED", 0)
+            self._last_heartbeat = now
         try:
             data = json.loads(raw)
             stream = data.get("stream", "")
@@ -98,11 +105,15 @@ class BinanceWebSocketManager:
 
     async def _set_status(self, status: str, reconnect_delay: float):
         if self.redis:
+            # CONNECTED key expires in 45s — goes stale if process crashes without disconnect
+            # DISCONNECTED key persists for 5 minutes
+            ttl = 45 if status == "CONNECTED" else 300
             await self.redis.set("ws:status", json.dumps({
                 "status": status,
                 "time": time.time(),
-                "reconnect_delay": reconnect_delay
-            }))
+                "reconnect_delay": reconnect_delay,
+                "symbols": len(self.symbols),
+            }), ex=ttl)
 
     async def stop(self):
         self._running = False

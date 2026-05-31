@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react'
 interface Market { symbol: string; rsi_14: number; direction: string; confidence: number; regime: string; crisis_level: number; kelly_fraction: number; drift_status: string }
 interface Signal { symbol: string; direction: string; confidence: number; regime: string; crisis_level: number; drift_status: string; kelly_fraction: number }
 interface Shadow { shadow_id: string; sharpe: number; win_rate: number; trades: number; return: number; promotion_ready: boolean; max_drawdown: number }
-interface Status { active_symbol_count: number; total_signals: number; avg_confidence: number; best_genome_fitness: number; fear_greed: { value: number; classification: string }; macro_vix: number; 'ws:status': { status: string }; shadow: { leaderboard: Shadow[] } }
+interface Status { active_symbol_count: number; total_signals: number; avg_confidence: number; best_genome_fitness: number; fear_greed: { value: number; classification: string }; macro_vix: number; ws_status: { status: string; symbols?: number } | null; shadow: { leaderboard: Shadow[] } }
 
 const DRIFT_COLOR: Record<string, string> = { STABLE: 'text-green-400', WARNING: 'text-yellow-400', DRIFTING: 'text-orange-400', SHOCK: 'text-red-500 animate-pulse' }
 const DIR_STYLE: Record<string, string> = { long: 'text-green-400 bg-green-900/30 border border-green-800/50', short: 'text-red-400 bg-red-900/30 border border-red-800/50', flat: 'text-gray-500 bg-gray-800/50 border border-gray-700/50' }
@@ -85,9 +85,10 @@ export default function Home() {
     </div>
   )
 
-  const wsStatus = status['ws:status']?.status ?? 'UNKNOWN'
-  const wsColor = wsStatus === 'CONNECTED' ? 'text-green-400' : 'text-red-400'
-  const wsDot = wsStatus === 'CONNECTED' ? 'bg-green-400 animate-pulse' : 'bg-red-500'
+  const wsStatus = status.ws_status?.status ?? 'UNKNOWN'
+  const wsColor = wsStatus === 'CONNECTED' ? 'text-green-400' : wsStatus === 'UNKNOWN' ? 'text-gray-500' : 'text-red-400'
+  const wsDot = wsStatus === 'CONNECTED' ? 'bg-green-400 animate-pulse' : wsStatus === 'UNKNOWN' ? 'bg-gray-600' : 'bg-red-500'
+  const wsSymbols = status.ws_status?.symbols
   const activeSignals = signals.filter(s => s.direction !== 'flat')
   const topOpps = [...activeSignals].sort((a, b) => b.confidence - a.confidence).slice(0, 10)
   const heatmapSymbols = markets.slice(0, 30)
@@ -102,7 +103,7 @@ export default function Home() {
       </div>
 
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2.5">
-        <StatCard label="WebSocket" value={wsStatus} color={wsColor} dot={wsDot} />
+        <StatCard label="WebSocket" value={wsStatus} sub={wsSymbols ? `${wsSymbols} symbols` : undefined} color={wsColor} dot={wsDot} />
         <StatCard label="Active Symbols" value={String(status.active_symbol_count ?? markets.length)} color="text-blue-400" />
         <StatCard label="Active Signals" value={String(activeSignals.length)} sub={`of ${signals.length} total`} color="text-orange-400" />
         <StatCard label="Best Genome" value={status.best_genome_fitness?.toFixed(4) ?? '—'} color="text-purple-400" />
