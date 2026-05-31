@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 export const dynamic = 'force-dynamic'
 import { createRedis } from '../_redis'
+import { normalizeBacktestResults } from '@/lib/backtest'
 
 export async function GET() {
   const redis = createRedis()
@@ -18,8 +19,9 @@ export async function GET() {
       .filter(Boolean)
       .reverse()  // oldest first — chronological terminal order
 
+    const resultsParsed = resultsRaw ? JSON.parse(resultsRaw as string) : null
     return NextResponse.json({
-      results: resultsRaw ? JSON.parse(resultsRaw as string) : null,
+      results: normalizeBacktestResults(resultsParsed) ?? resultsParsed,
       status: statusRaw ? JSON.parse(statusRaw as string) : null,
       queue: queueRaw ? JSON.parse(queueRaw as string) : null,
       trigger_pending: !!triggerRaw,

@@ -133,6 +133,18 @@ async def merge_aggregate(redis: aioredis.Redis, engine: BacktestEngine, days: i
     avg_pf = float(np.mean([r["profit_factor"] for r in all_results if r["profit_factor"] > 0]))
 
     all_results.sort(key=lambda r: r["sharpe_ratio"], reverse=True)
+
+    monthly_acc: dict[str, list[float]] = {}
+    for r in all_results:
+        for m in r.get("monthly_returns") or []:
+            month = m.get("month")
+            if not month:
+                continue
+            monthly_acc.setdefault(month, []).append(float(m.get("return_pct", 0)))
+    avg_monthly = {
+        m: round(sum(v) / len(v), 2) for m, v in sorted(monthly_acc.items()) if v
+    }
+
     payload = {
         "summary": {
             "symbols_tested": len(all_results),
@@ -147,6 +159,8 @@ async def merge_aggregate(redis: aioredis.Redis, engine: BacktestEngine, days: i
             "bottom5_symbols": [r["symbol"] for r in all_results[-5:]],
             "days_tested": days,
             "completed_at": time.time(),
+            "elapsed_seconds": 0,
+            "avg_monthly_returns": avg_monthly,
             "mode": "continuous_chunk",
         },
         "symbols": all_results,

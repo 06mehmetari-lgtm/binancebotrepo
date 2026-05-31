@@ -1,59 +1,9 @@
 'use client'
-import { useEffect, useRef, useState } from 'react'
-
-interface SymbolResult {
-  symbol: string
-  total_trades: number
-  win_rate_pct: number
-  avg_win_pct: number
-  avg_loss_pct: number
-  profit_factor: number
-  total_return_pct: number
-  sharpe_ratio: number
-  max_drawdown_pct: number
-  final_capital: number
-  long_trades: number
-  short_trades: number
-  long_win_rate_pct: number
-  short_win_rate_pct: number
-  avg_bars_held: number
-  exit_reasons: Record<string, number>
-  monthly_returns: { month: string; return_pct: number; capital: number }[]
-}
-
-interface BacktestSummary {
-  symbols_tested: number
-  universe_target?: number
-  total_trades: number
-  avg_win_rate_pct: number
-  portfolio_sharpe: number
-  avg_return_pct: number
-  avg_max_drawdown_pct: number
-  avg_profit_factor: number
-  top5_symbols: string[]
-  bottom5_symbols: string[]
-  days_tested: number
-  completed_at: number
-  elapsed_seconds: number
-  avg_monthly_returns: Record<string, number>
-}
-
-interface BacktestConfig {
-  atr_sl_mult: number
-  atr_tp_mult: number
-  rr_ratio: number
-  max_position_pct: number
-  confidence_threshold_pct: number
-  max_hold_bars: number
-  fee_round_trip_pct: number
-  interval: string
-}
-
-interface BacktestData {
-  summary: BacktestSummary
-  symbols: SymbolResult[]
-  config: BacktestConfig
-}
+import { Fragment, useEffect, useRef, useState } from 'react'
+import {
+  parseBacktestApiResponse,
+  type NormalizedBacktest,
+} from '@/lib/backtest'
 
 interface BacktestStatus {
   status: 'idle' | 'running' | 'complete' | 'error'
@@ -175,11 +125,12 @@ function LogPanel({ logs, isRunning }: { logs: LogEntry[]; isRunning: boolean })
 
 export default function BacktestPage() {
   const [data, setData] = useState<{
-    results: BacktestData | null
+    results: NormalizedBacktest | null
     status: BacktestStatus | null
     trigger_pending: boolean
     logs: LogEntry[]
-  }>({ results: null, status: null, trigger_pending: false, logs: [] })
+    apiError: string | null
+  }>({ results: null, status: null, trigger_pending: false, logs: [], apiError: null })
 
   const [loading, setLoading] = useState(true)
   const [triggering, setTriggering] = useState(false)
@@ -202,14 +153,20 @@ export default function BacktestPage() {
 
   const fetchData = async () => {
     try {
-      const d = await fetch('/api/backtest').then(r => r.json())
-      setData(d)
+      const raw = await fetch('/api/backtest').then(r => r.json())
+      const parsed = parseBacktestApiResponse(raw)
+      setData({
+        results: parsed.results,
+        status: (parsed.status as BacktestStatus | null) ?? null,
+        trigger_pending: parsed.trigger_pending,
+        logs: parsed.logs as LogEntry[],
+        apiError: parsed.error,
+      })
       setLastUpdate(new Date().toLocaleTimeString('tr-TR'))
 
-      // Auto-trigger on first page load if there's nothing running and no results
       if (firstLoadRef.current) {
         firstLoadRef.current = false
-        if (!d.results && !d.status && !d.trigger_pending && !autoTriggeredRef.current) {
+        if (!parsed.results && !parsed.status && !parsed.trigger_pending && !autoTriggeredRef.current) {
           autoTriggeredRef.current = true
           fetch('/api/backtest', { method: 'POST' })
         }
@@ -231,7 +188,7 @@ export default function BacktestPage() {
   const config = results?.config
   const isRunning = status?.status === 'running'
   const isQueued = data.trigger_pending && !isRunning
-  const hasLogs = data.logs.length > 0
+  const hasLogs = (data.logs?.length ?? 0) > 0
 
   // Track how long we've been in queued state to detect missing container
   useEffect(() => {
@@ -285,6 +242,12 @@ export default function BacktestPage() {
           </button>
         </div>
       </div>
+
+      {data.apiError && (
+        <div className="bg-red-900/20 border border-red-700/40 rounded-xl p-4 text-sm text-red-300">
+          API hatası: {data.apiError}
+        </div>
+      )}
 
       {/* Queued banner */}
       {isQueued && !queuedTooLong && (
@@ -361,7 +324,7 @@ export default function BacktestPage() {
       )}
 
       {/* Results */}
-      {summary && config && (
+      {summary && (
         <>
           {/* Summary cards */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
@@ -396,7 +359,12 @@ export default function BacktestPage() {
             <StatCard label="Test Edilen" value={String(summary.symbols_tested)} sub="coin / sembol" color="text-blue-400" />
             <StatCard label="Toplam İşlem" value={String(summary.total_trades)} sub="simüle edilen" color="text-purple-400" />
             <StatCard label="Profit Factor" value={summary.avg_profit_factor.toFixed(2)} sub="kazanç/kayıp oranı" color={summary.avg_profit_factor >= 1.5 ? 'text-green-400' : 'text-orange-400'} />
-            <StatCard label="Test Süresi" value={`${Math.round(summary.elapsed_seconds / 60)}dk`} sub="fetch + simülasyon" color="text-gray-400" />
+            <StatCard
+              label="Test Süresi"
+              value={summary.elapsed_seconds > 0 ? `${Math.round(summary.elapsed_seconds / 60)}dk` : '—'}
+              sub="fetch + simülasyon"
+              color="text-gray-400"
+            />
           </div>
 
           {/* Config + monthly heatmap */}
@@ -404,16 +372,24 @@ export default function BacktestPage() {
             <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
               <h2 className="text-gray-400 font-semibold text-xs uppercase tracking-wider mb-3">Backtest Parametreleri</h2>
               <div className="space-y-2 text-xs">
-                {[
-                  { label: 'Stop Loss', value: `${config.atr_sl_mult}× ATR` },
-                  { label: 'Take Profit', value: `${config.atr_tp_mult}× ATR` },
-                  { label: 'Risk/Ödül', value: `1 : ${config.rr_ratio}` },
-                  { label: 'Maks Pozisyon', value: `%${config.max_position_pct}` },
-                  { label: 'Güven Eşiği', value: `%${config.confidence_threshold_pct}` },
-                  { label: 'Maks Tutma', value: `${config.max_hold_bars} bar (${config.max_hold_bars}sa)` },
-                  { label: 'Komisyon', value: `%${config.fee_round_trip_pct} (r/t)` },
-                  { label: 'Zaman Dilimi', value: config.interval },
-                ].map(item => (
+                {(config?.chunk_size
+                  ? [
+                      { label: 'Mod', value: 'Sürekli evren (7/24)' },
+                      { label: 'Parça boyutu', value: `${config.chunk_size} coin` },
+                      { label: 'Evren hedefi', value: String(config.total_symbols ?? summary.universe_target ?? '—') },
+                      { label: 'Zaman Dilimi', value: config.interval },
+                    ]
+                  : [
+                      { label: 'Stop Loss', value: `${config!.atr_sl_mult}× ATR` },
+                      { label: 'Take Profit', value: `${config!.atr_tp_mult}× ATR` },
+                      { label: 'Risk/Ödül', value: `1 : ${config!.rr_ratio}` },
+                      { label: 'Maks Pozisyon', value: `%${config!.max_position_pct}` },
+                      { label: 'Güven Eşiği', value: `%${config!.confidence_threshold_pct}` },
+                      { label: 'Maks Tutma', value: `${config!.max_hold_bars} bar` },
+                      { label: 'Komisyon', value: `%${config!.fee_round_trip_pct} (r/t)` },
+                      { label: 'Zaman Dilimi', value: config!.interval },
+                    ]
+                ).map(item => (
                   <div key={item.label} className="flex justify-between">
                     <span className="text-gray-500">{item.label}</span>
                     <span className="text-white font-mono">{item.value}</span>
@@ -424,9 +400,9 @@ export default function BacktestPage() {
 
             <div className="lg:col-span-2 bg-gray-900 border border-gray-800 rounded-xl p-4">
               <h2 className="text-gray-400 font-semibold text-xs uppercase tracking-wider mb-3">
-                Aylık Portföy Getirisi — {Object.keys(summary.avg_monthly_returns).length} Ay
+                Aylık Portföy Getirisi — {Object.keys(summary.avg_monthly_returns ?? {}).length} Ay
               </h2>
-              <MonthlyHeatmap data={summary.avg_monthly_returns} />
+              <MonthlyHeatmap data={summary.avg_monthly_returns ?? {}} />
               <p className="text-gray-700 text-[10px] mt-2">Her kutucuk = tüm coinlerin o ay ortalama getirisi</p>
             </div>
           </div>
@@ -436,7 +412,7 @@ export default function BacktestPage() {
             <div className="bg-gray-900 border border-green-900/40 rounded-xl p-4">
               <h2 className="text-green-400 font-semibold text-xs uppercase tracking-wider mb-3">En İyi 5 Sembol (Sharpe)</h2>
               <div className="space-y-1">
-                {summary.top5_symbols.map((sym, i) => {
+                {(summary.top5_symbols ?? []).map((sym, i) => {
                   const r = symbols.find(s => s.symbol === sym)
                   return (
                     <div key={sym} className="flex items-center justify-between text-xs">
@@ -458,7 +434,7 @@ export default function BacktestPage() {
             <div className="bg-gray-900 border border-red-900/40 rounded-xl p-4">
               <h2 className="text-red-400 font-semibold text-xs uppercase tracking-wider mb-3">En Düşük 5 Sembol (Sharpe)</h2>
               <div className="space-y-1">
-                {summary.bottom5_symbols.map((sym, i) => {
+                {(summary.bottom5_symbols ?? []).map((sym, i) => {
                   const r = symbols.find(s => s.symbol === sym)
                   return (
                     <div key={sym} className="flex items-center justify-between text-xs">
@@ -504,14 +480,14 @@ export default function BacktestPage() {
                 <tbody>
                   {symbols.map((r, idx) => {
                     const isExp = expandedSymbol === r.symbol
-                    const tpPct = r.exit_reasons.take_profit ?? 0
-                    const slPct = r.exit_reasons.stop_loss ?? 0
-                    const timePct = r.exit_reasons.time_exit ?? 0
+                    const er = r.exit_reasons ?? {}
+                    const tpPct = er.take_profit ?? 0
+                    const slPct = er.stop_loss ?? 0
+                    const timePct = er.time_exit ?? 0
                     const total = tpPct + slPct + timePct || 1
                     return (
-                      <>
+                      <Fragment key={r.symbol}>
                         <tr
-                          key={r.symbol}
                           className={`border-b border-gray-800/40 hover:bg-gray-800/25 cursor-pointer transition-colors ${idx === 0 ? 'bg-green-950/15' : ''}`}
                           onClick={() => setExpandedSymbol(isExp ? null : r.symbol)}
                         >
@@ -550,7 +526,7 @@ export default function BacktestPage() {
                           <td className="px-3 py-2.5 text-gray-600 text-[10px]">{isExp ? '▲ kapat' : '▼ detay'}</td>
                         </tr>
                         {isExp && (
-                          <tr key={`${r.symbol}-exp`} className="bg-gray-900/60">
+                          <tr className="bg-gray-900/60">
                             <td colSpan={10} className="px-4 py-4 border-b border-gray-800/40">
                               <div className="space-y-3">
                                 <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
@@ -590,7 +566,7 @@ export default function BacktestPage() {
                             </td>
                           </tr>
                         )}
-                      </>
+                      </Fragment>
                     )
                   })}
                 </tbody>
