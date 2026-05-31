@@ -44,7 +44,7 @@ def synthesize_coin_insight(symbol: str, profile: dict) -> dict | None:
     Returns { ai_insight, best_entry_hint?, avoid_hint?, llm_provider } or None.
     """
     stage = profile.get("learning_stage", "L0")
-    if stage in ("L0",):
+    if stage in ("L0",) and profile.get("updates", 0) < 10:
         return None
 
     drivers = profile.get("drivers", [])[:5]

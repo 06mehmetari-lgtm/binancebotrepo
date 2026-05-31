@@ -7,6 +7,7 @@ import time
 import redis.asyncio as aioredis
 
 from debate_agent import DebateAgent
+from position_guard import position_guard_loop
 from explanation_builder import (
     build_consensus_reasoning,
     build_dissent_risk,
@@ -308,8 +309,10 @@ async def main():
 
     redis_fb = await aioredis.from_url(REDIS_URL)
     redis_learn = await aioredis.from_url(REDIS_URL)
+    redis_guard = await aioredis.from_url(REDIS_URL)
     await asyncio.gather(
         debate_loop(),
+        position_guard_loop(redis_guard, run_debate_for_symbol),
         weight_update_loop(redis),
         trade_feedback_loop(redis_fb),
         learn_update_listener(redis_learn),

@@ -51,6 +51,27 @@ export function PositionDecisionPanel({ pos }: { pos: PositionDecision }) {
         )}
       </div>
 
+      {pos.guard && (
+        <div className={`rounded-lg p-3 border ${
+          pos.guard.action === 'emergency_close'
+            ? 'bg-red-950/60 border-red-500/60'
+            : pos.guard.action === 'close'
+              ? 'bg-orange-950/50 border-orange-600/50'
+              : pos.guard.urgency === 'medium'
+                ? 'bg-yellow-950/40 border-yellow-700/40'
+                : 'bg-green-950/30 border-green-800/40'
+        }`}>
+          <p className="text-[10px] uppercase tracking-wider font-bold text-cyan-400 mb-1">
+            🛡️ AI Pozisyon Koruyucu — {pos.guard.action?.toUpperCase()} ({pos.guard.urgency})
+          </p>
+          <p className="text-gray-200 leading-relaxed">{pos.guard.reason}</p>
+          <p className="text-gray-500 mt-1 font-mono text-[10px]">
+            PnL {pos.guard.unrealized_pct != null ? `${pos.guard.unrealized_pct >= 0 ? '+' : ''}${pos.guard.unrealized_pct.toFixed(2)}%` : '—'}
+            {' · '}AI güven {pct(pos.guard.ai_confidence)}
+          </p>
+        </div>
+      )}
+
       <div className="bg-gray-900/60 border border-orange-800/40 rounded-lg p-3">
         <p className="text-orange-400 font-semibold text-[10px] uppercase tracking-wider mb-1">Neden bu pozisyon açıldı?</p>
         <p className="text-gray-200 leading-relaxed">{pos.open_reason}</p>

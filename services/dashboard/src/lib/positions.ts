@@ -35,6 +35,14 @@ export type PositionDecision = {
   votes?: { agent: string; signal: string; confidence: number; reasoning: string }[]
   trade_action?: string
   open_reason?: string
+  guard?: {
+    action?: string
+    urgency?: string
+    reason?: string
+    unrealized_pct?: number
+    ai_confidence?: number
+    updated_at?: number
+  }
 }
 
 function tickerMid(raw: string | null): number {
@@ -113,6 +121,7 @@ export async function fetchOpenPositions(redis: Redis): Promise<{
   for (const r of raws) pipeline.get(`signal:latest:${r.symbol}`)
   for (const r of raws) pipeline.get(`agents:verdict:${r.symbol}`)
   for (const r of raws) pipeline.get(`agents:verdicts:${r.symbol}`)
+  for (const r of raws) pipeline.get(`guard:position:${r.symbol}`)
 
   const n = raws.length
   const exec = await pipeline.exec()
@@ -128,6 +137,8 @@ export async function fetchOpenPositions(redis: Redis): Promise<{
     const sigRaw = exec?.[2 * n + i]?.[1] as string | null
     const verdictRaw = exec?.[3 * n + i]?.[1] as string | null
     const votesRaw = exec?.[4 * n + i]?.[1] as string | null
+    const guardRaw = exec?.[5 * n + i]?.[1] as string | null
+    const guardParsed = safeJson(guardRaw) as Record<string, unknown> | null
 
     const currentPrice = tickerMid(tickerRaw)
     const entryPrice = Number(posObj.entry_price ?? posObj.price ?? 0)
@@ -195,6 +206,16 @@ export async function fetchOpenPositions(redis: Redis): Promise<{
       votes: Array.isArray(votes) ? votes : [],
       trade_action: currentSignal?.trade_action as string | undefined,
       open_reason: openReason,
+      guard: guardParsed
+        ? {
+            action: String(guardParsed.action ?? 'hold'),
+            urgency: String(guardParsed.urgency ?? 'low'),
+            reason: String(guardParsed.reason ?? ''),
+            unrealized_pct: Number(guardParsed.unrealized_pct ?? unrealizedPct),
+            ai_confidence: Number(guardParsed.ai_confidence ?? 0),
+            updated_at: Number(guardParsed.ts ?? 0),
+          }
+        : undefined,
     })
   }
 

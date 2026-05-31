@@ -16,6 +16,7 @@ from promotion_gate import check_live_trading_allowed, DRY_RUN
 from trade_store import schedule_save
 from emergency import EMERGENCY_CHANNEL, is_trading_halted
 from portfolio_sync import publish_portfolio_state
+from guard_listener import guard_listener
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
@@ -314,12 +315,31 @@ async def main():
                     log.error(f"OMS error for {symbol}: {e}")
             await asyncio.sleep(5)
 
+    async def apply_guard_close(redis_client: aioredis.Redis, symbol: str, pos: dict, dec: dict):
+        price = await get_price(redis_client, symbol)
+        if price > 0:
+            await close_position(redis_client, symbol, pos, price)
+            await redis_client.lpush(
+                "activity:feed",
+                json.dumps({
+                    "type": "guard_close",
+                    "symbol": symbol,
+                    "action": dec.get("action"),
+                    "reason": dec.get("reason", "")[:200],
+                    "upnl_pct": dec.get("unrealized_pct"),
+                    "time": time.time(),
+                }),
+            )
+            await redis_client.ltrim("activity:feed", 0, 499)
+
     redis_em = await aioredis.from_url(REDIS_URL)
+    redis_guard = await aioredis.from_url(REDIS_URL)
     await asyncio.gather(
         signal_loop(),
         portfolio_sync_loop(),
         snapshot_portfolio(redis),
         emergency_listener(redis_em),
+        guard_listener(redis_guard, apply_guard_close),
     )
 
 

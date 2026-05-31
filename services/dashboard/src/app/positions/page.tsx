@@ -253,7 +253,9 @@ export default function PositionsPage() {
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div>
           <h1 className="text-white font-bold text-base">Portfolio — Paper Trading</h1>
-          <p className="text-gray-500 text-xs mt-0.5">OMS + Shadow · 5s refresh · sürekli tarama arka planda</p>
+          <p className="text-gray-500 text-xs mt-0.5">
+            OMS + Shadow · AI koruyucu ~1s · öğrenme açık pozisyonlarda öncelikli
+          </p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
           {trading_halted ? (

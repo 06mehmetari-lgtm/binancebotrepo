@@ -89,7 +89,9 @@ class LearningEngine:
             profile = learner.build_profile()
 
             stage = profile.get("learning_stage", "L0")
-            if stage in ("L2", "L3") and learner.updates % LLM_EVERY_N == 0:
+            hot_syms = await _open_position_symbols(redis)
+            llm_every = max(15, LLM_EVERY_N // 3) if symbol in hot_syms else LLM_EVERY_N
+            if stage in ("L1", "L2", "L3") and learner.updates % llm_every == 0:
                 llm = await asyncio.get_event_loop().run_in_executor(
                     None, synthesize_coin_insight, symbol, profile
                 )
@@ -173,10 +175,44 @@ async def trade_listener(engine: LearningEngine, redis: aioredis.Redis):
             log.error(f"trade listener: {e}")
 
 
+async def _open_position_symbols(redis: aioredis.Redis) -> list[str]:
+    raw = await redis.get("portfolio:state:v1")
+    if not raw:
+        return []
+    try:
+        state = json.loads(raw)
+        return list(
+            dict.fromkeys(
+                p["symbol"]
+                for p in state.get("positions", [])
+                if p.get("symbol", "").endswith("USDT")
+            )
+        )
+    except json.JSONDecodeError:
+        return []
+
+
+async def open_position_boost_loop(engine: LearningEngine, redis: aioredis.Redis):
+    """Açık pozisyon coinleri — evrenden bağımsız, saniyede birkaç kez öğrenme."""
+    interval = float(os.getenv("LEARNING_OPEN_POSITION_SEC", "0.5"))
+    while True:
+        try:
+            hot = await _open_position_symbols(redis)
+            if hot:
+                await asyncio.gather(
+                    *[engine.ingest_symbol(redis, s) for s in hot],
+                    return_exceptions=True,
+                )
+        except Exception as e:
+            log.debug(f"open_position_boost: {e}")
+        await asyncio.sleep(interval)
+
+
 async def scan_loop(engine: LearningEngine, redis: aioredis.Redis):
     """Fallback: scan universe every 2s so learning never stalls if pub/sub drops."""
     while True:
         try:
+            hot = await _open_position_symbols(redis)
             raw = await redis.get("ingestion:symbols")
             symbols: list[str] = []
             if raw:
@@ -196,10 +232,12 @@ async def scan_loop(engine: LearningEngine, redis: aioredis.Redis):
                     if cursor == 0:
                         break
 
+            # Açık pozisyonlar her turda önce (öncelikli öğrenme)
+            ordered = list(dict.fromkeys(hot + [s for s in symbols if s not in hot]))
             batch = int(os.getenv("LEARNING_SCAN_BATCH", "100"))
-            for i in range(0, min(len(symbols), 500), batch):
+            for i in range(0, min(len(ordered), 500), batch):
                 await asyncio.gather(
-                    *[engine.ingest_symbol(redis, s) for s in symbols[i : i + batch]],
+                    *[engine.ingest_symbol(redis, s) for s in ordered[i : i + batch]],
                     return_exceptions=True,
                 )
             await persist_global(redis, engine._learners)
@@ -229,9 +267,11 @@ async def main():
     redis_trade = await aioredis.from_url(REDIS_URL)
     engine = LearningEngine()
 
+    redis_hot = await aioredis.from_url(REDIS_URL)
     await asyncio.gather(
         feature_listener(engine, redis_sub),
         trade_listener(engine, redis_trade),
+        open_position_boost_loop(engine, redis_hot),
         scan_loop(engine, redis),
         global_sync_loop(engine, redis),
     )

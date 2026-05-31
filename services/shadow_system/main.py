@@ -12,6 +12,7 @@ from promotion_engine import PromotionEngine
 from trade_store import schedule_save
 
 EMERGENCY_CHANNEL = "ch:emergency:close_all"
+GUARD_CHANNEL = "ch:position:guard"
 HALT_KEY = "system:trading:halted"
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
@@ -90,6 +91,56 @@ async def flatten_all_shadow_positions(redis: aioredis.Redis) -> int:
         if cursor == 0:
             break
     return closed
+
+
+async def guard_listener(redis: aioredis.Redis):
+    """AI position guard — shadow pozisyonlarını kapat."""
+    pubsub = redis.pubsub()
+    await pubsub.subscribe(GUARD_CHANNEL)
+    log.info("shadow_system subscribed to AI position guard")
+    async for msg in pubsub.listen():
+        if msg.get("type") != "message":
+            continue
+        try:
+            dec = json.loads(msg["data"])
+            if dec.get("source") != "shadow":
+                continue
+            if dec.get("action") not in ("close", "emergency_close"):
+                continue
+            symbol = dec.get("symbol")
+            shadow_id = dec.get("shadow_id") or "SHADOW_A"
+            for sid in SHADOW_IDS:
+                key = f"shadow:positions:{sid}:{symbol}"
+                pos_raw = await redis.get(key)
+                if not pos_raw:
+                    continue
+                pos = json.loads(pos_raw)
+                ticker_raw = await redis.get(f"binance:ticker:{symbol.lower()}")
+                if not ticker_raw:
+                    continue
+                ticker = json.loads(ticker_raw)
+                ticker_data = ticker.get("data", ticker)
+                price = float(ticker_data.get("b", 0))
+                if price <= 0:
+                    continue
+                pos_direction = pos.get("direction", "long")
+                close_side = "SELL" if pos_direction == "long" else "BUY_COVER"
+                result = trader.execute(sid, symbol, close_side, price, 0)
+                await redis.delete(key)
+                if result:
+                    payload = {
+                        "shadow_id": sid,
+                        "symbol": symbol,
+                        "source": "guard",
+                        "closed_at": time.time(),
+                        **result,
+                    }
+                    await redis.publish("ch:trade_closed", json.dumps(payload))
+                    schedule_save(payload)
+                    log.warning(f"[GUARD→SHADOW] {sid} {symbol} closed")
+                break
+        except Exception as e:
+            log.error(f"shadow guard_listener: {e}")
 
 
 async def emergency_listener(redis: aioredis.Redis):
@@ -218,10 +269,12 @@ async def main():
     log.info("shadow_system starting")
     redis = await aioredis.from_url(REDIS_URL)
     redis_em = await aioredis.from_url(REDIS_URL)
+    redis_guard = await aioredis.from_url(REDIS_URL)
     await asyncio.gather(
         _trading_loop(redis),
         report_loop(redis),
         emergency_listener(redis_em),
+        guard_listener(redis_guard),
     )
 
 

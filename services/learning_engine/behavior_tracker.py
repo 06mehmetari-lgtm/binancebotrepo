@@ -5,6 +5,7 @@ builds behavioral profiles (regime reactions, drivers, entry/exit hints).
 
 from __future__ import annotations
 
+import os
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -55,12 +56,20 @@ class PatternStats:
         return self.total_move_pct / max(self.hits, 1)
 
 
+def _stage_thresholds() -> tuple[int, int, int, int]:
+    """L0/L1/L2 minimum updates — hızlı öğrenme modu env ile."""
+    if os.getenv("LEARNING_FAST_TRACK", "true").lower() in ("1", "true", "yes"):
+        return (15, 80, 250, 4)  # open-position / hot symbols reach L2 faster
+    return (40, 200, 600, 4)
+
+
 def _learning_stage(updates: int, driver_count: int) -> str:
-    if updates < 40 or driver_count == 0:
+    l0, l1, l2, l3_drv = _stage_thresholds()
+    if updates < l0 or driver_count == 0:
         return "L0"
-    if updates < 200 or driver_count < 2:
+    if updates < l1 or driver_count < 2:
         return "L1"
-    if updates < 600 or driver_count < 4:
+    if updates < l2 or driver_count < l3_drv:
         return "L2"
     return "L3"
 
