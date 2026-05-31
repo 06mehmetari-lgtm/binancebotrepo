@@ -167,33 +167,46 @@ async def run_backtest(redis: aioredis.Redis):
 async def main():
     redis = await aioredis.from_url(REDIS_URL)
 
+    # Run immediately on startup if no results exist
+    results_raw = await redis.get("backtest:results")
+    if not results_raw:
+        log.info("No cached results — starting backtest immediately on startup")
+        await run_backtest(redis)
+
     while True:
         try:
-            status_raw = await redis.get("backtest:status")
-            results_raw = await redis.get("backtest:results")
+            # React to trigger set by dashboard POST endpoint
+            trigger = await redis.get("backtest:trigger")
+            if trigger:
+                await redis.delete("backtest:trigger")
+                log.info("Trigger received from dashboard — starting backtest")
+                await run_backtest(redis)
+                await asyncio.sleep(60)
+                continue
 
+            status_raw = await redis.get("backtest:status")
             if status_raw:
                 status = json.loads(status_raw)
                 if status.get("status") == "running":
-                    log.info("Backtest already running — waiting")
-                    await asyncio.sleep(3600)
+                    await asyncio.sleep(30)
                     continue
 
+            results_raw = await redis.get("backtest:results")
             if results_raw:
                 data = json.loads(results_raw)
                 completed_at = data.get("summary", {}).get("completed_at", 0)
                 age_h = (time.time() - completed_at) / 3600
                 if age_h < BACKTEST_INTERVAL_H:
-                    log.info(f"Cached results are {age_h:.1f}h old (< {BACKTEST_INTERVAL_H}h) — sleeping")
-                    sleep_s = (BACKTEST_INTERVAL_H - age_h) * 3600
-                    await asyncio.sleep(max(sleep_s, 60))
+                    await asyncio.sleep(60)
                     continue
 
             await run_backtest(redis)
 
         except Exception as exc:
             log.error(f"Main loop error: {exc}", exc_info=True)
-            await asyncio.sleep(300)
+            await asyncio.sleep(60)
+
+        await asyncio.sleep(60)
 
 
 if __name__ == "__main__":

@@ -23,6 +23,8 @@ export async function GET() {
 export async function POST() {
   const redis = createRedis()
   try {
+    // Set trigger key — backtest service polls for this every 60s
+    await redis.set('backtest:trigger', '1', 'EX', 300)
     await redis.del('backtest:results')
     await redis.del('backtest:status')
     return NextResponse.json({ triggered: true, message: 'Backtest queued — results will appear in ~5-10 minutes' })
