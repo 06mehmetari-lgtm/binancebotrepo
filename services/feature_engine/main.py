@@ -18,7 +18,7 @@ log = logging.getLogger(__name__)
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379")
 SYMBOLS_RAW = os.getenv("SYMBOLS", "AUTO")
-TOP_N = int(os.getenv("TOP_SYMBOLS", "100"))
+TOP_N = int(os.getenv("TOP_SYMBOLS", "500"))
 
 # Symbol refresh interval — re-scan Redis every 5 minutes to pick up new symbols
 SYMBOL_REFRESH_INTERVAL = 300
@@ -104,8 +104,14 @@ async def bootstrap_klines(symbols: list[str]):
 
 async def compute_features(redis: aioredis.Redis, symbol: str) -> dict | None:
     try:
-        ob_raw = await redis.lindex(f"binance:ob:{symbol.lower()}", 0)
-        ob_snapshot = json.loads(ob_raw)["data"] if ob_raw else {}
+        ob_snapshot: dict = {}
+        snap_raw = await redis.get(f"ob:snapshot:{symbol}")
+        if snap_raw:
+            ob_snapshot = json.loads(snap_raw)
+        else:
+            ob_raw = await redis.lindex(f"binance:ob:{symbol.lower()}", 0)
+            if ob_raw:
+                ob_snapshot = json.loads(ob_raw).get("data", json.loads(ob_raw))
 
         funding_raw = await redis.get(f"funding:{symbol}")
         oi_raw = await redis.get(f"oi:{symbol}")

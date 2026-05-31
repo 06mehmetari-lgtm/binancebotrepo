@@ -19,7 +19,7 @@ function macroVixNumber(raw: unknown): number | null {
 export async function GET() {
   const redis = createRedis()
   try {
-    const featureKeys = (await redis.keys('features:latest:*')).slice(0, 50)
+    const featureKeys = await redis.keys('features:latest:*')
 
     const pipeline = redis.pipeline()
     pipeline.get('immunity:status')
@@ -27,10 +27,12 @@ export async function GET() {
     pipeline.lrange('alerts:funding', 0, 9)
     pipeline.lrange('liquidations:large', 0, 9)
     pipeline.get('ws:status')
-    for (const k of featureKeys.slice(0, 20)) {
+    const featSample = featureKeys.slice(0, 80)
+    for (const k of featSample) {
       pipeline.get(k)
     }
-    for (const k of featureKeys.slice(0, 5)) {
+    const ctxSample = featureKeys.slice(0, 30)
+    for (const k of ctxSample) {
       const sym = k.replace('features:latest:', '')
       pipeline.get(`context:latest:${sym}`)
     }
@@ -44,7 +46,7 @@ export async function GET() {
 
     const driftCounts: Record<string, number> = { STABLE: 0, WARNING: 0, DRIFTING: 0, SHOCK: 0 }
     const featOffset = 5
-    for (let i = 0; i < Math.min(20, featureKeys.length); i++) {
+    for (let i = 0; i < featSample.length; i++) {
       const feat = safeJson(results?.[featOffset + i]?.[1] as string | null) as Record<string, unknown> | null
       const drift = typeof feat?.drift_status === 'string' ? feat.drift_status : 'STABLE'
       driftCounts[drift] = (driftCounts[drift] ?? 0) + 1
@@ -53,8 +55,8 @@ export async function GET() {
     let maxCrisis = 0
     let dominantRegime: string | null = null
     const regimeCounts: Record<string, number> = {}
-    const ctxOffset = featOffset + Math.min(20, featureKeys.length)
-    for (let i = 0; i < Math.min(5, featureKeys.length); i++) {
+    const ctxOffset = featOffset + featSample.length
+    for (let i = 0; i < ctxSample.length; i++) {
       const ctx = safeJson(results?.[ctxOffset + i]?.[1] as string | null) as Record<string, unknown> | null
       if (!ctx) continue
       const c = typeof ctx.crisis_level === 'number' ? ctx.crisis_level : 0
@@ -87,6 +89,7 @@ export async function GET() {
       funding_alerts: fundingAlerts,
       recent_liquidations: recentLiquidations,
       drift_summary: driftCounts,
+      symbols_tracked: featureKeys.length,
       limits: {
         max_drawdown: 0.10,
         max_daily_loss: 0.02,

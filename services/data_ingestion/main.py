@@ -17,7 +17,7 @@ log = logging.getLogger(__name__)
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379")
 SYMBOLS_RAW = os.getenv("SYMBOLS", "AUTO")
-TOP_N = int(os.getenv("TOP_SYMBOLS", "100"))
+TOP_N = int(os.getenv("TOP_SYMBOLS", "500"))
 # Each symbol uses 4 streams; Binance limit is 1024 per connection → max 256 symbols per WS
 WS_BATCH_SIZE = 200
 
@@ -52,6 +52,23 @@ async def init_order_books(symbols: list[str]):
         batch = symbols[i:i + batch_size]
         await asyncio.gather(*[init_one(s) for s in batch])
         log.info(f"Order books: {i + len(batch)}/{len(symbols)} initialized")
+
+
+async def ob_snapshot_loop(redis: aioredis.Redis):
+    """Publish full 20-level order book snapshots for feature_engine (all symbols)."""
+    while True:
+        published = 0
+        for sym, ob in list(order_books.items()):
+            try:
+                snap = ob.snapshot(levels=20)
+                if snap.get("bids"):
+                    await redis.set(f"ob:snapshot:{sym}", json.dumps(snap), ex=30)
+                    published += 1
+            except Exception as e:
+                log.warning(f"OB snapshot {sym}: {e}")
+        if published:
+            log.debug(f"OB snapshots published: {published}")
+        await asyncio.sleep(2)
 
 
 async def kline_cache_loop(redis: aioredis.Redis, symbols: list[str]):
@@ -101,8 +118,30 @@ async def main():
     log.info(f"Starting {len(batches)} WebSocket connection(s) for {len(symbols)} symbols")
 
     redis = await aioredis.from_url(REDIS_URL)
+    await redis.set("ingestion:symbols", json.dumps({"count": len(symbols), "symbols": symbols, "time": time.time()}), ex=600)
+
+    async def _refresh_symbol_manifest():
+        while True:
+            await redis.set(
+                "ingestion:symbols",
+                json.dumps({"count": len(symbols), "symbols": symbols, "time": time.time()}),
+                ex=600,
+            )
+            await redis.set("ws:status", json.dumps({
+                "status": "CONNECTED",
+                "time": time.time(),
+                "reconnect_delay": 0,
+                "symbols": len(symbols),
+            }), ex=45)
+            await asyncio.sleep(20)
+
     signals = CryptoSignalCollector(REDIS_URL, symbols)
-    await asyncio.gather(*ws_tasks, signals.start(), kline_cache_loop(redis, symbols))
+    await asyncio.gather(
+        *ws_tasks,
+        signals.start(),
+        ob_snapshot_loop(redis),
+        kline_cache_loop(redis, symbols),
+    )
 
 
 if __name__ == "__main__":

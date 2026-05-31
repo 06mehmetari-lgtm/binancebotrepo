@@ -18,8 +18,8 @@ const NAV_LINKS = [
   { href: '/backtest', label: '📈 Backtest' },
 ]
 
-interface TickerEntry { price: number | null; direction: string; live: boolean }
-type TickerData = Record<string, TickerEntry>
+interface TickerEntry { price: number | null; direction: string; live: boolean; confidence?: number }
+type TickerPayload = Record<string, TickerEntry | { total?: number; active?: number; top_nav?: string[] }>
 
 interface Notification { id: string; type: string; title: string; body: string; level: string; ts: number; symbol?: string }
 
@@ -108,7 +108,7 @@ function NotificationPanel({ notifications, onClose }: { notifications: Notifica
 function Nav() {
   const pathname = usePathname()
   const [open, setOpen] = useState(false)
-  const [ticker, setTicker] = useState<TickerData>({})
+  const [ticker, setTicker] = useState<TickerPayload>({})
   const [notifications, setNotifications] = useState<Notification[]>([])
   const [notifOpen, setNotifOpen] = useState(false)
   const [lastSeenTs, setLastSeenTs] = useState(0)
@@ -162,7 +162,19 @@ function Nav() {
     setNotifOpen(v => !v)
   }
 
-  const tickerSyms = ['BTCUSDT', 'ETHUSDT']
+  const meta = ticker._meta as { total?: number; active?: number; top_nav?: string[] } | undefined
+  const isEntry = (e: unknown): e is TickerEntry =>
+    !!e && typeof e === 'object' && 'live' in e
+  const tickerSyms = meta?.top_nav?.length
+    ? meta.top_nav
+    : Object.entries(ticker)
+        .filter((entry): entry is [string, TickerEntry] => {
+          const [k, e] = entry
+          return k !== '_meta' && isEntry(e) && e.live
+        })
+        .sort((a, b) => (b[1].confidence ?? 0) - (a[1].confidence ?? 0))
+        .slice(0, 12)
+        .map(([k]) => k)
 
   return (
     <>
@@ -182,11 +194,17 @@ function Nav() {
           </div>
 
           <div className="ml-auto flex items-center gap-2 shrink-0">
-            {/* Ticker chips (BTC + ETH) — desktop only */}
-            <div className="hidden md:flex items-center gap-1.5">
-              {tickerSyms.map(sym => ticker[sym] && (
-                <TickerChip key={sym} sym={sym} entry={ticker[sym]} />
-              ))}
+            {meta?.total != null && (
+              <span className="hidden lg:inline text-[10px] text-gray-600 font-mono border border-gray-800 px-1.5 py-0.5 rounded">
+                {meta.active ?? 0}/{meta.total} coin
+              </span>
+            )}
+            <div className="hidden md:flex items-center gap-1 max-w-[420px] overflow-x-auto scrollbar-hide">
+              {tickerSyms.map(sym => {
+                const raw = ticker[sym]
+                if (!isEntry(raw)) return null
+                return <TickerChip key={sym} sym={sym} entry={raw} />
+              })}
             </div>
 
             {/* Notification bell */}
@@ -240,10 +258,12 @@ function Nav() {
               <button onClick={() => setOpen(false)} className="text-gray-600 hover:text-white text-xl leading-none">✕</button>
             </div>
             {/* Mobile ticker */}
-            <div className="px-4 py-3 border-b border-gray-800/60 flex gap-2">
-              {tickerSyms.map(sym => ticker[sym] && (
-                <TickerChip key={sym} sym={sym} entry={ticker[sym]} />
-              ))}
+            <div className="px-4 py-3 border-b border-gray-800/60 flex gap-2 overflow-x-auto">
+              {tickerSyms.map(sym => {
+                const raw = ticker[sym]
+                if (!isEntry(raw)) return null
+                return <TickerChip key={sym} sym={sym} entry={raw} />
+              })}
             </div>
             <div className="p-4 flex flex-col gap-1">
               {NAV_LINKS.map(link => (

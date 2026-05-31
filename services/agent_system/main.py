@@ -21,6 +21,8 @@ log = logging.getLogger(__name__)
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379")
 SYMBOL_REFRESH_INTERVAL = 300
+AGENT_BATCH_SIZE = int(os.getenv("AGENT_BATCH_SIZE", "120"))
+AGENT_CYCLE_SEC = float(os.getenv("AGENT_CYCLE_SEC", "3"))
 
 debate = DebateAgent()
 
@@ -181,8 +183,8 @@ async def main():
 
     active_set: set[str] = set()
     last_refresh = 0.0
-    # Limit concurrent debates to avoid overwhelming Groq/Ollama rate limits
-    _sem = asyncio.Semaphore(20)
+    cycle_offset = 0
+    _sem = asyncio.Semaphore(int(os.getenv("AGENT_CONCURRENCY", "40")))
 
     async def _debate_one(symbol: str):
         async with _sem:
@@ -192,18 +194,31 @@ async def main():
                 log.error(f"Debate error for {symbol}: {e}")
 
     async def debate_loop():
-        nonlocal active_set, last_refresh
+        nonlocal active_set, last_refresh, cycle_offset
         while True:
             now = time.time()
             if now - last_refresh > SYMBOL_REFRESH_INTERVAL or not active_set:
                 syms = await discover_symbols(redis)
                 if syms:
                     active_set = set(syms)
-                    log.info(f"agent_system: {len(active_set)} symbols discovered")
+                    log.info(f"agent_system: {len(active_set)} symbols — rotating batches of {AGENT_BATCH_SIZE}")
                 last_refresh = now
 
-            await asyncio.gather(*[_debate_one(s) for s in list(active_set)])
-            await asyncio.sleep(10)
+            symbols_list = sorted(active_set)
+            n = len(symbols_list)
+            if n == 0:
+                await asyncio.sleep(AGENT_CYCLE_SEC)
+                continue
+
+            batch_n = min(AGENT_BATCH_SIZE, n)
+            batch = [
+                symbols_list[(cycle_offset + i) % n]
+                for i in range(batch_n)
+            ]
+            cycle_offset = (cycle_offset + batch_n) % n
+
+            await asyncio.gather(*[_debate_one(s) for s in batch])
+            await asyncio.sleep(AGENT_CYCLE_SEC)
 
     redis_fb = await aioredis.from_url(REDIS_URL)
     await asyncio.gather(

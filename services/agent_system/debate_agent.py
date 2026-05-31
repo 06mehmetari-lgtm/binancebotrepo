@@ -248,11 +248,24 @@ class DebateAgent:
         rsi = float(f.get("rsi_14", 50)) / 100
         macd = float(f.get("macd_hist", 0))
         adx = float(f.get("adx_14", 0))
-        imb = float(f.get("imbalance_5", 0))
-        score = (0.5 - rsi) * 2 + macd * 10 + imb * 0.5
-        if adx > 0.25: score *= 1.2
+        imb1 = float(f.get("imbalance_1", f.get("imbalance_5", 0)))
+        imb5 = float(f.get("imbalance_5", 0))
+        imb20 = float(f.get("imbalance_20", 0))
+        bid_lv = int(f.get("bid_levels_active", 0))
+        ask_lv = int(f.get("ask_levels_active", 0))
+        score = (0.5 - rsi) * 2 + macd * 10
+        score += imb1 * 0.35 + imb5 * 0.25 + imb20 * 0.15
+        if adx > 0.25:
+            score *= 1.2
         signal = "long" if score > 0.2 else ("short" if score < -0.2 else "flat")
-        return AgentVote("technical", signal, min(abs(score), 1.0), {"rsi": rsi, "macd": macd})
+        return AgentVote(
+            "technical", signal, min(abs(score), 1.0),
+            {
+                "rsi": rsi, "macd": macd,
+                "imb_l1": imb1, "imb_l5": imb5, "imb_l20": imb20,
+                "bid_levels": bid_lv, "ask_levels": ask_lv,
+            },
+        )
 
     async def _onchain_vote(self, ctx: dict) -> AgentVote:
         funding = float(ctx.get("funding_rate", 0))

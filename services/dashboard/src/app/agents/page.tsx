@@ -233,10 +233,9 @@ export default function AgentsPage() {
           </div>
         </div>
 
-        <div className="flex flex-wrap gap-1.5 max-h-28 overflow-y-auto">
+        <div className="flex flex-wrap gap-1.5 max-h-40 overflow-y-auto">
           {(symbols.length ? symbols : ['BTCUSDT', 'ETHUSDT', 'BNBUSDT'])
             .filter(s => !search || s.includes(search))
-            .slice(0, 60)
             .map(s => {
               const sig = signals[s]
               const dirColor = sig?.direction === 'long' ? 'text-green-400' : sig?.direction === 'short' ? 'text-red-400' : ''

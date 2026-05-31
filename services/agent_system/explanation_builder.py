@@ -95,10 +95,20 @@ def build_consensus_reasoning(
     drift = context.get("drift_status", features.get("drift_status", "STABLE"))
     fg = float(context.get("fear_greed", 50) or 50)
 
+    imb1 = float(features.get("imbalance_1", 0) or 0)
+    imb5 = float(features.get("imbalance_5", 0) or 0)
+    imb20 = float(features.get("imbalance_20", 0) or 0)
+    bid_lv = int(features.get("bid_levels_active", 0) or 0)
+    ask_lv = int(features.get("ask_levels_active", 0) or 0)
+
     lines = [
         f"{symbol}: {final_signal.upper()} sinyali — AI güven {final_confidence:.0%}.",
         f"Teknik: RSI {rsi:.1f}, MACD hist {macd:+.4f}. Rejim: {regime_tr}.",
-        f"Risk: kriz seviyesi L{crisis}, drift {drift}, Fear&Greed {fg:.0f}.",
+        (
+            f"Emir defteri: L1 imb {imb1:+.2f}, L5 {imb5:+.2f}, L20 {imb20:+.2f} "
+            f"({bid_lv} alış / {ask_lv} satış kademesi aktif)."
+        ),
+        f"Risk: kriz L{crisis}, drift {drift}, Fear&Greed {fg:.0f}.",
     ]
     if lessons:
         lines.append("Geçmiş işlemlerden: " + " | ".join(lessons[:3]))
