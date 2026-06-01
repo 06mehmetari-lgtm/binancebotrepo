@@ -33,24 +33,36 @@ export async function POST(req: NextRequest) {
     })
   }
 
-  // Build context from docs (max ~10000 chars)
-  let contextBlock = ''
-  const usedTitles: string[] = []
+  // Always list ALL doc titles so the AI knows total count
+  const allTitles = docs.map((d, i) => `${i + 1}. ${d.title}${d.filename ? ` (${d.filename})` : ''}`).join('\n')
+
+  // Include full content up to 80k chars (~20k tokens, well within 128k context)
+  let contentBlock = ''
+  const includedTitles: string[] = []
   let charCount = 0
   for (const doc of docs) {
-    const chunk = `[${doc.title}]\n${doc.content}\n`
-    if (charCount + chunk.length > 10000) break
-    contextBlock += chunk + '---\n'
-    usedTitles.push(doc.title)
+    const chunk = `[${doc.title}]\n${doc.content}\n---\n`
+    if (charCount + chunk.length > 80000) break
+    contentBlock += chunk
+    includedTitles.push(doc.title)
     charCount += chunk.length
   }
 
-  const system = `You are an expert trading analyst AI assistant trained on the following documents:
+  const skipped = docs.length - includedTitles.length
 
-${contextBlock}
+  const system = `You are an expert trading analyst AI assistant.
+
+TOTAL DOCUMENTS IN YOUR KNOWLEDGE BASE: ${docs.length}
+COMPLETE DOCUMENT LIST:
+${allTitles}
+
+${skipped > 0 ? `NOTE: ${skipped} document(s) could not fit in this context due to length. The documents above are the ones with full content available.\n` : ''}
+FULL DOCUMENT CONTENTS:
+${contentBlock}
 
 Rules:
-- Answer ONLY based on the documents above
+- You have ${docs.length} documents total as listed above — always report this correct count when asked
+- Answer based on the document contents above
 - If the answer is not in the documents, say: "Bu dökümanlarımda bu bilgi yok."
 - Cite specific price levels, indicators, rules from the documents
 - Answer in the same language the user writes in (Turkish or English)
@@ -58,7 +70,7 @@ Rules:
 
   try {
     const { content, provider } = await chatCompletion(message, { system, temperature: 0.2, maxTokens: 1024 })
-    return NextResponse.json({ reply: content, sources: usedTitles, provider })
+    return NextResponse.json({ reply: content, sources: includedTitles, provider, totalDocs: docs.length })
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err)
     return NextResponse.json({ error: msg }, { status: 502 })

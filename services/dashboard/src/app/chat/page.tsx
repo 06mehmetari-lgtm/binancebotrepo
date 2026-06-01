@@ -5,6 +5,8 @@ interface Message {
   role: 'user' | 'assistant'
   content: string
   sources?: string[]
+  provider?: string
+  totalDocs?: number
   ts: number
 }
 
@@ -51,7 +53,14 @@ export default function ChatPage() {
       } else {
         setMessages(prev => [
           ...prev,
-          { role: 'assistant', content: data.reply, sources: data.sources, ts: Date.now() / 1000 },
+          {
+            role: 'assistant',
+            content: data.reply,
+            sources: data.sources,
+            provider: data.provider,
+            totalDocs: data.totalDocs,
+            ts: Date.now() / 1000,
+          },
         ])
       }
     } catch {
@@ -71,9 +80,16 @@ export default function ChatPage() {
           <h1 className="text-white font-bold text-base">Döküman Chatbotu</h1>
           <p className="text-gray-500 text-xs">Öğrenilmiş PDF&apos;lerden cevap verir — kripto analiz, strateji, kurallar</p>
         </div>
-        <a href="/training" className="ml-auto text-xs text-orange-400 hover:text-orange-300 transition-colors shrink-0">
-          📚 Dökümanlar →
-        </a>
+        <div className="ml-auto flex items-center gap-3 shrink-0">
+          {messages.length > 0 && messages[messages.length - 1].totalDocs !== undefined && (
+            <span className="text-xs text-green-400 bg-green-900/30 border border-green-700/40 px-2 py-1 rounded">
+              📚 {messages[messages.length - 1].totalDocs} döküman
+            </span>
+          )}
+          <a href="/training" className="text-xs text-orange-400 hover:text-orange-300 transition-colors">
+            📚 Dökümanlar →
+          </a>
+        </div>
       </div>
 
       {/* Messages */}
@@ -111,13 +127,22 @@ export default function ChatPage() {
               <p className="text-sm leading-relaxed whitespace-pre-wrap">{m.content}</p>
               {m.sources && m.sources.length > 0 && (
                 <div className="mt-2 pt-2 border-t border-gray-700/40">
-                  <p className="text-gray-600 text-[10px] mb-1">Kaynak dökümanlar:</p>
+                  <p className="text-gray-600 text-[10px] mb-1">
+                    {m.totalDocs && m.totalDocs > m.sources.length
+                      ? `Toplam ${m.totalDocs} döküman · ${m.sources.length} tanesi bu cevapta kullanıldı:`
+                      : `Kaynak (${m.sources.length} döküman):`}
+                  </p>
                   <div className="flex flex-wrap gap-1">
                     {m.sources.map((s, j) => (
                       <span key={j} className="text-[10px] bg-gray-700/40 text-gray-500 rounded px-1.5 py-0.5 border border-gray-700/30">
                         📄 {s}
                       </span>
                     ))}
+                    {m.provider && (
+                      <span className="text-[10px] bg-blue-900/30 text-blue-600 rounded px-1.5 py-0.5 border border-blue-800/30 ml-auto">
+                        {m.provider}
+                      </span>
+                    )}
                   </div>
                 </div>
               )}
