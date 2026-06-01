@@ -202,7 +202,7 @@ class DebateAgent:
             scores = {k: v / total_w for k, v in scores.items()}
         final = max(scores, key=scores.__getitem__)
         confidence = scores[final]
-        if confidence < 0.55:
+        if confidence < 0.50:
             final = "flat"
         signals = [v.signal for v in votes]
         consensus = max(signals.count("long"), signals.count("short"), signals.count("flat")) / len(signals)
@@ -274,9 +274,17 @@ class DebateAgent:
 
     async def _neutral_vote(self, f: dict) -> AgentVote:
         adx = float(f.get("adx_14", 0))
+        rsi = float(f.get("rsi_14", 50))
+        macd = float(f.get("macd_hist", 0))
         if adx < 0.15:
-            return AgentVote("neutral", "flat", 0.7, {"reason": "no trend"})
-        return AgentVote("neutral", "flat", 0.3, {"reason": "trend present"})
+            return AgentVote("neutral", "flat", 0.6, {"reason": "no trend"})
+        # Trend present — vote with momentum direction
+        score = (rsi - 50) / 50 + macd * 5
+        if score > 0.15:
+            return AgentVote("neutral", "long", min(0.5, abs(score)), {"reason": "momentum up"})
+        elif score < -0.15:
+            return AgentVote("neutral", "short", min(0.5, abs(score)), {"reason": "momentum down"})
+        return AgentVote("neutral", "flat", 0.3, {"reason": "mixed momentum"})
 
     async def _risk_vote(self, f: dict, ctx: dict) -> AgentVote:
         crisis = int(ctx.get("crisis_level", 0))
@@ -285,7 +293,8 @@ class DebateAgent:
             return AgentVote("risk", "flat", 0.9, {"crisis": crisis, "drift": drift})
         if crisis >= 2:
             return AgentVote("risk", "flat", 0.6, {"crisis": crisis})
-        return AgentVote("risk", "flat", 0.2, {"crisis": crisis})
+        # Safe conditions — minimal influence, don't block other agents
+        return AgentVote("risk", "flat", 0.1, {"crisis": crisis})
 
     def update_weights(self, agent_name: str, was_correct: bool):
         current = self.weights.get(agent_name, 1.0)

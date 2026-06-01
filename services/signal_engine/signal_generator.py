@@ -37,7 +37,7 @@ class SignalGenerator:
             best = max(votes, key=votes.__getitem__)
             total = sum(votes.values())
             confidence = votes[best] / total if total else 0.0
-            direction = best if confidence >= 0.60 else "flat"
+            direction = best if confidence >= 0.55 else "flat"
             source = "agent_system"
 
         elif features:
