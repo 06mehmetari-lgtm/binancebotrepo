@@ -22,6 +22,14 @@ PORTFOLIO_VALUE = float(os.getenv("PORTFOLIO_VALUE", "10000"))
 SYMBOL_REFRESH_INTERVAL = 300
 MIN_HOLD_SECONDS = int(os.getenv("MIN_HOLD_SECONDS", "300"))  # 5 dk minimum pozisyon süresi
 
+# ── Stop-and-Reverse (SAR) parametreleri ────────────────────────────────────
+# Stop-loss vurduğunda karşı yönde pozisyon açmak için eşikler.
+# Immunity sistemi limitleri (MAX_LEVERAGE, MAX_POSITION_PCT vb.) yine de geçerlidir.
+SAR_CONFIDENCE_THRESHOLD = float(os.getenv("SAR_CONFIDENCE", "0.72"))  # Giriş 0.60'tan yüksek
+SAR_KELLY_DISCOUNT = 0.80          # Ters pozisyon %20 daha küçük (ihtiyat payı)
+SAR_MIN_LOSS_PCT = -1.5            # En az -%1.5 zararda ise SAR değerlendirilir
+SAR_POSITION_MONITOR_INTERVAL = 5  # Aktif pozisyonları kaç saniyede kontrol et
+
 # Running daily P&L (reset at UTC midnight)
 _daily_pnl = 0.0
 _last_reset_day = -1
@@ -201,10 +209,105 @@ async def process_signal(redis: aioredis.Redis, symbol: str):
     }), ex=86400)
 
 
+async def maybe_reverse(
+    redis: aioredis.Redis,
+    symbol: str,
+    closed_direction: str,
+    current_price: float,
+    loss_pct: float,
+) -> bool:
+    """Stop-and-Reverse: stop-loss kapandıktan sonra ters yönde pozisyon aç.
+
+    Koşullar (hepsi sağlanmalı):
+      1. Zarar SAR_MIN_LOSS_PCT eşiğini geçmiş olmalı
+      2. Yeni sinyal kapatılan yönün tersi olmalı
+      3. Sinyal güveni >= SAR_CONFIDENCE_THRESHOLD
+      4. Immunity sistemi onaylamalı
+    """
+    if loss_pct > SAR_MIN_LOSS_PCT:
+        return False  # Yeterli zarar yok, SAR tetiklenmiyor
+
+    sig_raw = await redis.get(f"signal:latest:{symbol}")
+    if not sig_raw:
+        return False
+    signal = json.loads(sig_raw)
+
+    new_dir = signal.get("direction", "flat")
+    confidence = float(signal.get("confidence", 0))
+
+    if new_dir == closed_direction or new_dir == "flat":
+        return False
+    if confidence < SAR_CONFIDENCE_THRESHOLD:
+        log.debug(f"[SAR] {symbol}: sinyal güveni {confidence:.2%} < eşik {SAR_CONFIDENCE_THRESHOLD:.2%}")
+        return False
+
+    kelly = float(signal.get("kelly_fraction", 0.01))
+    size_usd = min(
+        PORTFOLIO_VALUE * kelly * confidence * SAR_KELLY_DISCOUNT,
+        PORTFOLIO_VALUE * 0.05 * SAR_KELLY_DISCOUNT,
+    )
+    if size_usd < 10:
+        return False
+
+    order_request = {
+        "symbol": symbol,
+        "side": "BUY" if new_dir == "long" else "SELL",
+        "size_usd": size_usd,
+        "leverage": 1.0,
+        "confidence": confidence,
+        "signal_source": "stop_and_reverse",
+        "is_reversal": True,
+        "crisis_level": signal.get("crisis_level", 0),
+    }
+
+    approved = await request_immunity_approval(redis, order_request)
+    if not approved:
+        log.info(f"[SAR] {symbol}: immunity sistemi ters pozisyonu reddetti")
+        return False
+
+    trade_id = str(uuid.uuid4())[:12]
+    await redis.set(f"oms:position:{symbol}", json.dumps({
+        "trade_id": trade_id,
+        "symbol": symbol,
+        "direction": new_dir,
+        "size_usd": size_usd,
+        "entry_price": current_price,
+        "entry_time": time.time(),
+        "entry_signal": signal,
+        "is_reversal": True,
+    }), ex=86400)
+
+    log.info(
+        f"[SAR] {symbol}: {closed_direction.upper()} → {new_dir.upper()} "
+        f"@ {current_price:.5f} | zarar: {loss_pct:+.2f}% | güven: {confidence:.1%}"
+    )
+
+    await redis.lpush("oms:sar_trades", json.dumps({
+        "symbol": symbol,
+        "from_dir": closed_direction,
+        "to_dir": new_dir,
+        "price": current_price,
+        "loss_pct": round(loss_pct, 4),
+        "confidence": round(confidence, 4),
+        "size_usd": round(size_usd, 2),
+        "timestamp": time.time(),
+    }))
+    await redis.ltrim("oms:sar_trades", 0, 499)
+    await redis.publish("ch:sar_triggered", json.dumps({
+        "symbol": symbol, "from": closed_direction, "to": new_dir,
+        "loss_pct": round(loss_pct, 4), "ts": time.time(),
+    }))
+    return True
+
+
 async def position_monitor(redis: aioredis.Redis):
-    """Every 30s: close positions that have hit ATR-based stop-loss or take-profit."""
+    """Her 5s: aktif pozisyonları stop-loss ve take-profit için kontrol et.
+
+    Stop-loss tetiklendiğinde SAR (Stop-and-Reverse) değerlendirilir:
+    karşı yönde güçlü sinyal varsa zarar kesilir + ters pozisyon açılır.
+    """
     while True:
-        await asyncio.sleep(30)
+        await asyncio.sleep(SAR_POSITION_MONITOR_INTERVAL)
         pos_keys = await redis.keys("oms:position:*")
         for k in pos_keys:
             pos_raw = await redis.get(k)
@@ -218,12 +321,11 @@ async def position_monitor(redis: aioredis.Redis):
                 if not symbol or entry_price <= 0:
                     continue
 
-                # Stop/TP levels are stored in the entry signal
                 entry_signal = pos.get("entry_signal", {})
                 stop_pct = float(entry_signal.get("stop_pct", 0) or 0)
                 tp_pct   = float(entry_signal.get("tp_pct",   0) or 0)
                 if not stop_pct and not tp_pct:
-                    continue  # no levels defined
+                    continue
 
                 current_price = await get_price(redis, symbol)
                 if current_price <= 0:
@@ -240,13 +342,21 @@ async def position_monitor(redis: aioredis.Redis):
                     if tp_pct   and chg <= tp_pct:     hit_tp   = True
 
                 if hit_stop:
-                    log.info(f"STOP-LOSS HIT: {symbol} {direction} entry={entry_price:.4f} "
-                             f"now={current_price:.4f} chg={chg:+.2f}%")
+                    log.info(
+                        f"STOP-LOSS HIT: {symbol} {direction} "
+                        f"entry={entry_price:.5f} now={current_price:.5f} chg={chg:+.2f}%"
+                    )
                     await close_position(redis, symbol, pos, current_price)
+                    # SAR denemesi: karşı yönde sinyal varsa hemen ters pozisyon aç
+                    await maybe_reverse(redis, symbol, direction, current_price, chg)
+
                 elif hit_tp:
-                    log.info(f"TAKE-PROFIT HIT: {symbol} {direction} entry={entry_price:.4f} "
-                             f"now={current_price:.4f} chg={chg:+.2f}%")
+                    log.info(
+                        f"TAKE-PROFIT HIT: {symbol} {direction} "
+                        f"entry={entry_price:.5f} now={current_price:.5f} chg={chg:+.2f}%"
+                    )
                     await close_position(redis, symbol, pos, current_price)
+
             except Exception as e:
                 log.error(f"Position monitor error: {e}")
 

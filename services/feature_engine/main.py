@@ -288,10 +288,31 @@ async def main():
 
             await asyncio.sleep(1)
 
+    async def _priority_scan_loop():
+        """Aktif OMS pozisyonlu sembolleri 3s'de bir öncelikli yeniden tara.
+
+        Normal feature_loop tüm 500+ sembolü işler.
+        Bu döngü sadece açık pozisyon olan sembollere odaklanarak
+        stop-and-reverse kararları için güncel sinyal sağlar.
+        """
+        while True:
+            try:
+                pos_keys = await redis.keys("oms:position:*")
+                if pos_keys:
+                    priority_syms = [
+                        (k.decode() if isinstance(k, bytes) else k).split(":")[-1].upper()
+                        for k in pos_keys
+                    ]
+                    await asyncio.gather(*[_process(s) for s in priority_syms])
+            except Exception as e:
+                log.error(f"Priority scan error: {e}")
+            await asyncio.sleep(3)
+
     await asyncio.gather(
         feature_loop(),
         online_learner.run(redis_learner),
         _model_refresh_loop(redis),
+        _priority_scan_loop(),
     )
 
 
