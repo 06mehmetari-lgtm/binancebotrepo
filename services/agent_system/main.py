@@ -81,8 +81,9 @@ async def weight_update_loop(redis: aioredis.Redis):
     global _current_regime
     while True:
         try:
-            # Learned accuracy weights (updated by feedback_writer)
-            learned_raw = await redis.get("agents:weights")
+            # Accuracy-based weights written by autopsy/feedback_writer
+            # (separate from agents:weights to avoid collision)
+            learned_raw = await redis.get("agents:learned_weights")
             learned = json.loads(learned_raw) if learned_raw else None
 
             # Current global regime (from context_engine via BTC context)

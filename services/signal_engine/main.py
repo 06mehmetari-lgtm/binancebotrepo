@@ -184,6 +184,15 @@ async def generate_signal(redis: aioredis.Redis, symbol: str) -> dict | None:
     signal_dict["is_valid"] = is_valid
     signal_dict["reject_reason"] = "" if is_valid else reason
 
+    # Snapshot entry features for ML labeling.
+    # feature_engine overwrites ml:signal_features:{symbol} every second —
+    # we copy it here at signal time so feedback_writer can retrieve the
+    # correct feature vector when the trade closes (hours later).
+    if signal_dict["direction"] != "flat" and is_valid:
+        entry_vec = await redis.get(f"ml:signal_features:{symbol}")
+        if entry_vec:
+            await redis.set(f"ml:entry_features:{symbol}", entry_vec, ex=14400)  # 4h TTL
+
     return signal_dict
 
 

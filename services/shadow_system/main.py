@@ -68,20 +68,30 @@ async def simulate_tick(redis: aioredis.Redis, symbol: str):
                     await redis.delete(pos_key)
                     await redis.lpush(f"shadow:trades:{shadow_id}", json.dumps(result))
                     await redis.ltrim(f"shadow:trades:{shadow_id}", 0, 999)
-                    # Publish for autopsy
+                    # Enrich with entry regime + current agent votes for ML labeling
+                    votes_raw = await redis.get(f"agents:verdicts:{symbol}")
+                    agent_votes = json.loads(votes_raw) if votes_raw else []
                     await redis.publish("ch:trade_closed", json.dumps({
-                        "shadow_id": shadow_id, "symbol": symbol, **result
+                        "shadow_id": shadow_id,
+                        "symbol": symbol,
+                        "regime": pos.get("regime", "unknown"),
+                        "agent_votes": agent_votes,
+                        **result,
                     }))
             else:
                 continue  # Already in correct direction
 
         # Open new position if none exists
         if not await redis.exists(pos_key):
+            # Capture entry regime for labeling when trade closes
+            ctx_raw = await redis.get(f"context:latest:{symbol}")
+            entry_regime = json.loads(ctx_raw).get("regime", "unknown") if ctx_raw else "unknown"
             open_side = "BUY" if direction == "long" else "SELL_SHORT"
             result = trader.execute(shadow_id, symbol, open_side, price, size_usd)
             if result:
                 await redis.set(pos_key, json.dumps({
                     "direction": direction, "price": price,
+                    "regime": entry_regime,
                     "size_usd": size_usd, "time": time.time(),
                 }), ex=86400)
 

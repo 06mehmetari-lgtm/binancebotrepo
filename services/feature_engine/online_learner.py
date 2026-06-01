@@ -1,8 +1,16 @@
 """
-Online Learner — Phase 3.
-Consumes labeled trade outcomes from Redis, retrains the ML model
-every RETRAIN_EVERY samples using walk-forward validation.
-Runs as a background task inside feature_engine.
+Online Learner — Phase 3 (corrected).
+Watches ml:training_data list (filled by feedback_writer in autopsy service).
+When enough new labeled samples arrive, retrains the sklearn GradientBoosting model
+and persists it to Redis so all services pick it up.
+
+Data flow:
+  shadow_system closes trade
+      → ch:trade_closed (with regime + agent_votes)
+      → autopsy/feedback_writer.write_feedback()
+      → LPUSH ml:training_data  ← we watch this
+      → retrain here every RETRAIN_EVERY new samples
+      → ml:model:v2  (feature_engine ml_predictor reloads this every 10 min)
 """
 import asyncio
 import json
@@ -15,102 +23,76 @@ from ml_signal import MLSignalPredictor, FEATURE_KEYS, MODEL_REDIS_KEY
 
 log = logging.getLogger(__name__)
 
-TRAINING_DATA_KEY = "ml:training_data"  # Redis list of JSON samples
-TRAINING_DATA_MAX = 2000                # keep last N samples
-RETRAIN_EVERY     = 50                  # retrain when N new samples accumulated
-MIN_SAMPLES       = 60                  # don't train with fewer than this
+TRAINING_DATA_KEY = "ml:training_data"
+RETRAIN_EVERY     = 50    # retrain when this many new samples have arrived
+MIN_SAMPLES       = 60    # don't train with fewer than this
+POLL_INTERVAL     = 60    # seconds between list-length checks
 STATS_KEY         = "ml:learner:stats"
 MODEL_VERSION_KEY = "ml:model:version"
 
 
 class OnlineLearner:
     def __init__(self, predictor: MLSignalPredictor):
-        self._predictor = predictor
-        self._samples_since_retrain = 0
+        self._predictor            = predictor
+        self._last_known_count: int = 0
 
     async def run(self, redis: aioredis.Redis):
-        """Background loop: subscribe to trade outcomes and retrain periodically."""
-        log.info("OnlineLearner started — subscribing to ch:trade_closed")
-
-        # Load existing model from Redis on startup
+        log.info("OnlineLearner started — polling ml:training_data every 60s")
         await self._load_model(redis)
+        # Initialise counter so we don't immediately retrain on stale data
+        self._last_known_count = await redis.llen(TRAINING_DATA_KEY)
 
-        pubsub = redis.pubsub()
-        await pubsub.subscribe("ch:trade_closed")
-
-        async for msg in pubsub.listen():
-            if msg.get("type") != "message":
-                continue
+        while True:
+            await asyncio.sleep(POLL_INTERVAL)
             try:
-                await self._handle_trade(redis, msg["data"])
+                await self._check_and_retrain(redis)
             except Exception as e:
-                log.error(f"OnlineLearner trade handler error: {e}")
+                log.error(f"OnlineLearner poll error: {e}")
 
-    async def _handle_trade(self, redis: aioredis.Redis, raw):
-        trade = json.loads(raw) if isinstance(raw, (str, bytes)) else raw
-        symbol   = trade.get("symbol", "")
-        pnl_pct  = float(trade.get("pnl_pct", 0))
-        direction = trade.get("direction", "flat")
+    async def _check_and_retrain(self, redis: aioredis.Redis):
+        current_count = await redis.llen(TRAINING_DATA_KEY)
+        new_samples   = current_count - self._last_known_count
 
-        if not symbol or direction == "flat":
+        if new_samples < RETRAIN_EVERY:
             return
 
-        # Fetch feature vector stored at signal time
-        feat_raw = await redis.get(f"ml:signal_features:{symbol}")
-        if not feat_raw:
-            return
-        feature_vec = json.loads(feat_raw)
-
-        # Label: +1 = this direction was profitable, -1 = was not
-        # 0 = flat (shouldn't appear since we filtered above)
-        if direction == "long":
-            label = 1 if pnl_pct > 0 else 0
-        elif direction == "short":
-            label = 2 if pnl_pct > 0 else 0
-        else:
-            return
-
-        sample = {
-            "features": feature_vec,
-            "label": label,
-            "symbol": symbol,
-            "pnl_pct": pnl_pct,
-            "direction": direction,
-            "ts": time.time(),
-        }
-        await redis.lpush(TRAINING_DATA_KEY, json.dumps(sample))
-        await redis.ltrim(TRAINING_DATA_KEY, 0, TRAINING_DATA_MAX - 1)
-
-        self._samples_since_retrain += 1
-        log.debug(f"OnlineLearner: {symbol} {direction} label={label} pnl={pnl_pct:.2%}")
-
-        if self._samples_since_retrain >= RETRAIN_EVERY:
-            self._samples_since_retrain = 0
-            await self._retrain(redis)
+        log.info(
+            f"OnlineLearner: {new_samples} new samples "
+            f"(total={current_count}) — starting retrain"
+        )
+        await self._retrain(redis)
+        self._last_known_count = current_count
 
     async def _retrain(self, redis: aioredis.Redis):
-        raw_samples = await redis.lrange(TRAINING_DATA_KEY, 0, TRAINING_DATA_MAX - 1)
-        samples = []
-        for r in raw_samples:
+        raw_list = await redis.lrange(TRAINING_DATA_KEY, 0, -1)
+        samples: list[dict] = []
+        for r in raw_list:
             try:
                 samples.append(json.loads(r))
             except Exception:
                 continue
 
         if len(samples) < MIN_SAMPLES:
-            log.info(f"OnlineLearner: only {len(samples)} samples, skipping retrain")
+            log.info(f"OnlineLearner: only {len(samples)} samples, need {MIN_SAMPLES} — skipping")
             return
 
-        X = [s["features"] for s in samples]
-        y = [s["label"] for s in samples]
+        X, y = [], []
+        for s in samples:
+            vec = s.get("features", [])
+            lbl = s.get("label")
+            if len(vec) == len(FEATURE_KEYS) and lbl is not None:
+                X.append(vec)
+                y.append(lbl)
 
-        # Validate feature vector length
-        if any(len(x) != len(FEATURE_KEYS) for x in X):
-            log.warning("OnlineLearner: feature vector length mismatch, skipping retrain")
+        if len(X) < MIN_SAMPLES:
+            log.warning(
+                f"OnlineLearner: only {len(X)} valid feature vectors "
+                f"(expected len={len(FEATURE_KEYS)}) — skipping"
+            )
             return
 
-        # Walk-forward validation: train on 80%, validate on last 20%
-        split = int(len(samples) * 0.8)
+        # Walk-forward: train on first 80%, validate on last 20%
+        split   = max(MIN_SAMPLES, int(len(X) * 0.8))
         X_train, y_train = X[:split], y[:split]
         X_val,   y_val   = X[split:], y[split:]
 
@@ -120,37 +102,46 @@ class OnlineLearner:
                 None, self._predictor.fit, X_train, y_train
             )
 
-            # Compute validation accuracy
+            # Validation accuracy
             val_acc = 0.0
             if X_val:
-                preds = []
-                for xv in X_val:
-                    fmap = dict(zip(FEATURE_KEYS, xv))
+                correct = 0
+                for xv, yt in zip(X_val, y_val):
+                    fmap  = dict(zip(FEATURE_KEYS, xv))
                     score = self._predictor.predict(fmap)
-                    preds.append(1 if score > 0.2 else (2 if score < -0.2 else 0))
-                val_acc = sum(p == yt for p, yt in zip(preds, y_val)) / len(y_val)
+                    pred  = 1 if score > 0.2 else (2 if score < -0.2 else 0)
+                    if pred == yt:
+                        correct += 1
+                val_acc = correct / len(y_val)
 
-            # Persist model + stats
+            # Persist to Redis
             version_raw = await redis.get(MODEL_VERSION_KEY)
-            version = (int(version_raw) + 1) if version_raw else 1
+            version     = (int(version_raw) + 1) if version_raw else 1
             await redis.set(MODEL_REDIS_KEY, model_bytes, ex=86400 * 7)
             await redis.set(MODEL_VERSION_KEY, str(version))
 
-            # Feature importance for dashboard
+            # Feature importance
             importance = self._predictor.feature_importance()
-            top5 = list(importance.items())[:5]
+            top5       = list(importance.items())[:5]
+
+            # Label distribution for diagnostics
+            from collections import Counter
+            label_dist = dict(Counter(y))
 
             stats = {
-                "version": version,
-                "n_samples": len(samples),
+                "version":      version,
+                "n_samples":    len(X),
                 "val_accuracy": round(val_acc, 4),
                 "top_features": top5,
-                "timestamp": time.time(),
+                "label_dist":   label_dist,
+                "timestamp":    time.time(),
             }
             await redis.set(STATS_KEY, json.dumps(stats), ex=86400)
+
             log.info(
-                f"ML retrain complete — v{version}, {len(samples)} samples, "
-                f"val_acc={val_acc:.1%}, top={top5[0] if top5 else 'n/a'}"
+                f"OnlineLearner retrain complete — "
+                f"v{version}, {len(X)} samples, val_acc={val_acc:.1%}, "
+                f"labels={label_dist}, top_feature={top5[0][0] if top5 else 'n/a'}"
             )
 
         except Exception as e:
@@ -160,7 +151,8 @@ class OnlineLearner:
         model_bytes = await redis.get(MODEL_REDIS_KEY)
         if model_bytes:
             version_raw = await redis.get(MODEL_VERSION_KEY)
-            version = int(version_raw) if version_raw else 0
+            version     = int(version_raw) if version_raw else 0
             self._predictor.load_bytes(model_bytes, version)
+            log.info(f"OnlineLearner: loaded existing model v{version}")
         else:
-            log.info("OnlineLearner: no saved model, using heuristic until first retrain")
+            log.info("OnlineLearner: no saved model — using heuristic scoring until first retrain")
