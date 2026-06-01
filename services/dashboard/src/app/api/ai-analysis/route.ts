@@ -37,7 +37,6 @@ const COIN_MAP: Record<string, string> = {
   INJ: 'INJUSDT',
   SEI: 'SEIUSDT',
   GRASS: 'GRASSUSDT',
-  SUI: 'SUIUSDT',
   HBAR: 'HBARUSDT',
 }
 
