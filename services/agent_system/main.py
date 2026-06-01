@@ -9,6 +9,7 @@ import redis.asyncio as aioredis
 from debate_agent import DebateAgent
 from regime_router import get_weights_for_regime
 from groq_news_scanner import GroqNewsScanner
+from lesson_writer import lesson_writer_loop
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
@@ -80,18 +81,38 @@ _training_context: str = ""
 
 
 async def reload_training_context(redis: aioredis.Redis) -> str:
-    """Load operator training docs from Redis into a single prompt block."""
+    """Load operator training docs + recent trade lessons from Redis."""
+    sections = []
+
     try:
         raw = await redis.get("training:docs")
-        if not raw:
-            return ""
-        docs = json.loads(raw)
-        if not docs:
-            return ""
-        parts = [f"[{d.get('title','doc')}]\n{d.get('content','')}" for d in docs[:8]]
-        return "\n---\n".join(parts)
+        if raw:
+            docs = json.loads(raw)
+            if docs:
+                parts = [f"[{d.get('title','doc')}]\n{d.get('content','')}" for d in docs[:8]]
+                sections.append("PDF TRAINING DOCUMENTS:\n" + "\n---\n".join(parts))
     except Exception:
-        return ""
+        pass
+
+    try:
+        lesson_raws = await redis.lrange("training:lessons", 0, 9)
+        if lesson_raws:
+            lessons = []
+            for lr in lesson_raws:
+                try:
+                    ld = json.loads(lr)
+                    lessons.append(ld.get("lesson", ""))
+                except Exception:
+                    pass
+            if lessons:
+                sections.append(
+                    "RECENT TRADE LESSONS (AI-generated from actual trades — avoid repeating these mistakes):\n"
+                    + "\n\n".join(lessons)
+                )
+    except Exception:
+        pass
+
+    return "\n\n===\n\n".join(sections)
 
 
 async def _groq_analyze_queued(raw_text: str, filename: str) -> str:
@@ -278,6 +299,7 @@ async def main():
         weight_update_loop(redis),
         training_reload_loop(redis),
         news_scanner.run(redis),
+        lesson_writer_loop(REDIS_URL),
     )
 
 

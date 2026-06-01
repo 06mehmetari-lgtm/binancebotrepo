@@ -10,6 +10,7 @@ const NAV_LINKS = [
   { href: '/ai', label: '🤖 AI Analiz' },
   { href: '/training', label: '📚 AI Eğitim' },
   { href: '/chat', label: '💬 Döküman Chat' },
+  { href: '/learning', label: '📈 AI Öğrenme' },
   { href: '/positions', label: '💼 Positions' },
   { href: '/scanner', label: '🔍 Scanner' },
   { href: '/markets', label: 'Markets' },
