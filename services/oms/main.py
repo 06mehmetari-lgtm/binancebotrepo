@@ -20,7 +20,8 @@ REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379")
 DRY_RUN = os.getenv("DRY_RUN", "true").lower() == "true"
 PORTFOLIO_VALUE = float(os.getenv("PORTFOLIO_VALUE", "10000"))
 SYMBOL_REFRESH_INTERVAL = 300
-MIN_HOLD_SECONDS = int(os.getenv("MIN_HOLD_SECONDS", "300"))  # 5 dk minimum pozisyon süresi
+MIN_HOLD_SECONDS = int(os.getenv("MIN_HOLD_SECONDS", "60"))   # 60s minimum pozisyon süresi (hızlı al-sat)
+CONFIDENCE_EXIT_THRESHOLD = float(os.getenv("CONFIDENCE_EXIT_THRESHOLD", "0.45"))  # Güven düşünce kârı realize et
 
 # ── Stop-and-Reverse (SAR) parametreleri ────────────────────────────────────
 # Stop-loss vurduğunda karşı yönde pozisyon açmak için eşikler.
@@ -301,10 +302,15 @@ async def maybe_reverse(
 
 
 async def position_monitor(redis: aioredis.Redis):
-    """Her 5s: aktif pozisyonları stop-loss ve take-profit için kontrol et.
+    """Her 5s: aktif pozisyonları yönet — stop/TP/sinyal flip/güven çöküşü.
 
-    Stop-loss tetiklendiğinde SAR (Stop-and-Reverse) değerlendirilir:
-    karşı yönde güçlü sinyal varsa zarar kesilir + ters pozisyon açılır.
+    Öncelik sırası:
+      1. Stop-loss → kapat + SAR dene
+      2. Take-profit → kapat (kârı realize et)
+      3. AI sinyali yön değiştirdi → kapat + SAR dene
+      4. Güven %45 altına düştü ve kârdayız → realize et
+
+    Stop/TP sinyal tarafından gelmiyorsa ATR bazlı varsayılan hesaplanır.
     """
     while True:
         await asyncio.sleep(SAR_POSITION_MONITOR_INTERVAL)
@@ -324,8 +330,18 @@ async def position_monitor(redis: aioredis.Redis):
                 entry_signal = pos.get("entry_signal", {})
                 stop_pct = float(entry_signal.get("stop_pct", 0) or 0)
                 tp_pct   = float(entry_signal.get("tp_pct",   0) or 0)
-                if not stop_pct and not tp_pct:
-                    continue
+
+                # Sinyalde stop/TP yoksa ATR bazlı varsayılan uygula
+                if not stop_pct or not tp_pct:
+                    feat_raw = await redis.get(f"features:latest:{symbol}")
+                    if feat_raw:
+                        feats = json.loads(feat_raw)
+                        atr_v = float(feats.get("atr_pct", 0) or 0) * 100
+                        if atr_v > 0:
+                            if not stop_pct:
+                                stop_pct = -atr_v * 1.5 if direction == "long" else atr_v * 1.5
+                            if not tp_pct:
+                                tp_pct   =  atr_v * 2.5 if direction == "long" else -atr_v * 2.5
 
                 current_price = await get_price(redis, symbol)
                 if current_price <= 0:
@@ -333,29 +349,44 @@ async def position_monitor(redis: aioredis.Redis):
 
                 chg = (current_price - entry_price) / entry_price * 100
 
-                hit_stop = hit_tp = False
-                if direction == "long":
-                    if stop_pct and chg <= stop_pct:   hit_stop = True
-                    if tp_pct   and chg >= tp_pct:     hit_tp   = True
-                else:
-                    if stop_pct and chg >= stop_pct:   hit_stop = True
-                    if tp_pct   and chg <= tp_pct:     hit_tp   = True
+                # ── 1. Stop-loss ──
+                hit_stop = (
+                    (direction == "long"  and stop_pct and chg <= stop_pct) or
+                    (direction == "short" and stop_pct and chg >= stop_pct)
+                )
+                # ── 2. Take-profit ──
+                hit_tp = (
+                    (direction == "long"  and tp_pct and chg >= tp_pct) or
+                    (direction == "short" and tp_pct and chg <= tp_pct)
+                )
 
                 if hit_stop:
-                    log.info(
-                        f"STOP-LOSS HIT: {symbol} {direction} "
-                        f"entry={entry_price:.5f} now={current_price:.5f} chg={chg:+.2f}%"
-                    )
+                    log.info(f"STOP-LOSS: {symbol} {direction} chg={chg:+.2f}%")
                     await close_position(redis, symbol, pos, current_price)
-                    # SAR denemesi: karşı yönde sinyal varsa hemen ters pozisyon aç
                     await maybe_reverse(redis, symbol, direction, current_price, chg)
 
                 elif hit_tp:
-                    log.info(
-                        f"TAKE-PROFIT HIT: {symbol} {direction} "
-                        f"entry={entry_price:.5f} now={current_price:.5f} chg={chg:+.2f}%"
-                    )
+                    log.info(f"TAKE-PROFIT: {symbol} {direction} chg={chg:+.2f}% +${chg/100*pos.get('size_usd',0):.2f}")
                     await close_position(redis, symbol, pos, current_price)
+
+                else:
+                    # ── 3 & 4. AI sinyal/güven bazlı çıkış ──
+                    sig_raw = await redis.get(f"signal:latest:{symbol}")
+                    if sig_raw:
+                        new_sig  = json.loads(sig_raw)
+                        new_dir  = new_sig.get("direction", direction)
+                        new_conf = float(new_sig.get("confidence", 1.0))
+
+                        # AI yön değiştirdi → kâr/zarar sınırında çık + SAR dene
+                        if new_dir not in (direction, "flat") and chg >= -0.3:
+                            log.info(f"SIGNAL FLIP: {symbol} {direction}→{new_dir} chg={chg:+.2f}%")
+                            await close_position(redis, symbol, pos, current_price)
+                            await maybe_reverse(redis, symbol, direction, current_price, chg)
+
+                        # Güven çöktü ve kârdayız → hemen realize et
+                        elif new_conf < CONFIDENCE_EXIT_THRESHOLD and chg > 0.5:
+                            log.info(f"CONFIDENCE EXIT: {symbol} conf={new_conf:.2%} chg={chg:+.2f}%")
+                            await close_position(redis, symbol, pos, current_price)
 
             except Exception as e:
                 log.error(f"Position monitor error: {e}")

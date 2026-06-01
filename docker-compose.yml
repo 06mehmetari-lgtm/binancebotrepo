@@ -244,6 +244,7 @@ services:
       - QDRANT_URL=http://qdrant:6333
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - GROQ_API_KEY=${GROQ_API_KEY}
+      - CRYPTOPANIC_KEY=${CRYPTOPANIC_KEY}
       - OLLAMA_URL=http://ollama:11434
       - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3.1:8b}
     depends_on:

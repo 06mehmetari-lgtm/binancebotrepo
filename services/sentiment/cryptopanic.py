@@ -10,7 +10,23 @@ log = logging.getLogger(__name__)
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379")
 API_KEY = os.getenv("CRYPTOPANIC_KEY", "")
 
-COIN_SYMBOLS = ["BTC", "ETH", "BNB"]
+_DEFAULT_COINS = ["BTC", "ETH", "BNB"]
+
+
+async def _discover_coins(redis: aioredis.Redis) -> list[str]:
+    """Pull active coins from signal + feature keys; fall back to defaults."""
+    try:
+        sig_keys = await redis.keys("signal:latest:*")
+        feat_keys = await redis.keys("features:latest:*")
+        coins: set[str] = set()
+        for k in list(sig_keys) + list(feat_keys):
+            raw = (k.decode() if isinstance(k, bytes) else k).split(":")[-1].upper()
+            coin = raw.replace("USDT", "").replace("1000", "")
+            if 2 <= len(coin) <= 10 and coin.isalpha():
+                coins.add(coin)
+        return sorted(coins)[:60] if coins else _DEFAULT_COINS
+    except Exception:
+        return _DEFAULT_COINS
 
 
 class CryptoPanicFeed:
@@ -23,14 +39,14 @@ class CryptoPanicFeed:
         async with aiohttp.ClientSession() as session:
             while True:
                 try:
+                    coin_symbols = await _discover_coins(self._redis)
                     async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
                         data = await resp.json()
                     items = data.get("results", [])
                     if items:
-                        # Compute simple sentiment from news titles
                         positive_words = ["bullish", "surge", "rally", "buy", "growth", "gain"]
                         negative_words = ["crash", "drop", "fear", "ban", "hack", "scam", "sell"]
-                        scores: dict[str, list[float]] = {s: [] for s in COIN_SYMBOLS}
+                        scores: dict[str, list[float]] = {s: [] for s in coin_symbols}
                         for item in items[:50]:
                             title = item.get("title", "").lower()
                             score = 0.0

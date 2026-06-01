@@ -8,6 +8,7 @@ import redis.asyncio as aioredis
 
 from debate_agent import DebateAgent
 from regime_router import get_weights_for_regime
+from groq_news_scanner import GroqNewsScanner
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
@@ -16,6 +17,7 @@ REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379")
 SYMBOL_REFRESH_INTERVAL = 300
 
 debate = DebateAgent()
+news_scanner = GroqNewsScanner()
 
 
 async def discover_symbols(redis: aioredis.Redis) -> list[str]:
@@ -138,7 +140,7 @@ async def main():
             log.info(f"agent_system: {len(active_set)} symbols — rotating batches of 120")
             await asyncio.sleep(10)
 
-    await asyncio.gather(debate_loop(), weight_update_loop(redis))
+    await asyncio.gather(debate_loop(), weight_update_loop(redis), news_scanner.run(redis))
 
 
 if __name__ == "__main__":
