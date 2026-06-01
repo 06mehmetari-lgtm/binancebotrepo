@@ -147,6 +147,17 @@ export default function Home() {
         <span className="text-xs text-gray-600">{lastUpdate ? `Updated ${lastUpdate}` : ''} · 5s refresh</span>
       </div>
 
+      {/* Feature engine offline warning */}
+      {!loading && signals.length === 0 && markets.length === 0 && (
+        <div className="rounded-xl border border-red-700/50 bg-red-950/20 p-3">
+          <p className="text-red-400 font-bold text-xs">Feature Engine çalışmıyor — Sinyal üretilemiyor</p>
+          <p className="text-gray-500 text-[11px] mt-0.5">Sunucuda çalıştır:</p>
+          <code className="block mt-1 bg-gray-900 rounded px-2 py-1.5 text-green-400 text-[10px] font-mono break-all">
+            git pull origin claude/claude-md-docs-zFfXN && docker compose up -d --build feature_engine signal_engine context_engine dashboard
+          </code>
+        </div>
+      )}
+
       {/* ── Stat Cards ── */}
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2.5">
         <StatCard label="WebSocket" value={wsStatus} sub={wsSymbols ? `${wsSymbols} symbols` : undefined} color={wsColor} dot={wsDot} />

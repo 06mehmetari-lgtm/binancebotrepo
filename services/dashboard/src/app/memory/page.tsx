@@ -293,6 +293,23 @@ export default function MemoryPage() {
         </div>
       </div>
 
+      {/* Diagnostic banner when no features flowing */}
+      {!loading && (summary?.tracked_symbols ?? 0) === 0 && (
+        <div className="rounded-xl border border-red-700/50 bg-red-950/20 p-4">
+          <div className="flex items-start gap-3">
+            <span className="text-red-400 text-lg shrink-0">⚠</span>
+            <div className="space-y-1">
+              <p className="text-red-400 font-bold text-sm">Feature Engine Çalışmıyor — Veri Akışı Durdu</p>
+              <p className="text-gray-400 text-xs">Sistem verileri <span className="text-orange-400 font-mono">features:latest:*</span> anahtarlarını görmüyor. Container eski image ile çalışıyor.</p>
+              <p className="text-gray-300 text-xs font-semibold mt-2">Sunucuda çalıştır:</p>
+              <code className="block bg-gray-900 border border-gray-700 rounded px-3 py-2 text-green-400 text-[11px] font-mono break-all">
+                git pull origin claude/claude-md-docs-zFfXN && docker compose up -d --build feature_engine signal_engine context_engine dashboard
+              </code>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Summary Stats */}
       <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-2">
         <StatPill label="Takip Edilen" value={summary?.tracked_symbols ?? 0} color="text-blue-400" />
