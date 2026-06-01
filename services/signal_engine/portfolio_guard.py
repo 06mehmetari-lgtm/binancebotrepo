@@ -11,10 +11,10 @@ log = logging.getLogger(__name__)
 CLUSTERS = {
     "btc_layer1": {"BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "AVAXUSDT", "DOTUSDT"},
     "btc_alts":   {"ADAUSDT", "XRPUSDT", "LTCUSDT", "BCHUSDT", "LINKUSDT", "ATOMUSDT"},
-    "defi":       {"UNIUSDT", "AAVEUSDST", "COMPUSDT", "MKRUSDT", "CRVUSDT", "SUSHIUSDT"},
+    "defi":       {"UNIUSDT", "AAVEUSDT", "COMPUSDT", "MKRUSDT", "CRVUSDT", "SUSHIUSDT"},
     "layer2":     {"MATICUSDT", "ARBUSDT", "OPUSDT", "ZKUSDT", "STRKUSDT"},
     "meme":       {"DOGEUSDT", "SHIBUSDT", "PEPEUSDT", "FLOKIUSDT", "BONKUSDT"},
-    "ai_sector":  {"FETUSDT", "AGIXUSDT", "WLDUSDT", "RENDERUSDT", "TAOHDL"},
+    "ai_sector":  {"FETUSDT", "AGIXUSDT", "WLDUSDT", "RENDERUSDT", "TAOUSDT"},
 }
 
 MAX_SAME_DIRECTION  = 2   # max positions in same direction from same cluster

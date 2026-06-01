@@ -84,7 +84,7 @@ async def kline_cache_loop(redis: aioredis.Redis, symbols: list[str]):
                     log.warning(f"Kline cache error {symbol}: {e}")
             elapsed = time.time() - start
             log.info(f"Kline cache: {cached}/{len(symbols)} symbols in {elapsed:.1f}s")
-            await asyncio.sleep(max(0, 900 - elapsed))  # target 15-minute refresh
+            await asyncio.sleep(max(0, 300 - elapsed))  # target 5-minute refresh
 
 
 async def main():

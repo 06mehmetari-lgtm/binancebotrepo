@@ -71,9 +71,14 @@ async def push_activity(redis: aioredis.Redis, event: dict):
 async def _get_open_positions(redis: aioredis.Redis) -> list[dict]:
     """Fetch all open positions from Redis for portfolio guard."""
     keys = await redis.keys("oms:position:*")
-    positions = []
+    if not keys:
+        return []
+    pipe = redis.pipeline()
     for k in keys:
-        raw = await redis.get(k)
+        pipe.get(k)
+    raws = await pipe.execute()
+    positions = []
+    for raw in raws:
         if raw:
             try:
                 positions.append(json.loads(raw))

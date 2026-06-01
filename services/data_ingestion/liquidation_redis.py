@@ -40,7 +40,7 @@ async def run(redis: aioredis.Redis):
                         key = f"liq:recent:{symbol}"
                         await redis.lpush(key, entry)
                         await redis.ltrim(key, 0, 199)
-                        await redis.expire(key, 3600)
+                        await redis.expire(key, 300)
 
                         # Global feed for dashboard
                         await redis.lpush("liq:global", entry)

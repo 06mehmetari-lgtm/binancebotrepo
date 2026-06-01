@@ -2,14 +2,32 @@ import { NextResponse } from 'next/server'
 export const dynamic = 'force-dynamic'
 import { createRedis } from '../_redis'
 
-const WATCH = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT']
+const FALLBACK = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT']
+const MAX_SYMBOLS = 20
+
+async function resolveWatchList(redis: ReturnType<typeof createRedis>): Promise<string[]> {
+  try {
+    const keys = await redis.keys('signal:latest:*')
+    if (keys && keys.length > 0) {
+      const syms = keys
+        .map((k: string) => k.replace('signal:latest:', '').toUpperCase())
+        .filter((s: string) => s.length > 0)
+        .sort()
+        .slice(0, MAX_SYMBOLS)
+      if (syms.length > 0) return syms
+    }
+  } catch { /* ignore */ }
+  return FALLBACK
+}
 
 export async function GET() {
   const redis = createRedis()
   try {
+    const watch = await resolveWatchList(redis)
+
     const [tickerRaws, signalRaws] = await Promise.all([
-      Promise.all(WATCH.map(s => redis.get(`binance:ticker:${s.toLowerCase()}`))),
-      Promise.all(WATCH.map(s => redis.get(`signal:latest:${s}`))),
+      Promise.all(watch.map((s: string) => redis.get(`binance:ticker:${s.toLowerCase()}`))),
+      Promise.all(watch.map((s: string) => redis.get(`signal:latest:${s}`))),
     ])
 
     const result: Record<string, {
@@ -21,7 +39,7 @@ export async function GET() {
       live: boolean
     }> = {}
 
-    WATCH.forEach((sym, i) => {
+    watch.forEach((sym: string, i: number) => {
       const tickerRaw = tickerRaws[i]
       const signalRaw = signalRaws[i]
 
