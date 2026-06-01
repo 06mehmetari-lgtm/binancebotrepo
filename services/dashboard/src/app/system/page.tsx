@@ -20,6 +20,8 @@ interface SystemData {
     agent_verdict_count: number
     shadow_best: Record<string, unknown> | null
     shadow_total: number
+    ml_model: { version: number; n_samples: number; val_accuracy: number; top_features: [string, number][] } | null
+    rl_active: boolean
   }
   market: { regime: string | null; crisis_level: number; fear_greed: { value: number; classification: string } | null; vix: number | null }
   positions: { open_count: number; daily_pnl: number; immunity_halted: boolean; recent_trades: Record<string, unknown>[] }
@@ -29,9 +31,11 @@ interface SystemData {
 
 interface AILearningData {
   signal_distribution: { long: number; short: number; flat: number; total: number }
-  recent_signals: { symbol: string; direction: string; confidence: number; regime: string }[]
+  recent_signals: { symbol: string; direction: string; confidence: number; regime: string; ml_score?: number }[]
   agent_weights: { name: string; label: string; weight: number }[]
   sample_votes: { agent: string; signal: string; confidence: number }[]
+  ml_model: { version: number; n_samples: number; val_accuracy: number; top_features: [string, number][] } | null
+  rl_active: boolean
   last_run_sec: number | null
   neat_log: Record<string, unknown>[]
   activity_log: Record<string, unknown>[]
@@ -342,6 +346,71 @@ export default function SystemPage() {
             </div>
           </div>
 
+          {/* ML Model + RL Agent */}
+          <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
+            <div className="px-4 py-3 border-b border-gray-800 flex items-center justify-between">
+              <h2 className="text-blue-400 font-semibold text-sm">🧠 ML Model &amp; RL Agent</h2>
+              <div className="flex items-center gap-2">
+                {sysAi.rl_active !== undefined && (
+                  <span className={`text-[10px] px-2 py-0.5 rounded border font-bold ${sysAi.rl_active ? 'bg-green-900/30 border-green-700/50 text-green-400' : 'bg-gray-800/50 border-gray-700/40 text-gray-500'}`}>
+                    PPO {sysAi.rl_active ? 'AKTIF' : 'BEKLIYOR'}
+                  </span>
+                )}
+              </div>
+            </div>
+            <div className="p-4 space-y-3">
+              {sysAi.ml_model ? (
+                <>
+                  <div className="grid grid-cols-3 gap-2 text-center">
+                    <div className="bg-gray-800/50 rounded-lg p-2">
+                      <p className="text-gray-500 text-[10px]">Versiyon</p>
+                      <p className="text-blue-400 font-bold text-lg">v{sysAi.ml_model.version}</p>
+                    </div>
+                    <div className="bg-gray-800/50 rounded-lg p-2">
+                      <p className="text-gray-500 text-[10px]">Örnekler</p>
+                      <p className="text-white font-bold text-lg">{sysAi.ml_model.n_samples.toLocaleString()}</p>
+                    </div>
+                    <div className="bg-gray-800/50 rounded-lg p-2">
+                      <p className="text-gray-500 text-[10px]">Val Acc</p>
+                      <p className={`font-bold text-lg ${sysAi.ml_model.val_accuracy >= 0.6 ? 'text-green-400' : sysAi.ml_model.val_accuracy >= 0.5 ? 'text-yellow-400' : 'text-red-400'}`}>
+                        {(sysAi.ml_model.val_accuracy * 100).toFixed(1)}%
+                      </p>
+                    </div>
+                  </div>
+                  <div>
+                    <div className="h-2 bg-gray-800 rounded-full overflow-hidden">
+                      <div className={`h-full rounded-full transition-all duration-500 ${sysAi.ml_model.val_accuracy >= 0.6 ? 'bg-green-500' : sysAi.ml_model.val_accuracy >= 0.5 ? 'bg-yellow-500' : 'bg-red-500'}`}
+                        style={{ width: `${Math.min(100, sysAi.ml_model.val_accuracy * 100)}%` }} />
+                    </div>
+                    <div className="flex justify-between text-[10px] text-gray-600 mt-1">
+                      <span>0%</span><span>60% hedef</span><span>100%</span>
+                    </div>
+                  </div>
+                  {sysAi.ml_model.top_features.length > 0 && (
+                    <div className="space-y-1">
+                      <p className="text-gray-500 text-[10px] uppercase tracking-wider">Top Features</p>
+                      {sysAi.ml_model.top_features.slice(0, 5).map(([feat, imp]) => (
+                        <div key={feat} className="flex items-center gap-2 text-[10px]">
+                          <span className="text-gray-400 w-32 truncate font-mono">{feat}</span>
+                          <div className="flex-1 h-1.5 bg-gray-800 rounded-full overflow-hidden">
+                            <div className="h-full bg-blue-500 rounded-full" style={{ width: `${Math.min(100, imp * 100)}%` }} />
+                          </div>
+                          <span className="text-blue-400 w-8 text-right font-mono">{(imp * 100).toFixed(1)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </>
+              ) : (
+                <div className="text-center py-3">
+                  <p className="text-gray-600 text-xl mb-1">🧠</p>
+                  <p className="text-gray-500 text-xs">İlk 50 işlem tamamlanana kadar</p>
+                  <p className="text-gray-600 text-[10px]">heuristic mod aktif</p>
+                </div>
+              )}
+            </div>
+          </div>
+
           {/* Agent & Shadow */}
           <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
             <div className="px-4 py-3 border-b border-gray-800">
@@ -443,12 +512,17 @@ export default function SystemPage() {
                 <div className="space-y-1 max-h-40 overflow-y-auto">
                   {ai.recent_signals.map((s, i) => (
                     <a key={i} href={`/coin/${s.symbol}`}
-                      className="flex items-center justify-between px-2 py-1.5 rounded bg-gray-800/40 hover:bg-gray-800/70 transition-colors">
-                      <span className="text-white text-xs font-bold">{s.symbol.replace('USDT', '')}</span>
+                      className="flex items-center justify-between px-2 py-1.5 rounded bg-gray-800/40 hover:bg-gray-800/70 transition-colors gap-1">
+                      <span className="text-white text-xs font-bold w-14 truncate">{s.symbol.replace('USDT', '')}</span>
                       <span className={`text-[10px] px-1.5 py-0.5 rounded border font-bold ${DIR_BG[s.direction] ?? ''} ${DIR_COLOR[s.direction] ?? ''}`}>
                         {s.direction.toUpperCase()}
                       </span>
                       <span className="text-gray-400 text-[10px] font-mono">{Math.round(s.confidence * 100)}%</span>
+                      {s.ml_score != null && s.ml_score !== 0 && (
+                        <span className={`text-[10px] font-mono ${s.ml_score > 0 ? 'text-green-400' : 'text-red-400'}`}>
+                          ML{s.ml_score > 0 ? '+' : ''}{s.ml_score.toFixed(2)}
+                        </span>
+                      )}
                     </a>
                   ))}
                 </div>

@@ -99,7 +99,7 @@ export async function GET(
   const redis = createRedis()
   try {
     // ── 1. Parallel: Redis kline cache + bookTicker + all signal data ──
-    const [cachedKlines, tickerRaw, featRaw, sigRaw, verdictRaw, verdictsRaw, btRaw, shadowRaw, contextRaw] =
+    const [cachedKlines, tickerRaw, featRaw, sigRaw, verdictRaw, verdictsRaw, btRaw, shadowRaw, contextRaw, rlRaw] =
       await Promise.all([
         redis.get(`klines:1h:${symbol}`),
         redis.get(`binance:ticker:${symbol.toLowerCase()}`),
@@ -110,6 +110,7 @@ export async function GET(
         redis.get('backtest:results'),
         redis.get('shadow:leaderboard'),
         redis.get(`context:latest:${symbol}`),
+        redis.get(`rl:signal:${symbol}`),
       ])
 
     // ── 2. Parse klines (Redis cache → Binance REST fallback) ──
@@ -186,6 +187,7 @@ export async function GET(
       ? JSON.parse(verdictsRaw)
       : []
     const context = contextRaw ? JSON.parse(contextRaw) : null
+    const rlSignal = rlRaw ? JSON.parse(rlRaw) : null
 
     // Per-symbol backtest stats
     let backtestStats: Record<string, unknown> | null = null
@@ -201,13 +203,25 @@ export async function GET(
 
     let slLevel: number | null = null
     let tpLevel: number | null = null
-    if (latestClose && latestATR && signalDir !== 'flat') {
-      slLevel = signalDir === 'long'
-        ? +(latestClose - latestATR * 2.0).toFixed(4)
-        : +(latestClose + latestATR * 2.0).toFixed(4)
-      tpLevel = signalDir === 'long'
-        ? +(latestClose + latestATR * 3.5).toFixed(4)
-        : +(latestClose - latestATR * 3.5).toFixed(4)
+    if (latestClose && signalDir !== 'flat') {
+      // Prefer signal's ATR-based stop/TP percentages (set by signal_engine)
+      const stopPct = signal?.stop_pct ? Math.abs(signal.stop_pct) / 100 : null
+      const tpPct = signal?.tp_pct ? Math.abs(signal.tp_pct) / 100 : null
+      if (stopPct && tpPct) {
+        slLevel = signalDir === 'long'
+          ? +(latestClose * (1 - stopPct)).toFixed(4)
+          : +(latestClose * (1 + stopPct)).toFixed(4)
+        tpLevel = signalDir === 'long'
+          ? +(latestClose * (1 + tpPct)).toFixed(4)
+          : +(latestClose * (1 - tpPct)).toFixed(4)
+      } else if (latestATR) {
+        slLevel = signalDir === 'long'
+          ? +(latestClose - latestATR * 2.0).toFixed(4)
+          : +(latestClose + latestATR * 2.0).toFixed(4)
+        tpLevel = signalDir === 'long'
+          ? +(latestClose + latestATR * 3.5).toFixed(4)
+          : +(latestClose - latestATR * 3.5).toFixed(4)
+      }
     }
 
     // Leverage recommendation
@@ -230,12 +244,21 @@ export async function GET(
       ticker24h,
       features,
       signal,
+      rl_signal: rlSignal ? {
+        direction: rlSignal.direction ?? 'flat',
+        confidence: Number(rlSignal.confidence ?? 0),
+      } : null,
       verdict,
       votes,
       context,
       backtestStats,
       shadowLeaderboard: shadowList,
-      levels: { sl: slLevel, tp: tpLevel, currentPrice: latestClose, atr: latestATR, atrPct },
+      levels: {
+        sl: slLevel, tp: tpLevel, currentPrice: latestClose, atr: latestATR, atrPct,
+        stop_pct: signal?.stop_pct ?? null,
+        tp_pct: signal?.tp_pct ?? null,
+        risk_reward: signal?.risk_reward ?? null,
+      },
       leverageRec: {
         recommended: recommendedLeverage,
         baseLev,

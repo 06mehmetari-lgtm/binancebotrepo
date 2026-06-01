@@ -22,6 +22,17 @@ interface Features {
   ob_imbalance_1: number; drift_status: string; regime: string
   funding_rate: number; oi_change_1h: number; ls_ratio_z: number
   fear_greed_norm: number; vix_level: number
+  // Phase 1 — CVD
+  cvd_5m?: number; cvd_1h?: number; buy_ratio_5m?: number; cvd_acceleration?: number
+  liq_ratio_1h?: number; whale_buy_ratio?: number
+  // Phase 1 — MTF
+  rsi_14_1h?: number; trend_alignment?: number
+  bull_confluence?: number; bear_confluence?: number; ob_1h?: number; os_1h?: number
+  // Phase 1 — Volume Profile
+  vpoc_dist_pct?: number; vah_dist_pct?: number; val_dist_pct?: number
+  va_position?: number; vpoc_dominance?: number; in_value_area?: number
+  // Phase 2 — ML
+  ml_score?: number; atr_pct?: number
 }
 
 interface Signal {
@@ -29,6 +40,8 @@ interface Signal {
   regime: string; crisis_level: number; drift_status: string
   rsi: number; macd_hist: number; volume_ratio: number
   is_valid: boolean; reject_reason: string; source: string; timestamp: number
+  ml_score?: number; rl_direction?: string
+  stop_pct?: number; tp_pct?: number; risk_reward?: number
 }
 
 interface Vote { agent: string; signal: string; confidence: number; reasoning: string }
@@ -52,10 +65,11 @@ interface CoinData {
   ticker24h: { lastPrice: number; priceChangePercent: number; quoteVolume: number } | null
   features: Features | null
   signal: Signal | null
+  rl_signal: { direction: string; confidence: number } | null
   verdict: Verdict | null
   votes: Vote[]
   backtestStats: BacktestStats | null
-  levels: { sl: number | null; tp: number | null; currentPrice: number; atr: number; atrPct: number }
+  levels: { sl: number | null; tp: number | null; currentPrice: number; atr: number; atrPct: number; stop_pct: number | null; tp_pct: number | null; risk_reward: number | null }
   leverageRec: { recommended: number; baseLev: number; crisisMult: number; crisisLevel: number; atrPct: number; kellyFraction: number }
 }
 
@@ -297,7 +311,7 @@ export default function CoinPage() {
 
   if (!data) return null
 
-  const { klines, ticker24h, features, signal, verdict, votes, backtestStats, levels, leverageRec } = data
+  const { klines, ticker24h, features, signal, rl_signal, verdict, votes, backtestStats, levels, leverageRec } = data
   const price = ticker24h?.lastPrice ?? levels.currentPrice
   const change = ticker24h?.priceChangePercent ?? 0
   const changeColor = change >= 0 ? 'text-green-400' : 'text-red-400'
@@ -603,6 +617,141 @@ export default function CoinPage() {
               )}
             </div>
           </div>
+
+          {/* ── Phase 1 Features: CVD + MTF + Volume Profile ── */}
+          {features && (features.cvd_5m != null || features.bull_confluence != null || features.vpoc_dist_pct != null) && (
+            <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
+              <div className="px-4 py-3 border-b border-gray-800">
+                <h3 className="text-sm font-semibold text-white">Advanced Signals — CVD · MTF · Volume Profile</h3>
+              </div>
+              <div className="p-4 grid grid-cols-1 sm:grid-cols-3 gap-4">
+
+                {/* CVD */}
+                {(features.cvd_5m != null || features.cvd_1h != null) && (
+                  <div className="space-y-2">
+                    <p className="text-xs text-gray-500 uppercase tracking-wider font-semibold">Cumulative Volume Delta</p>
+                    {features.cvd_5m != null && (
+                      <div className="flex items-center justify-between bg-gray-800/40 rounded-lg px-3 py-2">
+                        <span className="text-xs text-gray-400">CVD 5m</span>
+                        <span className={`text-xs font-bold font-mono ${features.cvd_5m > 0.1 ? 'text-green-400' : features.cvd_5m < -0.1 ? 'text-red-400' : 'text-gray-400'}`}>
+                          {features.cvd_5m > 0 ? '+' : ''}{features.cvd_5m.toFixed(3)}
+                        </span>
+                      </div>
+                    )}
+                    {features.cvd_1h != null && (
+                      <div className="flex items-center justify-between bg-gray-800/40 rounded-lg px-3 py-2">
+                        <span className="text-xs text-gray-400">CVD 1h</span>
+                        <span className={`text-xs font-bold font-mono ${features.cvd_1h > 0.1 ? 'text-green-400' : features.cvd_1h < -0.1 ? 'text-red-400' : 'text-gray-400'}`}>
+                          {features.cvd_1h > 0 ? '+' : ''}{features.cvd_1h.toFixed(3)}
+                        </span>
+                      </div>
+                    )}
+                    {features.buy_ratio_5m != null && (
+                      <div className="flex items-center justify-between bg-gray-800/40 rounded-lg px-3 py-2">
+                        <span className="text-xs text-gray-400">Buy Ratio 5m</span>
+                        <span className={`text-xs font-bold font-mono ${features.buy_ratio_5m > 0.55 ? 'text-green-400' : features.buy_ratio_5m < 0.45 ? 'text-red-400' : 'text-gray-400'}`}>
+                          {(features.buy_ratio_5m * 100).toFixed(1)}%
+                        </span>
+                      </div>
+                    )}
+                    {features.liq_ratio_1h != null && (
+                      <div className="flex items-center justify-between bg-gray-800/40 rounded-lg px-3 py-2">
+                        <span className="text-xs text-gray-400">Liq Ratio 1h</span>
+                        <span className={`text-xs font-bold font-mono ${features.liq_ratio_1h > 0 ? 'text-green-400' : features.liq_ratio_1h < 0 ? 'text-red-400' : 'text-gray-400'}`}>
+                          {features.liq_ratio_1h > 0 ? '+' : ''}{features.liq_ratio_1h.toFixed(3)}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* MTF Confluence */}
+                {(features.bull_confluence != null || features.trend_alignment != null) && (
+                  <div className="space-y-2">
+                    <p className="text-xs text-gray-500 uppercase tracking-wider font-semibold">Multi-Timeframe (1h)</p>
+                    {features.trend_alignment != null && (
+                      <div className="flex items-center justify-between bg-gray-800/40 rounded-lg px-3 py-2">
+                        <span className="text-xs text-gray-400">Trend Align</span>
+                        <div className="flex items-center gap-1.5">
+                          <div className="flex gap-0.5">
+                            {[-1, 0, 1].map(v => (
+                              <div key={v} className={`w-2.5 h-2.5 rounded-sm ${features.trend_alignment! >= v && v !== 0 ? (v > 0 ? 'bg-green-400' : 'bg-red-400') : features.trend_alignment! === 0 && v === 0 ? 'bg-gray-400' : 'bg-gray-700'}`} />
+                            ))}
+                          </div>
+                          <span className={`text-xs font-bold ${(features.trend_alignment ?? 0) > 0 ? 'text-green-400' : (features.trend_alignment ?? 0) < 0 ? 'text-red-400' : 'text-gray-400'}`}>
+                            {features.trend_alignment > 0 ? '+' : ''}{features.trend_alignment}
+                          </span>
+                        </div>
+                      </div>
+                    )}
+                    {features.bull_confluence != null && (
+                      <div className="flex items-center justify-between bg-gray-800/40 rounded-lg px-3 py-2">
+                        <span className="text-xs text-gray-400">Bull Confluence</span>
+                        <span className={`text-xs font-bold ${features.bull_confluence >= 2 ? 'text-green-400' : features.bull_confluence >= 1 ? 'text-yellow-400' : 'text-gray-500'}`}>
+                          {features.bull_confluence}/2
+                        </span>
+                      </div>
+                    )}
+                    {features.bear_confluence != null && (
+                      <div className="flex items-center justify-between bg-gray-800/40 rounded-lg px-3 py-2">
+                        <span className="text-xs text-gray-400">Bear Confluence</span>
+                        <span className={`text-xs font-bold ${features.bear_confluence >= 2 ? 'text-red-400' : features.bear_confluence >= 1 ? 'text-orange-400' : 'text-gray-500'}`}>
+                          {features.bear_confluence}/2
+                        </span>
+                      </div>
+                    )}
+                    {features.rsi_14_1h != null && (
+                      <div className="flex items-center justify-between bg-gray-800/40 rounded-lg px-3 py-2">
+                        <span className="text-xs text-gray-400">RSI-14 (1h)</span>
+                        <span className={`text-xs font-bold font-mono ${features.rsi_14_1h < 30 ? 'text-blue-400' : features.rsi_14_1h > 70 ? 'text-red-400' : 'text-white'}`}>
+                          {features.rsi_14_1h.toFixed(1)}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Volume Profile */}
+                {(features.vpoc_dist_pct != null || features.va_position != null) && (
+                  <div className="space-y-2">
+                    <p className="text-xs text-gray-500 uppercase tracking-wider font-semibold">Volume Profile</p>
+                    {features.vpoc_dist_pct != null && (
+                      <div className="flex items-center justify-between bg-gray-800/40 rounded-lg px-3 py-2">
+                        <span className="text-xs text-gray-400">VPOC Dist</span>
+                        <span className={`text-xs font-bold font-mono ${Math.abs(features.vpoc_dist_pct) < 0.5 ? 'text-yellow-400' : 'text-white'}`}>
+                          {features.vpoc_dist_pct > 0 ? '+' : ''}{features.vpoc_dist_pct.toFixed(2)}%
+                        </span>
+                      </div>
+                    )}
+                    {features.va_position != null && (
+                      <div className="flex items-center justify-between bg-gray-800/40 rounded-lg px-3 py-2">
+                        <span className="text-xs text-gray-400">VA Position</span>
+                        <span className={`text-xs font-bold ${features.va_position > 0 ? 'text-green-400' : features.va_position < 0 ? 'text-red-400' : 'text-gray-400'}`}>
+                          {features.va_position > 0 ? '▲ Above VA' : features.va_position < 0 ? '▼ Below VA' : '= In VA'}
+                        </span>
+                      </div>
+                    )}
+                    {features.in_value_area != null && (
+                      <div className="flex items-center justify-between bg-gray-800/40 rounded-lg px-3 py-2">
+                        <span className="text-xs text-gray-400">In Value Area</span>
+                        <span className={`text-xs font-bold ${features.in_value_area ? 'text-blue-400' : 'text-orange-400'}`}>
+                          {features.in_value_area ? 'YES' : 'NO'}
+                        </span>
+                      </div>
+                    )}
+                    {features.vpoc_dominance != null && (
+                      <div className="flex items-center justify-between bg-gray-800/40 rounded-lg px-3 py-2">
+                        <span className="text-xs text-gray-400">VPOC Dominance</span>
+                        <span className="text-xs font-bold font-mono text-white">
+                          {(features.vpoc_dominance * 100).toFixed(1)}%
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
         </div>
 
         {/* ── Right: AI Analysis ── */}
@@ -622,6 +771,40 @@ export default function CoinPage() {
             </div>
 
             <ConfidenceMeter value={conf} label="Signal Confidence" />
+
+            {/* ML Score + RL Direction */}
+            <div className="flex items-center gap-2 flex-wrap">
+              {signal?.ml_score != null && (
+                <div className={`flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg border ${
+                  signal.ml_score > 0.15 ? 'bg-green-900/20 border-green-800/40 text-green-400'
+                  : signal.ml_score < -0.15 ? 'bg-red-900/20 border-red-800/40 text-red-400'
+                  : 'bg-gray-800/50 border-gray-700/40 text-gray-400'
+                }`}>
+                  <span>🧠 ML</span>
+                  <span className="font-mono font-bold">{signal.ml_score > 0 ? '+' : ''}{signal.ml_score.toFixed(3)}</span>
+                </div>
+              )}
+              {(signal?.rl_direction || rl_signal) && (() => {
+                const rlDir = signal?.rl_direction ?? rl_signal?.direction ?? 'flat'
+                const rlConf = rl_signal?.confidence ?? 0
+                return rlDir !== 'flat' ? (
+                  <div className={`flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg border ${
+                    rlDir === 'long' ? 'bg-green-900/20 border-green-800/40 text-green-400'
+                    : 'bg-red-900/20 border-red-800/40 text-red-400'
+                  }`}>
+                    <span>🤖 RL/PPO</span>
+                    <span className="font-bold">{rlDir.toUpperCase()}</span>
+                    {rlConf > 0 && <span className="font-mono text-gray-400">{Math.round(rlConf * 100)}%</span>}
+                  </div>
+                ) : null
+              })()}
+              {signal?.risk_reward != null && signal.risk_reward > 0 && (
+                <div className="flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg border bg-gray-800/50 border-gray-700/40 text-gray-300">
+                  <span>R:R</span>
+                  <span className="font-bold">1:{signal.risk_reward.toFixed(1)}</span>
+                </div>
+              )}
+            </div>
 
             {verdict?.consensus_reasoning && (
               <div className="bg-gray-800/60 rounded-lg p-3 border border-gray-700/40">
@@ -723,8 +906,18 @@ export default function CoinPage() {
                 </div>
                 <div className="flex justify-between border-t border-gray-700/40 pt-1.5">
                   <span className="text-gray-500">R:R Ratio</span>
-                  <span className="text-white font-bold">1 : 1.75</span>
+                  <span className="text-white font-bold">
+                    {levels.risk_reward ? `1 : ${levels.risk_reward.toFixed(2)}` : '1 : 1.75'}
+                  </span>
                 </div>
+                {levels.stop_pct && levels.tp_pct && (
+                  <div className="flex justify-between">
+                    <span className="text-gray-500">ATR Stop / TP</span>
+                    <span className="text-gray-400 font-mono text-[10px]">
+                      {Math.abs(levels.stop_pct).toFixed(2)}% / {Math.abs(levels.tp_pct).toFixed(2)}%
+                    </span>
+                  </div>
+                )}
                 <div className="flex justify-between">
                   <span className="text-gray-500">Max Loss</span>
                   <span className="text-red-400 font-mono">
