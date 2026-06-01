@@ -94,18 +94,140 @@ async def reload_training_context(redis: aioredis.Redis) -> str:
         return ""
 
 
+async def _groq_analyze_queued(api_key: str, raw_text: str, filename: str) -> str:
+    """Send queued PDF text to Groq for structured analysis."""
+    import aiohttp
+    truncated = raw_text[:12000]
+    prompt = (
+        f'Analyze this trading/financial document ("{filename}") as operator instructions '
+        f"for an automated crypto futures trading system.\n\n"
+        f"RAW TEXT:\n---\n{truncated}\n---\n\n"
+        f"Produce a structured summary: trading rules, price levels, indicators, "
+        f"chart descriptions (from captions/labels in the text), risk parameters, "
+        f"author conclusions. Be specific with numbers. Write in English."
+    )
+    async with aiohttp.ClientSession() as session:
+        async with session.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json={
+                "model": "llama-3.3-70b-versatile",
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.1,
+                "max_tokens": 4096,
+            },
+            timeout=aiohttp.ClientTimeout(total=90),
+        ) as resp:
+            if resp.status == 429:
+                raise ValueError("429 rate_limit")
+            if resp.status != 200:
+                text = await resp.text()
+                raise ValueError(f"Groq {resp.status}: {text[:100]}")
+            data = await resp.json()
+            return data["choices"][0]["message"]["content"]
+
+
+async def _process_training_queue(redis: aioredis.Redis):
+    """Process one pending PDF from training:queue using Groq.
+    Returns True if an item was processed (or failed), False if queue empty."""
+    api_key = os.getenv("GROQ_API_KEY", "")
+    if not api_key:
+        return False
+
+    item_raw = await redis.lindex("training:queue", 0)  # peek oldest
+    if not item_raw:
+        return False
+
+    item: dict = {}
+    item_id = ""
+    try:
+        item = json.loads(item_raw)
+        item_id = item.get("id", "")
+
+        # Skip if already processed
+        status_raw = await redis.get(f"training:queue:status:{item_id}")
+        if status_raw:
+            status = json.loads(status_raw)
+            if status.get("status") == "done":
+                await redis.lpop("training:queue")
+                return True
+
+        # Mark as processing
+        await redis.set(
+            f"training:queue:status:{item_id}",
+            json.dumps({"status": "processing", "started_at": time.time()}),
+            ex=3600,
+        )
+
+        analysed = await _groq_analyze_queued(api_key, item.get("raw_text", ""), item.get("filename", "doc"))
+
+        # Add to training:docs
+        docs_raw = await redis.get("training:docs")
+        docs = json.loads(docs_raw) if docs_raw else []
+        docs.insert(0, {
+            "id": item_id,
+            "title": item.get("title", item.get("filename", "PDF")),
+            "content": analysed,
+            "source": "pdf",
+            "filename": item.get("filename", ""),
+            "created_at": item.get("created_at", time.time()),
+        })
+        await redis.set("training:docs", json.dumps(docs))
+
+        # Mark done and remove from queue
+        await redis.set(
+            f"training:queue:status:{item_id}",
+            json.dumps({"status": "done", "processed_at": time.time()}),
+            ex=86400 * 7,
+        )
+        await redis.lpop("training:queue")
+        log.info(f"Training queue: '{item.get('title','')}' öğrenildi ({item.get('filename','')})")
+        return True
+
+    except ValueError as e:
+        if "429" in str(e) or "rate_limit" in str(e):
+            log.warning("Training queue: Groq rate limit — bir sonraki döngüde tekrar denenecek")
+            if item_id:
+                await redis.set(
+                    f"training:queue:status:{item_id}",
+                    json.dumps({"status": "pending", "error": "rate_limit", "retry_after": time.time() + 65}),
+                    ex=86400,
+                )
+        else:
+            log.error(f"Training queue error: {e}")
+            if item_id:
+                await redis.set(
+                    f"training:queue:status:{item_id}",
+                    json.dumps({"status": "error", "error": str(e)}),
+                    ex=86400,
+                )
+            await redis.lpop("training:queue")  # skip broken item
+        return False
+    except Exception as e:
+        log.error(f"Training queue unexpected error: {e}")
+        return False
+
+
 async def training_reload_loop(redis: aioredis.Redis):
-    """Reload operator training docs every 60 seconds."""
+    """Process PDF queue + reload training context every 60 seconds."""
     global _training_context
     while True:
+        # Process one queued PDF (rate-limit safe: one per 60s cycle)
+        try:
+            await _process_training_queue(redis)
+        except Exception as e:
+            log.warning(f"Queue processor error: {e}")
+
+        # Reload active training context into memory
         try:
             new_ctx = await reload_training_context(redis)
             if new_ctx != _training_context:
-                doc_count = new_ctx.count("[") if new_ctx else 0
-                log.info(f"Training context reloaded — {doc_count} doc(s) active")
+                doc_count = len([d for d in new_ctx.split("[") if d]) if new_ctx else 0
+                log.info(f"Training context reloaded — {doc_count} döküman aktif")
                 _training_context = new_ctx
         except Exception as e:
             log.warning(f"Training reload error: {e}")
+
         await asyncio.sleep(60)
 
 

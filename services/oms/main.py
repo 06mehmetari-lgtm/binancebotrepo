@@ -21,7 +21,8 @@ DRY_RUN = os.getenv("DRY_RUN", "true").lower() == "true"
 PORTFOLIO_VALUE = float(os.getenv("PORTFOLIO_VALUE", "10000"))
 SYMBOL_REFRESH_INTERVAL = 300
 MIN_HOLD_SECONDS = int(os.getenv("MIN_HOLD_SECONDS", "60"))   # 60s minimum pozisyon süresi (hızlı al-sat)
-CONFIDENCE_EXIT_THRESHOLD = float(os.getenv("CONFIDENCE_EXIT_THRESHOLD", "0.45"))  # Güven düşünce kârı realize et
+MAX_HOLD_MINUTES = float(os.getenv("MAX_HOLD_MINUTES", "240"))  # 4 saat sonra zorla kapat
+CONFIDENCE_EXIT_THRESHOLD = float(os.getenv("CONFIDENCE_EXIT_THRESHOLD", "0.45"))
 
 # ── Stop-and-Reverse (SAR) parametreleri ────────────────────────────────────
 # Stop-loss vurduğunda karşı yönde pozisyon açmak için eşikler.
@@ -348,6 +349,13 @@ async def position_monitor(redis: aioredis.Redis):
                     continue
 
                 chg = (current_price - entry_price) / entry_price * 100
+                held_minutes = (time.time() - pos.get("entry_time", time.time())) / 60
+
+                # ── 0. Zaman bazlı zorunlu çıkış ──
+                if held_minutes >= MAX_HOLD_MINUTES:
+                    log.info(f"MAX HOLD TIME: {symbol} {direction} {held_minutes:.0f}dk → kapatılıyor (pnl={chg:+.2f}%)")
+                    await close_position(redis, symbol, pos, current_price)
+                    continue
 
                 # ── 1. Stop-loss ──
                 hit_stop = (
@@ -377,14 +385,14 @@ async def position_monitor(redis: aioredis.Redis):
                         new_dir  = new_sig.get("direction", direction)
                         new_conf = float(new_sig.get("confidence", 1.0))
 
-                        # AI yön değiştirdi → kâr/zarar sınırında çık + SAR dene
-                        if new_dir not in (direction, "flat") and chg >= -0.3:
+                        # AI yön değiştirdi → stop sınırı içindeyse çık + SAR dene
+                        if new_dir not in (direction, "flat") and chg >= (stop_pct * 0.8 if stop_pct else -2.0):
                             log.info(f"SIGNAL FLIP: {symbol} {direction}→{new_dir} chg={chg:+.2f}%")
                             await close_position(redis, symbol, pos, current_price)
                             await maybe_reverse(redis, symbol, direction, current_price, chg)
 
-                        # Güven çöktü ve kârdayız → hemen realize et
-                        elif new_conf < CONFIDENCE_EXIT_THRESHOLD and chg > 0.5:
+                        # Güven çöktü → kârda veya küçük zararda çık
+                        elif new_conf < CONFIDENCE_EXIT_THRESHOLD and chg > -0.5:
                             log.info(f"CONFIDENCE EXIT: {symbol} conf={new_conf:.2%} chg={chg:+.2f}%")
                             await close_position(redis, symbol, pos, current_price)
 
