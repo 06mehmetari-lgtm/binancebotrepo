@@ -43,6 +43,15 @@ interface Signal {
   age_s: number | null
 }
 
+interface DocInsights {
+  score: number
+  rating: string
+  commentary: string
+  matched_rules: string[]
+  docs_used: number
+  provider: string
+}
+
 interface AnalysisData {
   symbol: string
   price: number
@@ -55,6 +64,7 @@ interface AnalysisData {
   verdict: Verdict | null
   signal: Signal | null
   rl: { direction: string; confidence: number } | null
+  doc_insights: DocInsights | null
 }
 
 type Message =
@@ -132,7 +142,7 @@ function AnalysisCard({ data }: { data: AnalysisData }) {
 
   const {
     symbol, price, has_features, features_age_s,
-    regime, crisis_level, indicators, votes, verdict, signal, rl,
+    regime, crisis_level, indicators, votes, verdict, signal, rl, doc_insights,
   } = data
 
   const finalDir = signal?.direction ?? verdict?.direction ?? 'flat'
@@ -457,6 +467,65 @@ function AnalysisCard({ data }: { data: AnalysisData }) {
             <span className={`font-bold ${dirColor(rl.direction)}`}>{dirLabel(rl.direction)}</span>
             <span className="text-gray-500">· %{(rl.confidence * 100).toFixed(0)} güven</span>
           </div>
+        )}
+
+        {/* ── Döküman Analizi ── */}
+        {doc_insights && (
+          <section>
+            <div className="text-[11px] text-gray-500 uppercase tracking-widest mb-2">
+              📚 Döküman Analizi ({doc_insights.docs_used} döküman · {doc_insights.provider})
+            </div>
+            <div className="bg-gray-800/40 border border-gray-700/30 rounded-xl p-3 space-y-3">
+
+              {/* Score + Rating */}
+              <div className="flex items-center gap-3">
+                <div className="flex-1">
+                  <div className="flex items-center justify-between mb-1 text-[10px] text-gray-500">
+                    <span>Döküman Skoru</span>
+                    <span className="font-bold text-white">{doc_insights.score}/100</span>
+                  </div>
+                  <div className="h-2 bg-gray-700 rounded-full overflow-hidden">
+                    <div
+                      className={`h-full rounded-full transition-all ${
+                        doc_insights.score >= 70 ? 'bg-green-500' :
+                        doc_insights.score >= 40 ? 'bg-yellow-500' : 'bg-red-500'
+                      }`}
+                      style={{ width: `${doc_insights.score}%` }}
+                    />
+                  </div>
+                </div>
+                <span className={`text-xs font-bold px-2.5 py-1 rounded-lg border whitespace-nowrap ${
+                  doc_insights.rating.includes('GÜÇLÜ AL') ? 'bg-green-900/50 border-green-700/50 text-green-300' :
+                  doc_insights.rating.includes('AL')        ? 'bg-green-900/30 border-green-800/40 text-green-400' :
+                  doc_insights.rating.includes('GÜÇLÜ SAT') ? 'bg-red-900/50 border-red-700/50 text-red-300' :
+                  doc_insights.rating.includes('SAT')        ? 'bg-red-900/30 border-red-800/40 text-red-400' :
+                                                               'bg-gray-800 border-gray-700 text-gray-400'
+                }`}>
+                  {doc_insights.rating}
+                </span>
+              </div>
+
+              {/* Commentary */}
+              {doc_insights.commentary && (
+                <p className="text-gray-300 text-xs leading-relaxed border-t border-gray-700/40 pt-2">
+                  {doc_insights.commentary}
+                </p>
+              )}
+
+              {/* Matched rules */}
+              {doc_insights.matched_rules.length > 0 && (
+                <div className="space-y-1 border-t border-gray-700/40 pt-2">
+                  <p className="text-[10px] text-gray-600 uppercase tracking-wider mb-1">Eşleşen Kurallar</p>
+                  {doc_insights.matched_rules.map((rule, i) => (
+                    <div key={i} className="flex items-start gap-1.5 text-[11px] text-gray-400">
+                      <span className="text-orange-500 mt-0.5 shrink-0">▸</span>
+                      <span>{rule}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </section>
         )}
 
         {/* ── Karar Zinciri ── */}

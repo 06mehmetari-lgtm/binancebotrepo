@@ -4,6 +4,7 @@ Prevents taking correlated positions. Uses CVD + RSI direction similarity
 as a fast proxy for price correlation (avoids expensive OHLCV matrix math).
 """
 import logging
+import os
 
 log = logging.getLogger(__name__)
 
@@ -17,9 +18,9 @@ CLUSTERS = {
     "ai_sector":  {"FETUSDT", "AGIXUSDT", "WLDUSDT", "RENDERUSDT", "TAOUSDT"},
 }
 
-MAX_SAME_DIRECTION  = 2   # max positions in same direction from same cluster
-MAX_OPEN_POSITIONS  = 3   # absolute cap (mirrors immunity_system)
-CORRELATION_PENALTY = 0.15 # confidence penalty per correlated position
+MAX_SAME_DIRECTION  = int(os.getenv("MAX_SAME_DIRECTION", "2"))
+MAX_OPEN_POSITIONS  = int(os.getenv("MAX_OPEN_POSITIONS", "3"))
+CORRELATION_PENALTY = 0.15
 
 
 def _cluster_of(symbol: str) -> str | None:
