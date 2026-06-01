@@ -5,7 +5,7 @@ import { randomUUID } from 'crypto'
 
 const REDIS_KEY = 'training:docs'
 const GROQ_API_URL = 'https://api.groq.com/openai/v1/chat/completions'
-const GROQ_MODEL = 'llama-3.1-70b-versatile'
+const GROQ_MODEL = 'llama-3.3-70b-versatile'
 
 interface TrainingDoc {
   id: string
