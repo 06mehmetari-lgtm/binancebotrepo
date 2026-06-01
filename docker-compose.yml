@@ -402,7 +402,7 @@ services:
       - REDIS_PASSWORD=${REDIS_PASSWORD}
       - REDIS_HOST=redis
       - QDRANT_URL=http://qdrant:6333
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - GROQ_API_KEY=${GROQ_API_KEY}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     depends_on:
