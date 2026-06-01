@@ -1,7 +1,7 @@
 """
 Debate Agent — orchestrates 9 agents and synthesizes a final verdict.
 Primary voting is rule-based (fast, no API cost per tick).
-LLM synthesis priority: Groq (70B) → Ollama → rule-based only.
+LLM synthesis: Groq → Cerebras → SambaNova → OpenRouter → Ollama (auto-fallback).
 """
 
 import asyncio
@@ -13,8 +13,6 @@ import urllib.error
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
-
-GROQ_MODEL = "llama-3.3-70b-versatile"
 
 
 @dataclass
@@ -42,21 +40,7 @@ class DebateAgent:
     }
 
     def __init__(self):
-        self._groq   = None
         self.weights = dict(self.DEFAULT_WEIGHTS)
-
-    # ── LLM client helpers ────────────────────────────────────────────────────
-
-    def _get_groq(self):
-        if self._groq is None:
-            api_key = os.getenv("GROQ_API_KEY", "")
-            if api_key:
-                try:
-                    from groq import Groq
-                    self._groq = Groq(api_key=api_key)
-                except ImportError:
-                    logger.warning("groq package not installed")
-        return self._groq
 
     def _ollama_url(self) -> str | None:
         return os.getenv("OLLAMA_URL", "http://ollama:11434") or None
@@ -93,21 +77,20 @@ class DebateAgent:
     async def _synthesize(self, symbol: str, features: dict,
                           context: dict, base: DebateResult,
                           training_context: str = "") -> DebateResult:
-        loop = asyncio.get_event_loop()
+        prompt = self._build_prompt(symbol, features, context, base, training_context)
 
-        # 1. Groq
-        groq = self._get_groq()
-        if groq:
-            try:
-                return await loop.run_in_executor(
-                    None, self._groq_synthesize, groq, symbol, features, context, base, training_context
-                )
-            except Exception as e:
-                logger.debug(f"Groq synthesis skipped for {symbol}: {e}")
+        # 1. Multi-provider fallback chain (Groq → Cerebras → SambaNova → OpenRouter)
+        try:
+            from llm_client import chat_completion
+            raw, provider = await chat_completion(prompt, max_tokens=120)
+            return self._parse_llm_response(raw, base, provider)
+        except Exception as e:
+            logger.debug(f"LLM synthesis failed for {symbol}: {e} — Ollama deneniyor")
 
-        # 2. Ollama fallback
+        # 2. Ollama local fallback (always available when container is up)
         ollama = self._ollama_url()
         if ollama:
+            loop = asyncio.get_event_loop()
             try:
                 return await loop.run_in_executor(
                     None, self._ollama_synthesize, ollama, symbol, features, context, base, training_context
@@ -165,19 +148,6 @@ class DebateAgent:
             all_votes=base.all_votes,
             majority_reasoning=f"[{tag}] {reasoning}",
         )
-
-    def _groq_synthesize(self, client, symbol: str, features: dict,
-                         context: dict, base: DebateResult,
-                         training_context: str = "") -> DebateResult:
-        prompt = self._build_prompt(symbol, features, context, base, training_context)
-        resp = client.chat.completions.create(
-            model=GROQ_MODEL,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.1,
-            max_tokens=120,
-        )
-        raw = resp.choices[0].message.content
-        return self._parse_llm_response(raw, base, "Groq")
 
     def _ollama_synthesize(self, ollama_url: str, symbol: str, features: dict,
                            context: dict, base: DebateResult,

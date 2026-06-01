@@ -1,9 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 export const dynamic = 'force-dynamic'
 import { createRedis } from '../_redis'
-
-const GROQ_API_URL = 'https://api.groq.com/openai/v1/chat/completions'
-const GROQ_MODEL = 'llama-3.3-70b-versatile'
+import { chatCompletion } from '../_llm'
 
 interface TrainingDoc {
   id: string
@@ -13,18 +11,12 @@ interface TrainingDoc {
 }
 
 export async function POST(req: NextRequest) {
-  const apiKey = process.env.GROQ_API_KEY
-  if (!apiKey) {
-    return NextResponse.json({ error: 'GROQ_API_KEY tanımlı değil' }, { status: 500 })
-  }
-
   const body = await req.json()
   const message = (body.message ?? '').trim()
   if (!message) {
     return NextResponse.json({ error: 'Mesaj boş olamaz' }, { status: 400 })
   }
 
-  // Load learned documents from Redis
   const redis = createRedis()
   let docs: TrainingDoc[] = []
   try {
@@ -41,7 +33,7 @@ export async function POST(req: NextRequest) {
     })
   }
 
-  // Build context from docs (max ~10000 chars total)
+  // Build context from docs (max ~10000 chars)
   let contextBlock = ''
   const usedTitles: string[] = []
   let charCount = 0
@@ -53,41 +45,22 @@ export async function POST(req: NextRequest) {
     charCount += chunk.length
   }
 
-  const systemPrompt = `You are an expert trading analyst AI assistant. You have been trained on the following trading analysis documents provided by the operator:
+  const system = `You are an expert trading analyst AI assistant trained on the following documents:
 
 ${contextBlock}
 
 Rules:
 - Answer ONLY based on the documents above
-- If the answer is not in the documents, say clearly: "Bu dökümanlarımda bu bilgi yok."
-- Be specific: cite price levels, indicators, rules from the documents
+- If the answer is not in the documents, say: "Bu dökümanlarımda bu bilgi yok."
+- Cite specific price levels, indicators, rules from the documents
 - Answer in the same language the user writes in (Turkish or English)
 - Keep answers concise but complete`
 
-  const res = await fetch(GROQ_API_URL, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model: GROQ_MODEL,
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: message },
-      ],
-      temperature: 0.2,
-      max_tokens: 1024,
-    }),
-  })
-
-  if (!res.ok) {
-    const errText = await res.text()
-    return NextResponse.json({ error: `Groq hatası: ${res.status} — ${errText.slice(0, 120)}` }, { status: 502 })
+  try {
+    const { content, provider } = await chatCompletion(message, { system, temperature: 0.2, maxTokens: 1024 })
+    return NextResponse.json({ reply: content, sources: usedTitles, provider })
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err)
+    return NextResponse.json({ error: msg }, { status: 502 })
   }
-
-  const data = await res.json()
-  const reply = data.choices?.[0]?.message?.content ?? 'Cevap alınamadı.'
-
-  return NextResponse.json({ reply, sources: usedTitles })
 }

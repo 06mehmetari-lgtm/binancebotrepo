@@ -94,9 +94,9 @@ async def reload_training_context(redis: aioredis.Redis) -> str:
         return ""
 
 
-async def _groq_analyze_queued(api_key: str, raw_text: str, filename: str) -> str:
-    """Send queued PDF text to Groq for structured analysis."""
-    import aiohttp
+async def _groq_analyze_queued(raw_text: str, filename: str) -> str:
+    """Send queued PDF text to multi-provider LLM for structured analysis."""
+    from llm_client import chat_completion
     truncated = raw_text[:12000]
     prompt = (
         f'Analyze this trading/financial document ("{filename}") as operator instructions '
@@ -106,34 +106,14 @@ async def _groq_analyze_queued(api_key: str, raw_text: str, filename: str) -> st
         f"chart descriptions (from captions/labels in the text), risk parameters, "
         f"author conclusions. Be specific with numbers. Write in English."
     )
-    async with aiohttp.ClientSession() as session:
-        async with session.post(
-            "https://api.groq.com/openai/v1/chat/completions",
-            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            json={
-                "model": "llama-3.3-70b-versatile",
-                "messages": [{"role": "user", "content": prompt}],
-                "temperature": 0.1,
-                "max_tokens": 4096,
-            },
-            timeout=aiohttp.ClientTimeout(total=90),
-        ) as resp:
-            if resp.status == 429:
-                raise ValueError("429 rate_limit")
-            if resp.status != 200:
-                text = await resp.text()
-                raise ValueError(f"Groq {resp.status}: {text[:100]}")
-            data = await resp.json()
-            return data["choices"][0]["message"]["content"]
+    content, provider = await chat_completion(prompt, max_tokens=4096)
+    log.info(f"Training queue: PDF analizi tamamlandı [{provider}]")
+    return content
 
 
 async def _process_training_queue(redis: aioredis.Redis):
     """Process one pending PDF from training:queue using Groq.
     Returns True if an item was processed (or failed), False if queue empty."""
-    api_key = os.getenv("GROQ_API_KEY", "")
-    if not api_key:
-        return False
-
     item_raw = await redis.lindex("training:queue", 0)  # peek oldest
     if not item_raw:
         return False
@@ -159,7 +139,7 @@ async def _process_training_queue(redis: aioredis.Redis):
             ex=3600,
         )
 
-        analysed = await _groq_analyze_queued(api_key, item.get("raw_text", ""), item.get("filename", "doc"))
+        analysed = await _groq_analyze_queued(item.get("raw_text", ""), item.get("filename", "doc"))
 
         # Add to training:docs
         docs_raw = await redis.get("training:docs")
