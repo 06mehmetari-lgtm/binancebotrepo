@@ -55,12 +55,13 @@ function ConfidenceBar({ value }: { value: number }) {
 }
 
 function WinRateBadge({ wr }: { wr: number }) {
-  const color = wr >= 60 ? 'text-green-400 bg-green-900/30 border-green-800/40'
-    : wr >= 52 ? 'text-yellow-400 bg-yellow-900/30 border-yellow-800/40'
+  const n = Number(wr) || 0
+  const color = n >= 60 ? 'text-green-400 bg-green-900/30 border-green-800/40'
+    : n >= 52 ? 'text-yellow-400 bg-yellow-900/30 border-yellow-800/40'
     : 'text-gray-500 bg-gray-800/40 border-gray-700/40'
   return (
     <span className={`text-xs px-2 py-0.5 rounded border font-mono font-bold ${color}`}>
-      {wr.toFixed(1)}%
+      {n.toFixed(1)}%
     </span>
   )
 }
@@ -108,19 +109,19 @@ export default function Home() {
   const activeSignals = signals.filter(s => s.direction !== 'flat')
   const heatmapSymbols = markets.slice(0, 40)
   const shadowData = shadow.length ? shadow : (status.shadow?.leaderboard ?? [])
-  const vixVal = status.macro_vix ?? 0
+  const vixVal = Number(status.macro_vix ?? 0) || 0
 
   // Top Performers: merge backtest + current signal data
   const topPerformers = backtest?.results
     ? Object.entries(backtest.results)
         .map(([sym, bt]) => ({
           symbol: sym,
-          win_rate: bt.win_rate_pct ?? 0,
-          sharpe: bt.sharpe_ratio ?? null,
-          ret: bt.total_return_pct ?? 0,
-          dd: bt.max_drawdown_pct ?? 0,
-          trades: bt.total_trades ?? 0,
-          score: (bt.sharpe_ratio ?? 0) * ((bt.win_rate_pct ?? 0) / 100),
+          win_rate: Number(bt.win_rate_pct ?? 0) || 0,
+          sharpe: bt.sharpe_ratio != null ? Number(bt.sharpe_ratio) || 0 : null,
+          ret: Number(bt.total_return_pct ?? 0) || 0,
+          dd: Number(bt.max_drawdown_pct ?? 0) || 0,
+          trades: Number(bt.total_trades ?? 0) || 0,
+          score: (Number(bt.sharpe_ratio ?? 0) || 0) * ((Number(bt.win_rate_pct ?? 0) || 0) / 100),
           signal: signals.find(s => s.symbol === sym),
         }))
         .filter(p => p.trades > 0)
@@ -324,11 +325,11 @@ export default function Home() {
               {shadowData.map(s => (
                 <tr key={s.shadow_id} className="border-b border-gray-800/40 hover:bg-gray-800/20">
                   <td className="px-4 py-2.5 font-semibold text-white">{s.shadow_id}</td>
-                  <td className={`px-4 py-2.5 font-mono ${s.sharpe >= 1.5 ? 'text-green-400' : s.sharpe >= 1.0 ? 'text-yellow-400' : 'text-gray-400'}`}>{s.sharpe?.toFixed(2) ?? '—'}</td>
-                  <td className={`px-4 py-2.5 font-mono ${s.win_rate >= 0.52 ? 'text-green-400' : 'text-gray-400'}`}>{((s.win_rate ?? 0) * 100).toFixed(1)}%</td>
+                  <td className={`px-4 py-2.5 font-mono ${(Number(s.sharpe)||0) >= 1.5 ? 'text-green-400' : (Number(s.sharpe)||0) >= 1.0 ? 'text-yellow-400' : 'text-gray-400'}`}>{s.sharpe != null ? (Number(s.sharpe)||0).toFixed(2) : '—'}</td>
+                  <td className={`px-4 py-2.5 font-mono ${(Number(s.win_rate)||0) >= 0.52 ? 'text-green-400' : 'text-gray-400'}`}>{((Number(s.win_rate) || 0) * 100).toFixed(1)}%</td>
                   <td className="px-4 py-2.5 text-gray-300">{s.trades}</td>
-                  <td className={`px-4 py-2.5 font-mono ${(s.return ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>{((s.return ?? 0) * 100).toFixed(2)}%</td>
-                  <td className={`px-4 py-2.5 font-mono ${(s.max_drawdown ?? 0) < 0.1 ? 'text-green-400' : 'text-red-400'}`}>{((s.max_drawdown ?? 0) * 100).toFixed(1)}%</td>
+                  <td className={`px-4 py-2.5 font-mono ${(Number(s.return)||0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>{((Number(s.return) || 0) * 100).toFixed(2)}%</td>
+                  <td className={`px-4 py-2.5 font-mono ${(Number(s.max_drawdown)||0) < 0.1 ? 'text-green-400' : 'text-red-400'}`}>{((Number(s.max_drawdown) || 0) * 100).toFixed(1)}%</td>
                   <td className="px-4 py-2.5">
                     {s.promotion_ready
                       ? <span className="bg-yellow-500/20 text-yellow-400 border border-yellow-500/40 px-2 py-0.5 rounded text-xs font-bold animate-pulse">🚀 READY</span>
