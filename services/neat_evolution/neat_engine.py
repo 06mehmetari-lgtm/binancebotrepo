@@ -59,6 +59,12 @@ class NEATTradingEngine:
         logger.info("Using synthetic training data")
 
     def evaluate_genome(self, genome, config) -> float:
+        """
+        Walk-forward simulation on features/prices.
+        No lookahead: entry and exit both use price[i] (current bar close).
+        Fee of 0.1% round-trip deducted from each trade.
+        Position size is confidence-proportional (max 5%).
+        """
         if self._features is None:
             return 0.0
         net = neat.nn.FeedForwardNetwork.create(genome, config)
@@ -67,30 +73,39 @@ class NEATTradingEngine:
         entry_price = 0.0
         trades = []
         equity = [capital]
+        FEE = 0.001  # 0.1% round-trip
 
-        for i in range(len(self._features) - 1):
+        for i in range(len(self._features)):
             output = net.activate(self._features[i].tolist())
             action = int(np.argmax(output))  # 0=BUY, 1=SELL, 2=HOLD
-            conf = float(np.max(output))
-            price = float(self._prices[i])
-            next_price = float(self._prices[i + 1])
+            conf   = float(np.max(output))
+            price  = float(self._prices[i])
 
-            if action == 0 and conf > 0.6 and position == 0:
-                size = capital * 0.07
+            if action == 0 and conf > 0.55 and position == 0:
+                # Enter long: size proportional to confidence
+                size = capital * min(0.05, 0.03 * conf)
                 position = size / price
                 entry_price = price
                 capital -= size
+
             elif action == 1 and position > 0:
+                # Exit long at current bar (no lookahead)
                 exit_val = position * price
-                pnl = (price - entry_price) / entry_price
+                raw_pnl = (price - entry_price) / entry_price
+                pnl = raw_pnl - FEE
                 capital += exit_val
                 trades.append(pnl)
-                position = 0
-            equity.append(capital + position * next_price)
+                position = 0.0
+                entry_price = 0.0
 
+            # Equity at current price — no lookahead
+            equity.append(capital + position * price)
+
+        # Force-close any open position at last bar
         if position > 0:
-            exit_val = position * float(self._prices[-1])
-            pnl = (float(self._prices[-1]) - entry_price) / entry_price
+            last_price = float(self._prices[-1])
+            exit_val = position * last_price
+            pnl = (last_price - entry_price) / entry_price - FEE
             capital += exit_val
             trades.append(pnl)
             equity.append(capital)
@@ -99,14 +114,23 @@ class NEATTradingEngine:
             return 0.0
 
         returns = np.array(trades)
-        sharpe = float(np.mean(returns) / np.std(returns) * np.sqrt(252)) if np.std(returns) > 0 else 0
+        std = float(np.std(returns, ddof=1)) if len(returns) > 1 else 1e-9
+        sharpe = float(np.mean(returns) / max(std, 1e-9) * np.sqrt(252))
         win_rate = float(np.sum(returns > 0) / len(returns))
         eq_arr = np.array(equity)
         peak = np.maximum.accumulate(eq_arr)
         max_dd = float(np.max((peak - eq_arr) / np.maximum(peak, 1e-6)))
-        fitness = sharpe * win_rate * (1 - max_dd)
+
+        # Composite fitness: bounded to avoid domination by single metric
+        sharpe_norm = min(sharpe, 3.0) / 3.0        # normalise to [0, 1]
+        fitness = sharpe_norm * win_rate * (1 - max_dd)
+
+        # Bonus for active strategies with enough trades (not cash-sitters)
         if len(trades) >= 20:
-            fitness *= 1.2
+            fitness *= 1.1
+        if len(trades) >= 50:
+            fitness *= 1.1
+
         return max(0.0, fitness)
 
     def run(self, generations: int = 50) -> dict:

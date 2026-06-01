@@ -99,11 +99,13 @@ async def write_feedback(
         if not agent:
             continue
 
-        # Correct = predicted the right direction AND trade was profitable,
-        #        OR voted flat/opposite AND trade lost (correctly avoided)
+        # An agent is "correct" if:
+        # 1. Voted same direction as trade AND trade won (correctly predicted)
+        # 2. Voted opposite direction AND trade lost (correctly predicted wrong dir)
+        # 3. Voted flat AND trade lost (correctly recommended staying out)
         correct = (
             (signal == direction and win) or
-            (signal != direction and signal != "flat" and not win)
+            (signal != direction and not win)
         )
 
         key = f"agents:accuracy:{agent}:{regime}"
@@ -176,7 +178,7 @@ async def _update_learned_weights(redis: aioredis.Redis) -> None:
             accuracy    = float(stats.get("accuracy", 0.5))
             total_trades = int(stats.get("total_trades", 0))
 
-            if total_trades < 10:
+            if total_trades < 5:
                 continue  # not enough data yet
 
             current = weights.get(agent, _DEFAULT_WEIGHTS.get(agent, 1.0))

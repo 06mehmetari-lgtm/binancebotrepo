@@ -4,9 +4,9 @@ from typing import Literal
 
 Direction = Literal["long", "short", "flat"]
 
-ML_BOOST      = 0.12   # max confidence boost from ML score agreement
-ML_PENALTY    = 0.08   # confidence penalty when ML disagrees
-ML_THRESHOLD  = 0.25   # |ml_score| must exceed this to influence signal
+ML_BOOST      = 0.20   # max confidence boost from ML score agreement (was 0.12)
+ML_PENALTY    = 0.15   # confidence penalty when ML disagrees (was 0.08)
+ML_THRESHOLD  = 0.15   # |ml_score| must exceed this to influence signal (was 0.25, lowered)
 
 
 @dataclass
@@ -57,16 +57,16 @@ class SignalGenerator:
                 ml_favors_long  = ml_score > 0
                 ml_favors_short = ml_score < 0
                 if best == "long" and ml_favors_long:
-                    confidence = min(0.95, confidence + ML_BOOST * abs(ml_score))
+                    confidence = min(0.98, confidence + ML_BOOST * abs(ml_score))
                 elif best == "short" and ml_favors_short:
-                    confidence = min(0.95, confidence + ML_BOOST * abs(ml_score))
+                    confidence = min(0.98, confidence + ML_BOOST * abs(ml_score))
                 elif best in ("long", "short") and (
                     (best == "long" and ml_favors_short) or
                     (best == "short" and ml_favors_long)
                 ):
                     confidence = max(0.0, confidence - ML_PENALTY * abs(ml_score))
 
-            direction = best if confidence >= 0.55 else "flat"
+            direction = best if confidence >= 0.52 else "flat"
             source = "agent_system"
 
         elif features:

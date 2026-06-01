@@ -119,17 +119,22 @@ async def generate_signal(redis: aioredis.Redis, symbol: str) -> dict | None:
             "signal": rl_dir, "confidence": rl_conf,
         }]
 
-    # Preliminary direction guess for stop-loss calc (will be confirmed below)
-    signal = generator.generate(
-        symbol, agent_verdicts, kelly_fraction, features,
-        ml_score=ml_score,
-    )
-    if signal is None:
-        return None
+    # Single-pass generation: use a neutral direction for ATR calc, then generate once with stops
+    # Determine direction from votes before full generation to compute ATR levels
+    if agent_verdicts:
+        votes: dict[str, float] = {"long": 0.0, "short": 0.0, "flat": 0.0}
+        for v in agent_verdicts:
+            d = v.get("direction", v.get("signal", "flat"))
+            c = float(v.get("confidence", 0.5))
+            if d in votes:
+                votes[d] += c
+        prelim_dir = max(votes, key=votes.__getitem__)
+    else:
+        prelim_dir = "flat"
 
-    stops = atr_calculator.calculate(signal.direction, atr_pct, stop_mult, tp_mult)
+    stops = atr_calculator.calculate(prelim_dir, atr_pct, stop_mult, tp_mult)
 
-    # Re-generate with stop/TP included
+    # Single generate call with stops already computed
     signal = generator.generate(
         symbol, agent_verdicts, kelly_fraction, features,
         ml_score=ml_score,
@@ -137,6 +142,8 @@ async def generate_signal(redis: aioredis.Redis, symbol: str) -> dict | None:
         tp_pct=stops["tp_pct"],
         risk_reward=stops["risk_reward"],
     )
+    if signal is None:
+        return None
 
     # ── Portfolio guard ────────────────────────────────────────────────────
     if signal.direction != "flat":

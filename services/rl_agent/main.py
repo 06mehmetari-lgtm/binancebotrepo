@@ -91,12 +91,9 @@ async def inference_loop(redis: aioredis.Redis):
                     symbol = (key.decode() if isinstance(key, bytes) else key).split(":")[-1]
 
                     obs = extract_obs(features)
-                    action = agent.predict(obs)
+                    action, confidence = agent.predict(obs)
                     direction = ["flat", "long", "short"][action]
-
-                    # Derive a confidence score: distance from neutral (action 0)
-                    # For RL, we use a fixed moderate confidence since PPO outputs discrete actions
-                    confidence = 0.62 if direction != "flat" else 0.0
+                    # confidence = actual policy probability from PPO distribution
 
                     await redis.set(f"rl:signal:{symbol}", json.dumps({
                         "direction": direction,
