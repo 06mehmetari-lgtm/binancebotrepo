@@ -50,24 +50,16 @@ export async function POST(req: NextRequest) {
   const client = new Anthropic({ apiKey })
   let extractedContent: string
   try {
-    const message = await client.messages.create({
-      model: 'claude-sonnet-4-6',
-      max_tokens: 4096,
-      messages: [
-        {
-          role: 'user',
-          content: [
-            {
-              type: 'document',
-              source: {
-                type: 'base64',
-                media_type: 'application/pdf',
-                data: base64,
-              },
-            } as Parameters<typeof client.messages.create>[0]['messages'][0]['content'][number],
-            {
-              type: 'text',
-              text: `You are extracting content from a trading/financial analysis document for use as operator instructions in an automated crypto futures trading system.
+    // document type is a beta feature — cast content to avoid TS overload mismatch
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const msgContent: any[] = [
+      {
+        type: 'document',
+        source: { type: 'base64', media_type: 'application/pdf', data: base64 },
+      },
+      {
+        type: 'text',
+        text: `You are extracting content from a trading/financial analysis document for use as operator instructions in an automated crypto futures trading system.
 
 Extract and describe EVERYTHING in the document:
 
@@ -78,10 +70,12 @@ Extract and describe EVERYTHING in the document:
 5. Author's conclusions and trading recommendations
 
 Write in clear English. Be thorough and specific — a trading AI will use this to decide when to buy and sell.`,
-            },
-          ],
-        },
-      ],
+      },
+    ]
+    const message = await client.messages.create({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 4096,
+      messages: [{ role: 'user', content: msgContent }],
     })
     extractedContent =
       message.content[0].type === 'text' ? message.content[0].text : '[Analiz alınamadı]'
