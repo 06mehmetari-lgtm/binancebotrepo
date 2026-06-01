@@ -201,6 +201,56 @@ async def process_signal(redis: aioredis.Redis, symbol: str):
     }), ex=86400)
 
 
+async def position_monitor(redis: aioredis.Redis):
+    """Every 30s: close positions that have hit ATR-based stop-loss or take-profit."""
+    while True:
+        await asyncio.sleep(30)
+        pos_keys = await redis.keys("oms:position:*")
+        for k in pos_keys:
+            pos_raw = await redis.get(k)
+            if not pos_raw:
+                continue
+            try:
+                pos = json.loads(pos_raw)
+                symbol      = pos.get("symbol", "")
+                direction   = pos.get("direction", "long")
+                entry_price = float(pos.get("entry_price", 0))
+                if not symbol or entry_price <= 0:
+                    continue
+
+                # Stop/TP levels are stored in the entry signal
+                entry_signal = pos.get("entry_signal", {})
+                stop_pct = float(entry_signal.get("stop_pct", 0) or 0)
+                tp_pct   = float(entry_signal.get("tp_pct",   0) or 0)
+                if not stop_pct and not tp_pct:
+                    continue  # no levels defined
+
+                current_price = await get_price(redis, symbol)
+                if current_price <= 0:
+                    continue
+
+                chg = (current_price - entry_price) / entry_price * 100
+
+                hit_stop = hit_tp = False
+                if direction == "long":
+                    if stop_pct and chg <= stop_pct:   hit_stop = True
+                    if tp_pct   and chg >= tp_pct:     hit_tp   = True
+                else:
+                    if stop_pct and chg >= stop_pct:   hit_stop = True
+                    if tp_pct   and chg <= tp_pct:     hit_tp   = True
+
+                if hit_stop:
+                    log.info(f"STOP-LOSS HIT: {symbol} {direction} entry={entry_price:.4f} "
+                             f"now={current_price:.4f} chg={chg:+.2f}%")
+                    await close_position(redis, symbol, pos, current_price)
+                elif hit_tp:
+                    log.info(f"TAKE-PROFIT HIT: {symbol} {direction} entry={entry_price:.4f} "
+                             f"now={current_price:.4f} chg={chg:+.2f}%")
+                    await close_position(redis, symbol, pos, current_price)
+            except Exception as e:
+                log.error(f"Position monitor error: {e}")
+
+
 async def snapshot_portfolio(redis: aioredis.Redis):
     """Write hourly equity snapshot for portfolio equity curve."""
     while True:
@@ -286,7 +336,7 @@ async def main():
                     log.error(f"OMS error for {symbol}: {e}")
             await asyncio.sleep(5)
 
-    await asyncio.gather(signal_loop(), snapshot_portfolio(redis))
+    await asyncio.gather(signal_loop(), snapshot_portfolio(redis), position_monitor(redis))
 
 
 if __name__ == "__main__":

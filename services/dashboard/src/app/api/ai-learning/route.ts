@@ -15,13 +15,16 @@ export async function GET() {
     const sampleKeys = sigKeys.slice(0, 50)
 
     const pipeline = redis.pipeline()
-    pipeline.get('agents:weights')        // 0
-    pipeline.get('agents:last_run')       // 1
-    pipeline.lrange('neat:evolution_log', 0, 19)  // 2 — last 20 evolution events
-    pipeline.lrange('activity:feed', 0, 99)        // 3 — last 100 log entries
-    pipeline.get('agents:verdicts:BTCUSDT')        // 4 — sample vote breakdown
+    pipeline.get('agents:weights')         // 0
+    pipeline.get('agents:last_run')        // 1
+    pipeline.lrange('neat:evolution_log', 0, 19)  // 2
+    pipeline.lrange('activity:feed', 0, 99)        // 3
+    pipeline.get('agents:verdicts:BTCUSDT')        // 4
     pipeline.get('agents:verdicts:ETHUSDT')        // 5
-    sampleKeys.forEach(k => pipeline.get(k))       // 6+
+    pipeline.get('ml:learner:stats')               // 6
+    pipeline.get('agents:learned_weights')         // 7
+    pipeline.get('rl:model_ready')                 // 8
+    sampleKeys.forEach(k => pipeline.get(k))       // 9+
     const res = await pipeline.exec()
 
     const weights = (safeJson(res?.[0]?.[1]) as Record<string, number> | null) ?? {
@@ -47,12 +50,16 @@ export async function GET() {
     const ethVotes = (safeJson(res?.[5]?.[1]) as Record<string, unknown>[] | null) ?? []
     const sampleVotes = btcVotes.length > 0 ? btcVotes : ethVotes
 
+    const mlStats   = safeJson(res?.[6]?.[1]) as Record<string, unknown> | null
+    const learnedW  = safeJson(res?.[7]?.[1]) as Record<string, number> | null
+    const rlActive  = !!(res?.[8]?.[1])
+
     // Direction distribution across sampled signals
     const dist = { long: 0, short: 0, flat: 0, total: 0 }
-    const recentSignals: { symbol: string; direction: string; confidence: number; regime: string }[] = []
+    const recentSignals: { symbol: string; direction: string; confidence: number; regime: string; ml_score?: number }[] = []
 
     for (let i = 0; i < sampleKeys.length; i++) {
-      const raw = res?.[6 + i]?.[1]
+      const raw = res?.[9 + i]?.[1]
       const sig = safeJson(raw) as Record<string, unknown> | null
       if (!sig) continue
       const dir = (sig.direction as string) || 'flat'
@@ -67,6 +74,7 @@ export async function GET() {
           direction: dir,
           confidence: Number(sig.confidence ?? 0),
           regime: String(sig.regime ?? 'unknown'),
+          ml_score: Number(sig.ml_score ?? 0),
         })
       }
     }
@@ -79,13 +87,18 @@ export async function GET() {
     const agentLabels: Record<string, string> = {
       technical: '📊 Teknik', onchain: '⛓ Zincir', sentiment: '😨 Duygu',
       macro: '🌍 Makro', news: '📰 Haber', bull: '🐂 Boğa',
-      bear: '🐻 Ayı', neutral: '⚖ Nötr', risk: '🛡 Risk',
+      bear: '🐻 Ayı', neutral: '⚖ Nötr', risk: '🛡 Risk', rl_ppo: '🤖 RL/PPO',
     }
+
+    // Merge regime weights with learned accuracy weights for display
+    const displayWeights = learnedW
+      ? { ...weights, ...Object.fromEntries(Object.entries(learnedW).filter(([k]) => k in weights)) }
+      : weights
 
     return NextResponse.json({
       signal_distribution: { long: longPct, short: shortPct, flat: flatPct, total: dist.total },
       recent_signals: recentSignals.sort((a, b) => b.confidence - a.confidence),
-      agent_weights: Object.entries(weights).map(([name, w]) => ({
+      agent_weights: Object.entries(displayWeights).map(([name, w]) => ({
         name, label: agentLabels[name] ?? name, weight: Number(w) || 1.0,
       })).sort((a, b) => b.weight - a.weight),
       sample_votes: sampleVotes.map((v: Record<string, unknown>) => ({
@@ -93,6 +106,14 @@ export async function GET() {
         signal: String(v.signal ?? v.direction ?? 'flat'),
         confidence: Number(v.confidence ?? 0),
       })),
+      ml_model: mlStats ? {
+        version:      Number(mlStats.version ?? 0),
+        n_samples:    Number(mlStats.n_samples ?? 0),
+        val_accuracy: Number(mlStats.val_accuracy ?? 0),
+        top_features: (mlStats.top_features as [string, number][] | null) ?? [],
+        label_dist:   (mlStats.label_dist as Record<string, number> | null) ?? {},
+      } : null,
+      rl_active:    rlActive,
       last_run_sec: lastRunSec,
       neat_log: evoLog.slice(0, 10),
       activity_log: actLog,

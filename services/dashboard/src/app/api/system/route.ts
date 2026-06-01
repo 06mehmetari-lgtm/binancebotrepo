@@ -42,13 +42,16 @@ export async function GET() {
     pipeline.lrange('activity:feed', 0, 19) // 10
     pipeline.lrange('oms:trade_history', 0, 4) // 11
     pipeline.get('oms:daily_pnl')        // 12
-    if (signalKeys.length > 0) pipeline.get(signalKeys[0])   // 13
-    if (featureKeys.length > 0) pipeline.get(featureKeys[0]) // 14
-    if (genomeKeys.length > 0) pipeline.get(genomeKeys[0])   // 15
+    pipeline.get('rl:model_ready')       // 13 — RL agent status
+    pipeline.get('ml:learner:stats')     // 14 — ML model version + accuracy
+    pipeline.get('ml:model:version')     // 15 — current model version number
+    if (signalKeys.length > 0) pipeline.get(signalKeys[0])   // 16
+    if (featureKeys.length > 0) pipeline.get(featureKeys[0]) // 17
+    if (genomeKeys.length > 0) pipeline.get(genomeKeys[0])   // 18
     const results = await pipeline.exec()
 
-    const wsRaw      = safeJson(results?.[0]?.[1]) as Record<string, unknown> | null
-    const neatRaw    = safeJson(results?.[1]?.[1]) as Record<string, unknown> | null
+    const wsRaw       = safeJson(results?.[0]?.[1]) as Record<string, unknown> | null
+    const neatRaw     = safeJson(results?.[1]?.[1]) as Record<string, unknown> | null
     const agentsLast = results?.[2]?.[1] as string | null
     const shadowRaw  = safeJson(results?.[3]?.[1])
     const fearGreed  = safeJson(results?.[4]?.[1]) as Record<string, unknown> | null
@@ -59,12 +62,15 @@ export async function GET() {
     const crisisLvl  = parseInt((results?.[9]?.[1] as string | null) ?? '0') || 0
     const actRaw     = (results?.[10]?.[1] as string[] | null) ?? []
     const tradesRaw  = (results?.[11]?.[1] as string[] | null) ?? []
-    const dailyPnl   = parseFloat((results?.[12]?.[1] as string | null) ?? '0') || 0
+    const dailyPnl    = parseFloat((results?.[12]?.[1] as string | null) ?? '0') || 0
+    const rlReady     = results?.[13]?.[1] as string | null
+    const mlStatsRaw  = safeJson(results?.[14]?.[1]) as Record<string, unknown> | null
+    const mlVersion   = parseInt((results?.[15]?.[1] as string | null) ?? '0') || 0
 
     let sigFresh: number | null = null
     let featFresh: number | null = null
     let bestGenome: Record<string, unknown> | null = null
-    let idx = 13
+    let idx = 16
     if (signalKeys.length > 0) {
       const s = safeJson(results?.[idx++]?.[1]) as Record<string, unknown> | null
       sigFresh = secAgo(s?.timestamp as number | undefined)
@@ -155,8 +161,8 @@ export async function GET() {
       },
       rl_agent: {
         name: 'rl_agent', label: 'RL Agent (PPO)',
-        status: 'unknown',
-        detail: 'Docker container durumu bilinmiyor',
+        status: rlReady ? 'ok' : 'warn' as SvcStatus,
+        detail: rlReady ? 'PPO modeli aktif · tahmin üretiyor' : 'Model eğitimi bekleniyor (5 dk)',
       },
     }
 
@@ -194,6 +200,13 @@ export async function GET() {
         agent_verdict_count: agentKeys.length,
         shadow_best:  bestShadow,
         shadow_total: shadowList.length,
+        ml_model: mlStatsRaw ? {
+          version:      (mlStatsRaw.version as number) ?? mlVersion,
+          n_samples:    (mlStatsRaw.n_samples as number) ?? 0,
+          val_accuracy: (mlStatsRaw.val_accuracy as number) ?? 0,
+          top_features: (mlStatsRaw.top_features as [string, number][] | null) ?? [],
+        } : mlVersion > 0 ? { version: mlVersion, n_samples: 0, val_accuracy: 0, top_features: [] } : null,
+        rl_active: !!rlReady,
       },
       market: {
         regime: regime ?? null,

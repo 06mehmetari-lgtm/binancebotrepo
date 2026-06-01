@@ -125,6 +125,10 @@ async def main():
                 return
             await redis.set(f"context:latest:{symbol}", json.dumps(ctx), ex=CTX_TTL)
             await redis.publish(f"ch:context:{symbol}", symbol)
+            # Keep a global regime key (BTC drives the market regime)
+            if symbol in ("BTCUSDT", "ETHUSDT"):
+                await redis.set("context:regime", ctx["regime"], ex=CTX_TTL)
+                await redis.set("context:crisis_level", str(ctx["crisis_level"]), ex=CTX_TTL)
 
             new_regime = ctx.get("regime", "unknown")
             old_regime = LAST_REGIME.get(symbol)

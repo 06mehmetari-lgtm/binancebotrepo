@@ -107,6 +107,18 @@ async def generate_signal(redis: aioredis.Redis, symbol: str) -> dict | None:
     # ── ML score from feature engine ───────────────────────────────────────
     ml_score = float(features.get("ml_score", 0.0) or 0.0)
 
+    # ── RL (PPO) signal ────────────────────────────────────────────────────
+    rl_raw  = await redis.get(f"rl:signal:{symbol}")
+    rl_data = json.loads(rl_raw) if rl_raw else {}
+    rl_dir  = rl_data.get("direction", "flat")
+    rl_conf = float(rl_data.get("confidence", 0.0))
+    # Inject RL as an additional agent vote so it participates in weighted consensus
+    if rl_dir != "flat" and rl_conf > 0:
+        agent_verdicts = list(agent_verdicts) + [{
+            "agent": "rl_ppo", "direction": rl_dir,
+            "signal": rl_dir, "confidence": rl_conf,
+        }]
+
     # Preliminary direction guess for stop-loss calc (will be confirmed below)
     signal = generator.generate(
         symbol, agent_verdicts, kelly_fraction, features,
@@ -175,6 +187,7 @@ async def generate_signal(redis: aioredis.Redis, symbol: str) -> dict | None:
         "macd_hist": round(float(features.get("macd_hist", 0) or 0), 4),
         "volume_ratio": round(float(features.get("volume_ratio", 1) or 1), 2),
         "ml_score": ml_score,
+        "rl_direction": rl_dir,
         "stop_pct": signal.stop_pct,
         "tp_pct": signal.tp_pct,
         "risk_reward": signal.risk_reward,
