@@ -379,6 +379,8 @@ services:
       - NEXT_PUBLIC_API_URL=http://localhost:8000
       - REDIS_PASSWORD=${REDIS_PASSWORD}
       - REDIS_HOST=redis
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
     depends_on:
       - redis
     networks:

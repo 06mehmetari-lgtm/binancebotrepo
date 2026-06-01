@@ -1,5 +1,5 @@
 'use client'
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useRef } from 'react'
 
 interface SvcInfo { name: string; label: string; status: 'ok' | 'warn' | 'error' | 'unknown'; detail: string }
 
@@ -69,9 +69,29 @@ function fmtSec(s: number | null): string {
   return `${Math.floor(s / 3600)}sa önce`
 }
 
-function ServiceCard({ s }: { s: SvcInfo }) {
+function ServiceCard({ s, onRestart }: { s: SvcInfo; onRestart?: (name: string) => Promise<void> }) {
   const c = SVC_CFG[s.status]
   const lbl = s.status === 'ok' ? 'OK' : s.status === 'warn' ? 'UYARI' : s.status === 'error' ? 'HATA' : '?'
+  const [restarting, setRestarting] = useState(false)
+  const [restartMsg, setRestartMsg] = useState<string | null>(null)
+  const canRestart = (s.status === 'error' || s.status === 'warn') && !!onRestart
+
+  async function handleRestart() {
+    if (!onRestart || restarting) return
+    setRestarting(true)
+    setRestartMsg(null)
+    try {
+      await onRestart(s.name)
+      setRestartMsg('Yeniden başlatılıyor...')
+      setTimeout(() => setRestartMsg(null), 5000)
+    } catch {
+      setRestartMsg('Hata')
+      setTimeout(() => setRestartMsg(null), 4000)
+    } finally {
+      setRestarting(false)
+    }
+  }
+
   return (
     <div className={`rounded-lg border p-3 ${c.ring}`}>
       <div className="flex items-start justify-between gap-2 mb-1.5">
@@ -79,9 +99,26 @@ function ServiceCard({ s }: { s: SvcInfo }) {
           <span className={`w-2 h-2 rounded-full shrink-0 mt-0.5 ${c.dot}`} />
           <span className="text-white text-xs font-semibold truncate">{s.label}</span>
         </div>
-        <span className={`text-[10px] px-1.5 py-0.5 rounded border font-bold shrink-0 ${c.badge}`}>{lbl}</span>
+        <div className="flex items-center gap-1.5 shrink-0">
+          {canRestart && (
+            <button
+              onClick={handleRestart}
+              disabled={restarting}
+              className="text-[10px] px-1.5 py-0.5 rounded border font-bold
+                bg-blue-900/40 text-blue-300 border-blue-700/50
+                hover:bg-blue-800/60 active:scale-95 transition-all
+                disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {restarting ? '⟳' : '↺ YENİDEN'}
+            </button>
+          )}
+          <span className={`text-[10px] px-1.5 py-0.5 rounded border font-bold ${c.badge}`}>{lbl}</span>
+        </div>
       </div>
       <p className="text-gray-500 text-[11px] leading-snug pl-3.5">{s.detail}</p>
+      {restartMsg && (
+        <p className="text-blue-400 text-[10px] pl-3.5 mt-1">{restartMsg}</p>
+      )}
     </div>
   )
 }
@@ -185,6 +222,7 @@ export default function SystemPage() {
   const [loading, setLoading] = useState(true)
   const [lastUpdate, setLastUpdate] = useState('')
   const [logFilter, setLogFilter] = useState<string>('all')
+  const fetchRef = useRef<() => Promise<void>>()
 
   const fetchAll = useCallback(async () => {
     try {
@@ -196,6 +234,19 @@ export default function SystemPage() {
       setAi(aiData)
       setLastUpdate(new Date().toLocaleTimeString('tr-TR'))
     } catch { } finally { setLoading(false) }
+  }, [])
+
+  useEffect(() => { fetchRef.current = fetchAll }, [fetchAll])
+
+  const handleRestart = useCallback(async (serviceName: string) => {
+    const res = await fetch(`/api/admin/restart/${serviceName}`, { method: 'POST' })
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}))
+      throw new Error(body.error ?? 'Restart failed')
+    }
+    // Refresh after 3s to show new status
+    setTimeout(() => fetchRef.current?.(), 3000)
+    setTimeout(() => fetchRef.current?.(), 8000)
   }, [])
 
   useEffect(() => {
@@ -301,7 +352,7 @@ export default function SystemPage() {
             </div>
           </div>
           <div className="p-3 grid grid-cols-1 sm:grid-cols-2 gap-2">
-            {services.map(s => <ServiceCard key={s.name} s={s} />)}
+            {services.map(s => <ServiceCard key={s.name} s={s} onRestart={handleRestart} />)}
           </div>
         </div>
 
