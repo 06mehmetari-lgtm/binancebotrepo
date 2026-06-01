@@ -66,7 +66,7 @@ class DebateAgent:
     async def run_debate(self, symbol: str, features: dict, context: dict) -> DebateResult:
         votes = await asyncio.gather(
             self._technical_vote(features),
-            self._onchain_vote(context),
+            self._onchain_vote(features, context),
             self._sentiment_vote(context),
             self._macro_vote(context),
             self._bull_vote(features, context),
@@ -217,24 +217,34 @@ class DebateAgent:
     # ── Individual agent votes (rule-based, fast) ─────────────────────────────
 
     async def _technical_vote(self, f: dict) -> AgentVote:
-        rsi  = float(f.get("rsi_14", 50)) / 100
-        macd = float(f.get("macd_hist", 0))
-        adx  = float(f.get("adx_14", 0))
-        imb  = float(f.get("imbalance_5", 0))
+        rsi          = float(f.get("rsi_14", 50)) / 100
+        macd         = float(f.get("macd_hist", 0))
+        adx          = float(f.get("adx_14", 0))
+        imb          = float(f.get("imbalance_5", 0))
+        trend_align  = float(f.get("trend_alignment", 0))   # MTF: -1 to +1
+        rsi_1h       = float(f.get("rsi_14_1h", 50)) / 100  # 1h RSI normalized
+        va_pos       = float(f.get("va_position", 0))        # -1 discount / 0 inside / +1 premium
         score = (0.5 - rsi) * 2 + macd * 10 + imb * 0.5
+        score += trend_align * 0.3          # MTF confirmation
+        score += (0.5 - rsi_1h) * 0.4      # 1h RSI extra weight
+        score -= va_pos * 0.2               # at premium → slightly bearish bias
         if adx > 0.25:
             score *= 1.2
         signal = "long" if score > 0.2 else ("short" if score < -0.2 else "flat")
-        return AgentVote("technical", signal, min(abs(score), 1.0), {"rsi": rsi, "macd": macd})
+        return AgentVote("technical", signal, min(abs(score), 1.0), {"rsi": rsi, "macd": macd, "trend_align": trend_align})
 
-    async def _onchain_vote(self, ctx: dict) -> AgentVote:
-        funding = float(ctx.get("funding_rate", 0))
-        ls      = float(ctx.get("ls_ratio", 0))
-        liq     = float(ctx.get("liq_pressure", 0))
-        netflow = float(ctx.get("onchain_netflow", 0))
+    async def _onchain_vote(self, f: dict, ctx: dict) -> AgentVote:
+        funding   = float(ctx.get("funding_rate", 0))
+        ls        = float(ctx.get("ls_ratio", 0))
+        liq       = float(ctx.get("liq_pressure", 0))
+        netflow   = float(ctx.get("onchain_netflow", 0))
+        cvd_5m    = float(f.get("cvd_5m", 0))         # +1 = pure buy, -1 = pure sell
+        liq_ratio = float(f.get("liq_ratio_1h", 0))   # positive = more short liquidations (bullish)
         score = -funding * 100 - ls * 0.5 + netflow * 0.5 - liq * 0.3
+        score += cvd_5m * 0.4       # real-time buy/sell pressure
+        score += liq_ratio * 0.25   # liquidation cascade direction
         signal = "long" if score > 0.15 else ("short" if score < -0.15 else "flat")
-        return AgentVote("onchain", signal, min(abs(score), 1.0), {"funding": funding, "netflow": netflow})
+        return AgentVote("onchain", signal, min(abs(score), 1.0), {"funding": funding, "cvd_5m": cvd_5m})
 
     async def _sentiment_vote(self, ctx: dict) -> AgentVote:
         reddit = float(ctx.get("reddit_sentiment", 0))
@@ -254,23 +264,29 @@ class DebateAgent:
 
     async def _bull_vote(self, f: dict, ctx: dict) -> AgentVote:
         bull = 0
-        if float(f.get("rsi_14", 50)) < 35:            bull += 1
-        if float(f.get("imbalance_5", 0)) > 0.2:       bull += 1
-        if float(ctx.get("fear_greed", 50)) < 25:       bull += 1
-        if float(ctx.get("onchain_netflow", 0)) > 0.2:  bull += 1
-        if float(ctx.get("ls_ratio", 0)) < -0.3:        bull += 1
-        conf = bull / 5
-        return AgentVote("bull", "long" if conf > 0.4 else "flat", conf, {"bull_count": bull})
+        if float(f.get("rsi_14", 50)) < 35:              bull += 1
+        if float(f.get("imbalance_5", 0)) > 0.2:         bull += 1
+        if float(ctx.get("fear_greed", 50)) < 25:         bull += 1
+        if float(ctx.get("onchain_netflow", 0)) > 0.2:    bull += 1
+        if float(ctx.get("ls_ratio", 0)) < -0.3:          bull += 1
+        if float(f.get("cvd_5m", 0)) > 0.2:               bull += 1  # strong buy pressure
+        if float(f.get("bull_confluence", 0)) >= 2:        bull += 1  # both TFs agree bullish
+        if float(f.get("os_1h", 0)) == 1.0:               bull += 1  # 1h oversold reversal setup
+        conf = bull / 8
+        return AgentVote("bull", "long" if conf > 0.35 else "flat", conf, {"bull_count": bull})
 
     async def _bear_vote(self, f: dict, ctx: dict) -> AgentVote:
         bear = 0
-        if float(f.get("rsi_14", 50)) > 70:             bear += 1
-        if float(f.get("imbalance_5", 0)) < -0.2:       bear += 1
-        if float(ctx.get("fear_greed", 50)) > 80:        bear += 1
-        if float(ctx.get("funding_rate", 0)) > 0.002:    bear += 1
-        if float(ctx.get("vix_level", 20)) > 35:         bear += 1
-        conf = bear / 5
-        return AgentVote("bear", "short" if conf > 0.4 else "flat", conf, {"bear_count": bear})
+        if float(f.get("rsi_14", 50)) > 65:              bear += 1  # was 70
+        if float(f.get("imbalance_5", 0)) < -0.15:       bear += 1  # was -0.2
+        if float(ctx.get("fear_greed", 50)) > 75:         bear += 1  # was 80
+        if float(ctx.get("funding_rate", 0)) > 0.001:     bear += 1  # was 0.002
+        if float(ctx.get("vix_level", 20)) > 35:          bear += 1
+        if float(f.get("cvd_5m", 0)) < -0.2:              bear += 1  # strong sell pressure
+        if float(f.get("bear_confluence", 0)) >= 2:        bear += 1  # both TFs agree bearish
+        if float(f.get("ob_1h", 0)) == 1.0:               bear += 1  # 1h overbought reversal setup
+        conf = bear / 8
+        return AgentVote("bear", "short" if conf > 0.35 else "flat", conf, {"bear_count": bear})
 
     async def _neutral_vote(self, f: dict) -> AgentVote:
         adx = float(f.get("adx_14", 0))

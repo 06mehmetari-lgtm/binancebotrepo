@@ -11,6 +11,7 @@ from binance_ws import BinanceWebSocketManager
 from order_book import LocalOrderBook
 from crypto_signals import CryptoSignalCollector
 from symbol_discovery import fetch_top_symbols
+import liquidation_redis
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
@@ -102,7 +103,12 @@ async def main():
 
     redis = await aioredis.from_url(REDIS_URL)
     signals = CryptoSignalCollector(REDIS_URL, symbols)
-    await asyncio.gather(*ws_tasks, signals.start(), kline_cache_loop(redis, symbols))
+    await asyncio.gather(
+        *ws_tasks,
+        signals.start(),
+        kline_cache_loop(redis, symbols),
+        liquidation_redis.run(redis),
+    )
 
 
 if __name__ == "__main__":

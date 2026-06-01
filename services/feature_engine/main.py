@@ -11,6 +11,9 @@ import redis.asyncio as aioredis
 from price_features import PriceFeatureBuilder
 from orderbook_features import OrderBookFeatureBuilder
 from crypto_features import CryptoFeatureBuilder
+from cvd_features import CVDFeatureBuilder
+from volume_profile import VolumeProfileBuilder
+from mtf_features import MTFFeatureBuilder
 from drift_detector import DriftDetector
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
@@ -20,12 +23,14 @@ REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379")
 SYMBOLS_RAW = os.getenv("SYMBOLS", "AUTO")
 TOP_N = int(os.getenv("TOP_SYMBOLS", "500"))
 
-# Symbol refresh interval — re-scan Redis every 5 minutes to pick up new symbols
 SYMBOL_REFRESH_INTERVAL = 300
 
-price_builder = PriceFeatureBuilder()
-ob_builder = OrderBookFeatureBuilder()
-crypto_builder = CryptoFeatureBuilder()
+price_builder   = PriceFeatureBuilder()
+ob_builder      = OrderBookFeatureBuilder()
+crypto_builder  = CryptoFeatureBuilder()
+cvd_builder     = CVDFeatureBuilder()
+vp_builder      = VolumeProfileBuilder()
+mtf_builder     = MTFFeatureBuilder()
 drift_detectors: dict[str, DriftDetector] = {}
 
 OHLCV_HISTORY: dict[str, list] = {}
@@ -104,25 +109,40 @@ async def bootstrap_klines(symbols: list[str]):
 
 async def compute_features(redis: aioredis.Redis, symbol: str) -> dict | None:
     try:
-        ob_raw = await redis.lindex(f"binance:ob:{symbol.lower()}", 0)
-        ob_snapshot = json.loads(ob_raw)["data"] if ob_raw else {}
+        sym_lo = symbol.lower()
+        pipeline = redis.pipeline()
+        pipeline.lindex(f"binance:ob:{sym_lo}", 0)        # 0
+        pipeline.lrange(f"binance:trade:{sym_lo}", 0, 499) # 1 — last 500 trades for CVD
+        pipeline.lrange(f"liq:recent:{symbol}", 0, 199)   # 2 — liquidations
+        pipeline.get(f"funding:{symbol}")                  # 3
+        pipeline.get(f"oi:{symbol}")                       # 4
+        pipeline.get(f"ls_ratio:{symbol}")                 # 5
+        pipeline.get("sentiment:fear_greed")               # 6
+        pipeline.get(f"sentiment:reddit:{symbol}")         # 7
+        pipeline.get("macro:vix")                          # 8
+        pipeline.get(f"klines:1h:{symbol}")                # 9
+        res = await pipeline.exec()
 
-        funding_raw = await redis.get(f"funding:{symbol}")
-        oi_raw = await redis.get(f"oi:{symbol}")
-        ls_raw = await redis.get(f"ls_ratio:{symbol}")
-        fg_raw = await redis.get("sentiment:fear_greed")
-        reddit_raw = await redis.get(f"sentiment:reddit:{symbol}")
-        vix_raw = await redis.get("macro:vix")
+        ob_raw      = res[0][1]
+        trades_raw  = res[1][1] or []
+        liq_raw     = res[2][1] or []
+        funding_raw = res[3][1]
+        oi_raw      = res[4][1]
+        ls_raw      = res[5][1]
+        fg_raw      = res[6][1]
+        reddit_raw  = res[7][1]
+        vix_raw     = res[8][1]
+        klines_1h   = res[9][1]
+
+        ob_snapshot = json.loads(ob_raw)["data"] if ob_raw else {}
 
         crypto: dict = {}
         if funding_raw: crypto.update(json.loads(funding_raw))
-        if oi_raw: crypto.update(json.loads(oi_raw))
-        if ls_raw: crypto.update(json.loads(ls_raw))
-        if fg_raw:
-            fg = json.loads(fg_raw)
-            crypto["fear_greed"] = fg.get("value", 50)
-        if reddit_raw: crypto["reddit_sentiment"] = json.loads(reddit_raw).get("score", 0)
-        if vix_raw: crypto["vix_level"] = json.loads(vix_raw).get("value", 20)
+        if oi_raw:      crypto.update(json.loads(oi_raw))
+        if ls_raw:      crypto.update(json.loads(ls_raw))
+        if fg_raw:      crypto["fear_greed"]      = json.loads(fg_raw).get("value", 50)
+        if reddit_raw:  crypto["reddit_sentiment"] = json.loads(reddit_raw).get("score", 0)
+        if vix_raw:     crypto["vix_level"]        = json.loads(vix_raw).get("value", 20)
 
         history = OHLCV_HISTORY.get(symbol, [])
         if len(history) < 30:
@@ -134,20 +154,26 @@ async def compute_features(redis: aioredis.Redis, symbol: str) -> dict | None:
             return None
         last_row = price_feats.iloc[-1].to_dict()
 
-        ob_feats = ob_builder.build(ob_snapshot)
+        ob_feats     = ob_builder.build(ob_snapshot)
         crypto_feats = crypto_builder.build(crypto)
+        cvd_feats    = cvd_builder.build(trades_raw, liq_raw)
+        vp_feats     = vp_builder.build(history)
+        mtf_feats    = mtf_builder.build(klines_1h, last_row)
 
         features: dict = {}
         for k, v in last_row.items():
-            features[k] = float(v) if v == v else 0.0  # NaN → 0
+            features[k] = float(v) if v == v else 0.0
         features.update(ob_feats)
         features.update(crypto_feats)
-        features["symbol"] = symbol
+        features.update(cvd_feats)
+        features.update(vp_feats)
+        features.update(mtf_feats)
+        features["symbol"]    = symbol
         features["timestamp"] = time.time()
 
         if symbol not in drift_detectors:
             drift_detectors[symbol] = DriftDetector()
-        rsi = features.get("rsi_14", 50) / 100
+        rsi   = features.get("rsi_14", 50) / 100
         drift = drift_detectors[symbol].update(rsi)
         features["drift_status"] = "DRIFTING" if drift else "STABLE"
 
