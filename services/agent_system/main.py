@@ -7,6 +7,7 @@ import time
 import redis.asyncio as aioredis
 
 from debate_agent import DebateAgent
+from regime_router import get_weights_for_regime
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
@@ -72,13 +73,35 @@ async def run_debate_for_symbol(redis: aioredis.Redis, symbol: str):
         )
 
 
+_current_regime: str = "unknown"
+
+
 async def weight_update_loop(redis: aioredis.Redis):
-    """Periodically load updated weights from Redis."""
+    """Reload learned weights + apply regime multipliers every 5 minutes."""
+    global _current_regime
     while True:
-        weights_raw = await redis.get("agents:weights")
-        if weights_raw:
-            weights = json.loads(weights_raw)
-            debate.weights.update(weights)
+        try:
+            # Learned accuracy weights (updated by feedback_writer)
+            learned_raw = await redis.get("agents:weights")
+            learned = json.loads(learned_raw) if learned_raw else None
+
+            # Current global regime (from context_engine via BTC context)
+            ctx_raw = await redis.get("context:latest:BTCUSDT")
+            if ctx_raw:
+                ctx = json.loads(ctx_raw)
+                regime = ctx.get("regime", "unknown")
+                if regime != _current_regime:
+                    log.info(f"RegimeRouter: regime changed {_current_regime} → {regime}")
+                    _current_regime = regime
+
+            # Combine learned weights + regime multipliers
+            new_weights = get_weights_for_regime(_current_regime, learned)
+            debate.weights.update(new_weights)
+
+            # Persist blended weights to Redis for dashboard display
+            await redis.set("agents:weights", json.dumps(new_weights), ex=600)
+        except Exception as e:
+            log.warning(f"Weight update error: {e}")
         await asyncio.sleep(300)
 
 

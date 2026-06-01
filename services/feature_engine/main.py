@@ -15,6 +15,8 @@ from cvd_features import CVDFeatureBuilder
 from volume_profile import VolumeProfileBuilder
 from mtf_features import MTFFeatureBuilder
 from drift_detector import DriftDetector
+from ml_signal import MLSignalPredictor
+from online_learner import OnlineLearner
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
@@ -32,6 +34,8 @@ cvd_builder     = CVDFeatureBuilder()
 vp_builder      = VolumeProfileBuilder()
 mtf_builder     = MTFFeatureBuilder()
 drift_detectors: dict[str, DriftDetector] = {}
+ml_predictor    = MLSignalPredictor()
+online_learner  = OnlineLearner(ml_predictor)
 
 OHLCV_HISTORY: dict[str, list] = {}
 
@@ -177,6 +181,9 @@ async def compute_features(redis: aioredis.Redis, symbol: str) -> dict | None:
         drift = drift_detectors[symbol].update(rsi)
         features["drift_status"] = "DRIFTING" if drift else "STABLE"
 
+        # ML signal score — heuristic until first retrain, then learned model
+        features["ml_score"] = round(ml_predictor.predict(features), 4)
+
         return features
 
     except Exception as e:
@@ -202,8 +209,26 @@ async def update_ohlcv(redis: aioredis.Redis, symbol: str):
             OHLCV_HISTORY[symbol] = history[-500:]
 
 
+async def _model_refresh_loop(redis: aioredis.Redis):
+    """Reload ML model from Redis every 10 minutes (in case online_learner updated it)."""
+    while True:
+        await asyncio.sleep(600)
+        try:
+            model_bytes = await redis.get("ml:model:v2")
+            if model_bytes:
+                from online_learner import MODEL_VERSION_KEY
+                version_raw = await redis.get(MODEL_VERSION_KEY)
+                version = int(version_raw) if version_raw else 0
+                if version > ml_predictor._model_version:
+                    ml_predictor.load_bytes(model_bytes, version)
+                    log.info(f"ML model refreshed to version {version}")
+        except Exception as e:
+            log.warning(f"ML model refresh error: {e}")
+
+
 async def main():
     redis = await aioredis.from_url(REDIS_URL)
+    redis_learner = await aioredis.from_url(REDIS_URL)
 
     # Wait for data_ingestion to populate Redis keys (retry up to 2 minutes)
     active_symbols: list[str] = []
@@ -226,8 +251,8 @@ async def main():
     active_set: set[str] = set(active_symbols)
     last_refresh = time.time()
 
-    BATCH = 50  # concurrent symbols per gather call
-    FEAT_TTL = 300  # seconds — longer TTL to handle large symbol sets
+    BATCH = 50
+    FEAT_TTL = 300
 
     async def _process(symbol: str):
         try:
@@ -236,25 +261,38 @@ async def main():
             if features:
                 await redis.set(f"features:latest:{symbol}", json.dumps(features), ex=FEAT_TTL)
                 await redis.publish(f"ch:features:{symbol}", symbol)
+                await redis.set(
+                    f"ml:signal_features:{symbol}",
+                    json.dumps(ml_predictor.extract_vector(features)),
+                    ex=FEAT_TTL * 4,
+                )
         except Exception as e:
             log.error(f"Feature error [{symbol}]: {e}")
 
-    while True:
-        if time.time() - last_refresh > SYMBOL_REFRESH_INTERVAL:
-            new_symbols = await discover_symbols_from_redis(redis)
-            if new_symbols:
-                added = set(new_symbols) - active_set
-                if added:
-                    log.info(f"New symbols discovered: {len(added)}")
-                    await bootstrap_klines(list(added))
-                active_set = set(new_symbols)
-            last_refresh = time.time()
+    async def feature_loop():
+        nonlocal active_set, last_refresh
+        while True:
+            if time.time() - last_refresh > SYMBOL_REFRESH_INTERVAL:
+                new_symbols = await discover_symbols_from_redis(redis)
+                if new_symbols:
+                    added = set(new_symbols) - active_set
+                    if added:
+                        log.info(f"New symbols discovered: {len(added)}")
+                        await bootstrap_klines(list(added))
+                    active_set = set(new_symbols)
+                last_refresh = time.time()
 
-        symbols_list = list(active_set)
-        for i in range(0, len(symbols_list), BATCH):
-            await asyncio.gather(*[_process(s) for s in symbols_list[i:i + BATCH]])
+            symbols_list = list(active_set)
+            for i in range(0, len(symbols_list), BATCH):
+                await asyncio.gather(*[_process(s) for s in symbols_list[i:i + BATCH]])
 
-        await asyncio.sleep(1)
+            await asyncio.sleep(1)
+
+    await asyncio.gather(
+        feature_loop(),
+        online_learner.run(redis_learner),
+        _model_refresh_loop(redis),
+    )
 
 
 if __name__ == "__main__":

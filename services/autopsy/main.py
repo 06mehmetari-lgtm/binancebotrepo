@@ -9,6 +9,7 @@ import redis.asyncio as aioredis
 from trade_analyzer import TradeAnalyzer
 from question_engine import QuestionEngine
 from memory_writer import MemoryWriter
+from feedback_writer import write_feedback
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
@@ -30,8 +31,9 @@ async def process_closed_trade(redis: aioredis.Redis, db, trade_data: dict):
     result = analyzer.analyze(trade_data, ctx)
     log.info(f"Autopsy: {symbol} pnl={result['pnl_pct']:.2%} cat={result['error_category']}")
 
-    # Write to memory
+    # Write to memory and feed outcome back to ML learner + agent accuracy tracker
     await memory_writer.write(trade_data, result, ctx)
+    await write_feedback(redis, trade_data, result)
 
     # Penalize genome if loss
     genome_id = trade_data.get("genome_id")

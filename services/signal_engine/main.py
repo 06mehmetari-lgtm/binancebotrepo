@@ -9,6 +9,8 @@ import redis.asyncio as aioredis
 from signal_generator import SignalGenerator
 from kelly_calculator import KellyCalculator
 from signal_validator import SignalValidator
+from atr_stoploss import ATRStopLoss
+from portfolio_guard import PortfolioGuard
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
@@ -20,9 +22,11 @@ BATCH_SIZE = 50
 SIG_TTL = 120
 STATS_KEY = "signal_engine:stats"
 
-generator = SignalGenerator()
-kelly = KellyCalculator()
-validator = SignalValidator()
+generator      = SignalGenerator()
+kelly          = KellyCalculator()
+validator      = SignalValidator()
+atr_calculator = ATRStopLoss()
+port_guard     = PortfolioGuard()
 
 # Per-symbol win/loss stats — persisted to Redis for survival across restarts
 STATS: dict[str, dict] = {}
@@ -64,14 +68,28 @@ async def push_activity(redis: aioredis.Redis, event: dict):
     await redis.ltrim("activity:feed", 0, ACTIVITY_MAX - 1)
 
 
+async def _get_open_positions(redis: aioredis.Redis) -> list[dict]:
+    """Fetch all open positions from Redis for portfolio guard."""
+    keys = await redis.keys("oms:position:*")
+    positions = []
+    for k in keys:
+        raw = await redis.get(k)
+        if raw:
+            try:
+                positions.append(json.loads(raw))
+            except Exception:
+                pass
+    return positions
+
+
 async def generate_signal(redis: aioredis.Redis, symbol: str) -> dict | None:
-    context_raw = await redis.get(f"context:latest:{symbol}")
-    agents_raw = await redis.get(f"agents:verdicts:{symbol}")
+    context_raw  = await redis.get(f"context:latest:{symbol}")
+    agents_raw   = await redis.get(f"agents:verdicts:{symbol}")
     features_raw = await redis.get(f"features:latest:{symbol}")
 
-    context = json.loads(context_raw) if context_raw else {}
-    agent_verdicts = json.loads(agents_raw) if agents_raw else []
-    features = json.loads(features_raw) if features_raw else None
+    context        = json.loads(context_raw)  if context_raw  else {}
+    agent_verdicts = json.loads(agents_raw)   if agents_raw   else []
+    features       = json.loads(features_raw) if features_raw else None
 
     if not features:
         return None
@@ -81,9 +99,66 @@ async def generate_signal(redis: aioredis.Redis, symbol: str) -> dict | None:
         stats["win_rate"], stats["avg_win"], stats["avg_loss"], max_fraction=0.05
     )
 
-    signal = generator.generate(symbol, agent_verdicts, kelly_fraction, features)
+    # ── ATR-based stop-loss / take-profit ──────────────────────────────────
+    atr_pct = float(features.get("atr_pct", 1.0) or 1.0)
+    regime  = context.get("regime", "unknown")
+    stop_mult, tp_mult = atr_calculator.regime_multipliers(regime)
+
+    # ── ML score from feature engine ───────────────────────────────────────
+    ml_score = float(features.get("ml_score", 0.0) or 0.0)
+
+    # Preliminary direction guess for stop-loss calc (will be confirmed below)
+    signal = generator.generate(
+        symbol, agent_verdicts, kelly_fraction, features,
+        ml_score=ml_score,
+    )
     if signal is None:
         return None
+
+    stops = atr_calculator.calculate(signal.direction, atr_pct, stop_mult, tp_mult)
+
+    # Re-generate with stop/TP included
+    signal = generator.generate(
+        symbol, agent_verdicts, kelly_fraction, features,
+        ml_score=ml_score,
+        stop_pct=stops["stop_pct"],
+        tp_pct=stops["tp_pct"],
+        risk_reward=stops["risk_reward"],
+    )
+
+    # ── Portfolio guard ────────────────────────────────────────────────────
+    if signal.direction != "flat":
+        open_positions = await _get_open_positions(redis)
+        allowed, pg_reason, conf_mod = port_guard.check(
+            symbol, signal.direction, open_positions, features
+        )
+        if not allowed:
+            # Convert to flat with reject reason
+            signal_dict = {
+                "symbol": symbol,
+                "direction": "flat",
+                "confidence": signal.confidence,
+                "kelly_fraction": kelly_fraction,
+                "source": signal.source,
+                "timestamp": signal.timestamp,
+                "crisis_level": context.get("crisis_level", 0),
+                "drift_status": context.get("drift_status", features.get("drift_status", "STABLE")),
+                "regime": regime,
+                "agent_count": len(agent_verdicts),
+                "rsi": round(float(features.get("rsi_14", 50) or 50), 1),
+                "macd_hist": round(float(features.get("macd_hist", 0) or 0), 4),
+                "volume_ratio": round(float(features.get("volume_ratio", 1) or 1), 2),
+                "ml_score": ml_score,
+                "stop_pct": 0.0, "tp_pct": 0.0, "risk_reward": 0.0,
+                "is_valid": False,
+                "reject_reason": f"portfolio_guard: {pg_reason}",
+            }
+            return signal_dict
+        # Apply confidence penalty for correlated positions
+        adjusted_conf = max(0.0, signal.confidence + conf_mod)
+        if adjusted_conf < signal.confidence:
+            from dataclasses import replace
+            signal = replace(signal, confidence=round(adjusted_conf, 4))
 
     signal_dict = {
         "symbol": symbol,
@@ -94,11 +169,15 @@ async def generate_signal(redis: aioredis.Redis, symbol: str) -> dict | None:
         "timestamp": signal.timestamp,
         "crisis_level": context.get("crisis_level", 0),
         "drift_status": context.get("drift_status", features.get("drift_status", "STABLE")),
-        "regime": context.get("regime", "unknown"),
+        "regime": regime,
         "agent_count": len(agent_verdicts),
         "rsi": round(float(features.get("rsi_14", 50) or 50), 1),
         "macd_hist": round(float(features.get("macd_hist", 0) or 0), 4),
         "volume_ratio": round(float(features.get("volume_ratio", 1) or 1), 2),
+        "ml_score": ml_score,
+        "stop_pct": signal.stop_pct,
+        "tp_pct": signal.tp_pct,
+        "risk_reward": signal.risk_reward,
     }
 
     is_valid, reason = validator.validate(signal_dict, context)
