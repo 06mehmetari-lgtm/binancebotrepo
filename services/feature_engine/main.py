@@ -125,18 +125,18 @@ async def compute_features(redis: aioredis.Redis, symbol: str) -> dict | None:
         pipeline.get(f"sentiment:reddit:{symbol}")         # 7
         pipeline.get("macro:vix")                          # 8
         pipeline.get(f"klines:1h:{symbol}")                # 9
-        res = await pipeline.exec()
+        res = await pipeline.execute()
 
-        ob_raw      = res[0][1]
-        trades_raw  = res[1][1] or []
-        liq_raw     = res[2][1] or []
-        funding_raw = res[3][1]
-        oi_raw      = res[4][1]
-        ls_raw      = res[5][1]
-        fg_raw      = res[6][1]
-        reddit_raw  = res[7][1]
-        vix_raw     = res[8][1]
-        klines_1h   = res[9][1]
+        ob_raw      = res[0]
+        trades_raw  = res[1] or []
+        liq_raw     = res[2] or []
+        funding_raw = res[3]
+        oi_raw      = res[4]
+        ls_raw      = res[5]
+        fg_raw      = res[6]
+        reddit_raw  = res[7]
+        vix_raw     = res[8]
+        klines_1h   = res[9]
 
         ob_snapshot = json.loads(ob_raw)["data"] if ob_raw else {}
 
