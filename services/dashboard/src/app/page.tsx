@@ -114,6 +114,7 @@ export default function Home() {
   // Top Performers: merge backtest + current signal data
   const topPerformers = backtest?.results
     ? Object.entries(backtest.results)
+        .filter(([sym]) => typeof sym === 'string' && sym.endsWith('USDT'))
         .map(([sym, bt]) => ({
           symbol: sym,
           win_rate: Number(bt.win_rate_pct ?? 0) || 0,

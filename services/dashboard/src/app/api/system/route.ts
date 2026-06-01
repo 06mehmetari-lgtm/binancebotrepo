@@ -101,17 +101,17 @@ export async function GET() {
       },
       feature_engine: {
         name: 'feature_engine', label: 'Feature Engine',
-        status: featureKeys.length > 100 ? (isStale(featFresh) ? 'warn' : 'ok') : featureKeys.length > 0 ? 'warn' : 'error',
+        status: featureKeys.length > 0 ? (isStale(featFresh) ? 'warn' : 'ok') : 'error',
         detail: `${featureKeys.length} özellik${featFresh != null ? ` · ${featFresh}s önce` : ''}`,
       },
       signal_engine: {
         name: 'signal_engine', label: 'Signal Engine',
-        status: signalKeys.length > 100 ? (isStale(sigFresh) ? 'warn' : 'ok') : signalKeys.length > 0 ? 'warn' : 'error',
+        status: signalKeys.length > 0 ? (isStale(sigFresh) ? 'warn' : 'ok') : 'error',
         detail: `${signalKeys.length} sinyal${sigFresh != null ? ` · ${sigFresh}s önce` : ''}`,
       },
       context_engine: {
         name: 'context_engine', label: 'Context Engine',
-        status: contextKeys.length > 50 ? 'ok' : contextKeys.length > 0 ? 'warn' : 'error',
+        status: contextKeys.length > 0 ? 'ok' : 'error',
         detail: `${contextKeys.length} bağlam · ${regime ?? '—'}`,
       },
       agent_system: {
