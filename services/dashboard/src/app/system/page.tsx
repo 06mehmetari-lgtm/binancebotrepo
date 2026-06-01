@@ -27,25 +27,36 @@ interface SystemData {
   server_time: number
 }
 
+interface AILearningData {
+  signal_distribution: { long: number; short: number; flat: number; total: number }
+  recent_signals: { symbol: string; direction: string; confidence: number; regime: string }[]
+  agent_weights: { name: string; label: string; weight: number }[]
+  sample_votes: { agent: string; signal: string; confidence: number }[]
+  last_run_sec: number | null
+  neat_log: Record<string, unknown>[]
+  activity_log: Record<string, unknown>[]
+  sampled_symbols: number
+}
+
 const OVERALL_CFG = {
-  healthy:  { color: 'text-green-400',  bg: 'bg-green-900/20 border-green-700/40',  dot: 'bg-green-400',             label: 'TÜM SİSTEMLER SAĞLIKLI', icon: '✓' },
-  degraded: { color: 'text-yellow-400', bg: 'bg-yellow-900/20 border-yellow-700/40', dot: 'bg-yellow-400 animate-pulse', label: 'BAZI SERVİSLER UYARIDA',   icon: '⚠' },
-  critical: { color: 'text-red-400',    bg: 'bg-red-900/20 border-red-700/40',       dot: 'bg-red-500 animate-pulse',  label: 'KRİTİK SORUN MEVCUT',     icon: '✗' },
+  healthy:  { color: 'text-green-400',  bg: 'bg-green-900/20 border-green-700/40',   dot: 'bg-green-400',              label: 'TÜM SİSTEMLER SAĞLIKLI', icon: '✓' },
+  degraded: { color: 'text-yellow-400', bg: 'bg-yellow-900/20 border-yellow-700/40', dot: 'bg-yellow-400 animate-pulse', label: 'BAZI SERVİSLER UYARIDA',  icon: '⚠' },
+  critical: { color: 'text-red-400',    bg: 'bg-red-900/20 border-red-700/40',       dot: 'bg-red-500 animate-pulse',   label: 'KRİTİK SORUN MEVCUT',    icon: '✗' },
 }
-
 const SVC_CFG = {
-  ok:      { ring: 'border-green-800/40 bg-green-950/20',  dot: 'bg-green-400',              txt: 'text-green-400',  badge: 'bg-green-900/40 text-green-400 border-green-700/50' },
+  ok:      { ring: 'border-green-800/40 bg-green-950/20',   dot: 'bg-green-400',               txt: 'text-green-400',  badge: 'bg-green-900/40 text-green-400 border-green-700/50' },
   warn:    { ring: 'border-yellow-800/40 bg-yellow-950/20', dot: 'bg-yellow-400 animate-pulse', txt: 'text-yellow-400', badge: 'bg-yellow-900/30 text-yellow-400 border-yellow-700/50' },
-  error:   { ring: 'border-red-800/50 bg-red-950/20',      dot: 'bg-red-500 animate-pulse',  txt: 'text-red-400',   badge: 'bg-red-900/30 text-red-400 border-red-700/50' },
-  unknown: { ring: 'border-gray-800/40 bg-gray-800/10',    dot: 'bg-gray-600',              txt: 'text-gray-500',  badge: 'bg-gray-800/50 text-gray-500 border-gray-700/40' },
+  error:   { ring: 'border-red-800/50 bg-red-950/20',       dot: 'bg-red-500 animate-pulse',   txt: 'text-red-400',   badge: 'bg-red-900/30 text-red-400 border-red-700/50' },
+  unknown: { ring: 'border-gray-800/40 bg-gray-800/10',     dot: 'bg-gray-600',                txt: 'text-gray-500',  badge: 'bg-gray-800/50 text-gray-500 border-gray-700/40' },
 }
-
 const CRISIS_LABEL = ['Normal', 'Dikkat', 'Uyarı', 'Alarm', 'KRİZ']
 const CRISIS_COLOR = ['text-green-400', 'text-yellow-400', 'text-orange-400', 'text-red-400', 'text-red-500']
 const REGIME_COLOR: Record<string, string> = {
   trending_up: 'text-green-400', trending_down: 'text-red-400',
   ranging: 'text-blue-400', volatile: 'text-yellow-400',
 }
+const DIR_COLOR: Record<string, string> = { long: 'text-green-400', short: 'text-red-400', flat: 'text-gray-500' }
+const DIR_BG:    Record<string, string> = { long: 'bg-green-900/30 border-green-700/50', short: 'bg-red-900/30 border-red-700/50', flat: 'bg-gray-800/50 border-gray-700/40' }
 
 function fmtSec(s: number | null): string {
   if (s == null) return '—'
@@ -56,7 +67,7 @@ function fmtSec(s: number | null): string {
 
 function ServiceCard({ s }: { s: SvcInfo }) {
   const c = SVC_CFG[s.status]
-  const statusLabel = s.status === 'ok' ? 'OK' : s.status === 'warn' ? 'UYARI' : s.status === 'error' ? 'HATA' : '?'
+  const lbl = s.status === 'ok' ? 'OK' : s.status === 'warn' ? 'UYARI' : s.status === 'error' ? 'HATA' : '?'
   return (
     <div className={`rounded-lg border p-3 ${c.ring}`}>
       <div className="flex items-start justify-between gap-2 mb-1.5">
@@ -64,7 +75,7 @@ function ServiceCard({ s }: { s: SvcInfo }) {
           <span className={`w-2 h-2 rounded-full shrink-0 mt-0.5 ${c.dot}`} />
           <span className="text-white text-xs font-semibold truncate">{s.label}</span>
         </div>
-        <span className={`text-[10px] px-1.5 py-0.5 rounded border font-bold shrink-0 ${c.badge}`}>{statusLabel}</span>
+        <span className={`text-[10px] px-1.5 py-0.5 rounded border font-bold shrink-0 ${c.badge}`}>{lbl}</span>
       </div>
       <p className="text-gray-500 text-[11px] leading-snug pl-3.5">{s.detail}</p>
     </div>
@@ -81,9 +92,7 @@ function PipeBar({ label, count, target, fresh, color }: { label: string; count:
       <div className="flex items-center justify-between text-xs">
         <span className="text-gray-400">{label}</span>
         <div className="flex items-center gap-2">
-          {fresh != null && (
-            <span className={`text-[10px] font-mono ${stale ? 'text-yellow-400' : 'text-green-400'}`}>{fmtSec(fresh)}</span>
-          )}
+          {fresh != null && <span className={`text-[10px] font-mono ${stale ? 'text-yellow-400' : 'text-green-400'}`}>{fmtSec(fresh)}</span>}
           <span className={`font-mono font-bold ${valColor}`}>{count.toLocaleString()}</span>
         </div>
       </div>
@@ -106,24 +115,90 @@ function FitnessBar({ value, max = 1 }: { value: number; max?: number }) {
   )
 }
 
+function LogLine({ e }: { e: Record<string, unknown> }) {
+  const t = e.type as string | undefined
+  const ts = e.time as number | undefined
+  const ago = ts ? (() => {
+    const s = Math.floor(Date.now() / 1000 - ts)
+    if (s < 60) return `${s}s`
+    if (s < 3600) return `${Math.floor(s / 60)}dk`
+    return `${Math.floor(s / 3600)}sa`
+  })() : '—'
+
+  const dir = e.direction as string | undefined
+  let icon = '◉', textColor = 'text-gray-500'
+  if (t === 'scan_summary') { icon = '⟳'; textColor = 'text-blue-400' }
+  else if (t === 'signal' && dir === 'long')  { icon = '▲'; textColor = 'text-green-400' }
+  else if (t === 'signal' && dir === 'short') { icon = '▼'; textColor = 'text-red-400' }
+  else if (t === 'regime_change') { icon = '⇄'; textColor = 'text-purple-400' }
+  else if (t === 'trade_open')    { icon = '◆'; textColor = 'text-yellow-400' }
+  else if (t === 'trade_close')   { icon = '◇'; textColor = 'text-cyan-400' }
+  else if (t === 'error')         { icon = '✗'; textColor = 'text-red-400' }
+  else if (t === 'warning')       { icon = '⚠'; textColor = 'text-yellow-400' }
+  else if (t === 'rsi_alert')     { icon = '⚡'; textColor = 'text-orange-400' }
+
+  return (
+    <div className="flex items-start gap-2 px-3 py-1.5 hover:bg-gray-800/30 text-[11px] font-mono border-b border-gray-800/30">
+      <span className={`shrink-0 mt-0.5 ${textColor}`}>{icon}</span>
+      <div className="flex-1 min-w-0">
+        {e.symbol != null && <span className="text-white font-bold mr-1">{String(e.symbol)}</span>}
+        {t === 'scan_summary'
+          ? <span className="text-blue-300">{String(e.total ?? '')} coin · ▲{String(e.long ?? '')} ▼{String(e.short ?? '')} ={String(e.flat ?? '')}</span>
+          : t === 'signal'
+          ? <span className={dir === 'long' ? 'text-green-300' : 'text-red-300'}>
+              {String(dir ?? '').toUpperCase()} {Math.round(((e.confidence as number) ?? 0) * 100)}% · {String(e.regime ?? '')}
+            </span>
+          : t === 'regime_change'
+          ? <span className="text-purple-300">rejim → {String(e.regime ?? '')}</span>
+          : t === 'trade_open'
+          ? <span className="text-yellow-300">AÇILIYOR {String(e.direction ?? '')} @ ${Number(e.price ?? 0).toFixed(2)}</span>
+          : t === 'trade_close'
+          ? <span className="text-cyan-300">KAPANIYOR pnl=${Number(e.pnl ?? 0).toFixed(2)}</span>
+          : t === 'rsi_alert'
+          ? <span className="text-orange-300">RSI {Number(e.rsi ?? 0).toFixed(1)}</span>
+          : <span className="text-gray-400">{String(t ?? '')} {e.message ? String(e.message) : ''}</span>}
+      </div>
+      <span className="text-gray-700 shrink-0">{ago}</span>
+    </div>
+  )
+}
+
+function SignalDistBar({ label, pct, color }: { label: string; pct: number; color: string }) {
+  return (
+    <div className="flex items-center gap-2 text-xs">
+      <span className={`w-10 text-right font-bold ${color}`}>{pct}%</span>
+      <div className="flex-1 h-2.5 bg-gray-800 rounded-full overflow-hidden">
+        <div className={`h-full rounded-full transition-all duration-700 ${color.replace('text-', 'bg-')}`} style={{ width: `${pct}%` }} />
+      </div>
+      <span className="text-gray-500 w-12">{label}</span>
+    </div>
+  )
+}
+
 export default function SystemPage() {
-  const [data, setData] = useState<SystemData | null>(null)
+  const [data, setData]     = useState<SystemData | null>(null)
+  const [ai, setAi]         = useState<AILearningData | null>(null)
   const [loading, setLoading] = useState(true)
   const [lastUpdate, setLastUpdate] = useState('')
+  const [logFilter, setLogFilter] = useState<string>('all')
 
-  const fetchData = useCallback(async () => {
+  const fetchAll = useCallback(async () => {
     try {
-      const d = await fetch('/api/system').then(r => r.json())
-      setData(d)
+      const [sys, aiData] = await Promise.all([
+        fetch('/api/system').then(r => r.json()),
+        fetch('/api/ai-learning').then(r => r.json()),
+      ])
+      setData(sys)
+      setAi(aiData)
       setLastUpdate(new Date().toLocaleTimeString('tr-TR'))
     } catch { } finally { setLoading(false) }
   }, [])
 
   useEffect(() => {
-    fetchData()
-    const t = setInterval(fetchData, 5000)
+    fetchAll()
+    const t = setInterval(fetchAll, 5000)
     return () => clearInterval(t)
-  }, [fetchData])
+  }, [fetchAll])
 
   if (loading) return (
     <div className="flex items-center justify-center mt-32 gap-3 text-gray-500">
@@ -131,21 +206,27 @@ export default function SystemPage() {
       <span className="text-sm">Sistem durumu yükleniyor...</span>
     </div>
   )
-
   if (!data || 'error' in data) return (
     <div className="text-red-400 text-sm p-8 text-center">Sistem verisi alınamadı — Redis bağlantısı kontrol edin</div>
   )
 
-  const overall = OVERALL_CFG[data.overall_status]
-  const services = Object.values(data.services)
-  const ai = data.ai_learning
-  const pipe = data.pipeline
-  const mkt = data.market
-  const pos = data.positions
-
-  const okCount = services.filter(s => s.status === 'ok').length
+  const overall   = OVERALL_CFG[data.overall_status]
+  const services  = Object.values(data.services)
+  const sysAi     = data.ai_learning
+  const pipe      = data.pipeline
+  const mkt       = data.market
+  const pos       = data.positions
+  const okCount   = services.filter(s => s.status === 'ok').length
   const warnCount = data.status_counts.warn ?? 0
   const errCount  = data.status_counts.error ?? 0
+
+  // Log filtering
+  const logEntries = ai?.activity_log ?? data.activity
+  const filteredLogs = logFilter === 'all' ? logEntries
+    : logFilter === 'trade' ? logEntries.filter(e => ['trade_open', 'trade_close'].includes(String((e as Record<string, unknown>).type ?? '')))
+    : logFilter === 'signal' ? logEntries.filter(e => String((e as Record<string, unknown>).type ?? '') === 'signal')
+    : logFilter === 'error' ? logEntries.filter(e => ['error', 'warning'].includes(String((e as Record<string, unknown>).type ?? '')))
+    : logEntries
 
   return (
     <div className="space-y-4">
@@ -153,8 +234,8 @@ export default function SystemPage() {
       {/* ── Header ── */}
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
-          <h1 className="text-white font-bold text-base">🖥 Sistem Durumu</h1>
-          <p className="text-gray-500 text-xs mt-0.5">Tüm servisler, yapay zeka ve pipeline — anlık izleme</p>
+          <h1 className="text-white font-bold text-base">🖥 Sistem &amp; AI İzleme</h1>
+          <p className="text-gray-500 text-xs mt-0.5">Tüm servisler, yapay zeka öğrenmesi ve canlı loglar</p>
         </div>
         <span className="text-xs text-gray-600">{lastUpdate} · 5s otomatik</span>
       </div>
@@ -184,11 +265,11 @@ export default function SystemPage() {
       {/* ── Quick Metrics ── */}
       <div className="grid grid-cols-3 sm:grid-cols-6 gap-2">
         {[
-          { l: 'Feature',   v: pipe.feature_count,  c: 'text-blue-400',   s: 'coin' },
-          { l: 'Sinyal',    v: pipe.signal_count,   c: 'text-orange-400', s: 'aktif' },
-          { l: 'AI Karar',  v: ai.agent_verdict_count, c: 'text-purple-400', s: 'verdict' },
-          { l: 'Genom',     v: ai.genome_count,     c: 'text-green-400',  s: 'NEAT' },
-          { l: 'Pozisyon',  v: pos.open_count,      c: pos.open_count > 0 ? 'text-yellow-400' : 'text-gray-600', s: 'açık' },
+          { l: 'Feature',    v: pipe.feature_count,       c: 'text-blue-400',   s: 'coin' },
+          { l: 'Sinyal',     v: pipe.signal_count,        c: 'text-orange-400', s: 'aktif' },
+          { l: 'AI Karar',   v: sysAi.agent_verdict_count, c: 'text-purple-400', s: 'verdict' },
+          { l: 'Genom',      v: sysAi.genome_count,       c: 'text-green-400',  s: 'NEAT' },
+          { l: 'Pozisyon',   v: pos.open_count,           c: pos.open_count > 0 ? 'text-yellow-400' : 'text-gray-600', s: 'açık' },
           { l: 'Günlük P&L', v: `${pos.daily_pnl >= 0 ? '+' : ''}$${pos.daily_pnl.toFixed(2)}`, c: pos.daily_pnl >= 0 ? 'text-green-400' : 'text-red-400', s: 'realized', str: true },
         ].map(m => (
           <div key={m.l} className="bg-gray-900 border border-gray-800 rounded-lg p-3 text-center">
@@ -201,10 +282,10 @@ export default function SystemPage() {
         ))}
       </div>
 
-      {/* ── Services + AI side by side ── */}
+      {/* ── Services + AI Learning side by side ── */}
       <div className="grid grid-cols-1 xl:grid-cols-5 gap-4">
 
-        {/* Service Grid — 3 cols */}
+        {/* Service Grid */}
         <div className="xl:col-span-3 bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
           <div className="px-4 py-3 border-b border-gray-800 flex items-center justify-between">
             <h2 className="text-white font-semibold text-sm">Servis Sağlığı</h2>
@@ -220,137 +301,190 @@ export default function SystemPage() {
           </div>
         </div>
 
-        {/* AI Learning — 2 cols */}
+        {/* AI Learning Panel */}
         <div className="xl:col-span-2 flex flex-col gap-4">
 
           {/* NEAT Evolution */}
-          <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden flex-1">
+          <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
             <div className="px-4 py-3 border-b border-gray-800">
               <h2 className="text-purple-400 font-semibold text-sm">🧬 NEAT Evrimi</h2>
-              <p className="text-gray-600 text-[11px] mt-0.5">Fitness = Sharpe × WR × (1−DD) · Her 3 saatte bir nesil</p>
+              <p className="text-gray-600 text-[11px] mt-0.5">Fitness = Sharpe × WR × (1−DD) · Her 3 saatte nesil</p>
             </div>
             <div className="p-4 space-y-4">
-              {ai.neat ? (
+              {sysAi.neat ? (
                 <>
                   <div>
                     <p className="text-gray-500 text-[10px] uppercase tracking-wider mb-1.5">En İyi Fitness</p>
-                    <FitnessBar value={ai.neat.best_fitness} />
+                    <FitnessBar value={sysAi.neat.best_fitness} />
                   </div>
                   <div className="grid grid-cols-3 gap-2 text-center">
-                    <div className="bg-gray-800/50 rounded-lg p-2">
-                      <p className="text-gray-500 text-[10px]">Nesil</p>
-                      <p className="text-white font-bold text-lg">{ai.neat.generation}</p>
-                    </div>
-                    <div className="bg-gray-800/50 rounded-lg p-2">
-                      <p className="text-gray-500 text-[10px]">Genom</p>
-                      <p className="text-purple-400 font-bold text-lg">{ai.neat.genome_count}</p>
-                    </div>
-                    <div className="bg-gray-800/50 rounded-lg p-2">
-                      <p className="text-gray-500 text-[10px]">Tür</p>
-                      <p className="text-blue-400 font-bold text-lg">{ai.neat.species_count}</p>
-                    </div>
+                    {[
+                      { l: 'Nesil', v: sysAi.neat.generation, c: 'text-white' },
+                      { l: 'Genom', v: sysAi.neat.genome_count, c: 'text-purple-400' },
+                      { l: 'Tür',   v: sysAi.neat.species_count, c: 'text-blue-400' },
+                    ].map(m => (
+                      <div key={m.l} className="bg-gray-800/50 rounded-lg p-2">
+                        <p className="text-gray-500 text-[10px]">{m.l}</p>
+                        <p className={`font-bold text-lg ${m.c}`}>{m.v}</p>
+                      </div>
+                    ))}
                   </div>
                 </>
               ) : (
                 <div className="text-center py-4">
                   <p className="text-gray-600 text-2xl mb-2">🧬</p>
-                  {ai.genome_count > 0 ? (
-                    <>
-                      <p className="text-gray-400 text-sm font-semibold">{ai.genome_count} Genom Mevcut</p>
-                      <p className="text-gray-600 text-xs mt-1">NEAT istatistik anahtarı bekleniyor</p>
-                    </>
-                  ) : (
-                    <>
-                      <p className="text-gray-400 text-sm font-semibold">Evrim Başlamadı</p>
-                      <p className="text-gray-600 text-xs mt-1">neat_evolution servisi ilk nesli hazırlıyor</p>
-                    </>
-                  )}
+                  <p className="text-gray-400 text-sm font-semibold">
+                    {sysAi.genome_count > 0 ? `${sysAi.genome_count} Genom Mevcut` : 'Evrim Başlamadı'}
+                  </p>
+                  <p className="text-gray-600 text-xs mt-1">neat_evolution servisi ilk nesli hazırlıyor</p>
                 </div>
               )}
             </div>
           </div>
 
-          {/* Agent + Shadow */}
+          {/* Agent & Shadow */}
           <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
             <div className="px-4 py-3 border-b border-gray-800">
-              <h2 className="text-orange-400 font-semibold text-sm">🤖 Agent & Shadow</h2>
+              <h2 className="text-orange-400 font-semibold text-sm">🤖 Agent &amp; Shadow</h2>
             </div>
             <div className="p-4 space-y-3">
-              {/* Agent */}
               <div className="flex items-center justify-between text-xs bg-gray-800/40 rounded-lg px-3 py-2">
                 <div>
                   <p className="text-gray-400">Agent son çalışma</p>
-                  <p className={`font-bold ${ai.agent_last_run_sec != null && ai.agent_last_run_sec < 120 ? 'text-green-400' : ai.agent_last_run_sec != null ? 'text-yellow-400' : 'text-gray-500'}`}>
-                    {fmtSec(ai.agent_last_run_sec)}
+                  <p className={`font-bold ${sysAi.agent_last_run_sec != null && sysAi.agent_last_run_sec < 120 ? 'text-green-400' : sysAi.agent_last_run_sec != null ? 'text-yellow-400' : 'text-gray-500'}`}>
+                    {fmtSec(sysAi.agent_last_run_sec)}
                   </p>
                 </div>
                 <div className="text-right">
                   <p className="text-gray-400">Aktif verdict</p>
-                  <p className="text-purple-400 font-bold">{ai.agent_verdict_count} coin</p>
+                  <p className="text-purple-400 font-bold">{sysAi.agent_verdict_count} coin</p>
                 </div>
               </div>
-
-              {/* Shadow */}
-              {ai.shadow_total > 0 && ai.shadow_best ? (
+              {sysAi.shadow_total > 0 && sysAi.shadow_best ? (
                 <div className="space-y-2 text-xs">
                   <div className="flex items-center justify-between bg-gray-800/40 rounded-lg px-3 py-2">
                     <div>
-                      <p className="text-gray-400">Shadow Sharpe</p>
-                      <p className={`font-bold ${((ai.shadow_best.sharpe as number) ?? 0) >= 1.5 ? 'text-green-400' : 'text-orange-400'}`}>
-                        {((ai.shadow_best.sharpe as number) ?? 0).toFixed(2)}
-                        {' '}<span className="text-gray-600 font-normal">/ 1.5 hedef</span>
+                      <p className="text-gray-400">En İyi Shadow Sharpe</p>
+                      <p className={`font-bold ${((sysAi.shadow_best.sharpe as number) ?? 0) >= 1.5 ? 'text-green-400' : 'text-orange-400'}`}>
+                        {Number(sysAi.shadow_best.sharpe ?? 0).toFixed(2)} <span className="text-gray-600 font-normal">/ 1.5</span>
                       </p>
                     </div>
                     <div className="text-right">
                       <p className="text-gray-400">İşlem</p>
-                      <p className="text-gray-300 font-bold">{(ai.shadow_best.trades as number) ?? 0} / 100</p>
+                      <p className="text-gray-300 font-bold">{Number(sysAi.shadow_best.trades ?? 0)} / 100</p>
                     </div>
                   </div>
-                  {/* Progress to promotion */}
                   <div>
-                    <div className="flex justify-between text-[10px] text-gray-500 mb-1">
-                      <span>Canlıya terfi ilerleme</span>
-                      <span>{Math.min(100, Math.round(((ai.shadow_best.trades as number) ?? 0)))}%</span>
-                    </div>
                     <div className="h-2 bg-gray-800 rounded-full overflow-hidden">
-                      <div className="h-full bg-indigo-500 rounded-full transition-all"
-                        style={{ width: `${Math.min(100, ((ai.shadow_best.trades as number) ?? 0))}%` }} />
+                      <div className="h-full bg-indigo-500 rounded-full" style={{ width: `${Math.min(100, Number(sysAi.shadow_best.trades ?? 0))}%` }} />
                     </div>
                     <div className="flex justify-between text-[10px] text-gray-600 mt-1">
-                      <span>0 işlem</span><span>100 işlem gerekli</span>
+                      <span>0</span><span>100 işlem gerekli</span>
                     </div>
                   </div>
-                  {(ai.shadow_best.promotion_ready as boolean) && (
+                  {(sysAi.shadow_best.promotion_ready as boolean) && (
                     <div className="bg-yellow-900/30 border border-yellow-600/50 rounded-lg p-2 text-center">
                       <p className="text-yellow-400 font-black text-sm animate-pulse">🚀 CANLIYA TERFİ HAZIR!</p>
                     </div>
                   )}
                 </div>
               ) : (
-                <div className="text-center py-2 text-xs text-gray-600">
-                  Shadow sistem 100 kağıt işlem bekliyor · Şu an: {ai.shadow_total > 0 ? `${ai.shadow_total} strateji` : 'Başlamadı'}
+                <p className="text-center text-xs text-gray-600 py-2">
+                  Shadow {sysAi.shadow_total > 0 ? `${sysAi.shadow_total} strateji` : 'başlamadı'} · 100 kağıt işlem bekleniyor
+                </p>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* ── AI LEARNING MONITOR ── */}
+      {ai && (
+        <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
+          <div className="px-4 py-3 border-b border-gray-800 flex items-center justify-between">
+            <h2 className="text-green-400 font-semibold text-sm">🧠 Yapay Zeka Şu An Ne Öğreniyor?</h2>
+            <span className="text-[11px] text-gray-600">{ai.sampled_symbols} coin örneklendi · {fmtSec(ai.last_run_sec)}</span>
+          </div>
+          <div className="p-4 grid grid-cols-1 lg:grid-cols-3 gap-4">
+
+            {/* Signal Distribution */}
+            <div className="space-y-3">
+              <p className="text-gray-400 text-xs font-semibold uppercase tracking-wider">Anlık Sinyal Dağılımı</p>
+              <SignalDistBar label="LONG"  pct={ai.signal_distribution.long}  color="text-green-400" />
+              <SignalDistBar label="SHORT" pct={ai.signal_distribution.short} color="text-red-400" />
+              <SignalDistBar label="FLAT"  pct={ai.signal_distribution.flat}  color="text-gray-400" />
+              <p className="text-gray-600 text-[10px]">{ai.signal_distribution.total} sembol analiz edildi</p>
+            </div>
+
+            {/* Agent Weights */}
+            <div className="space-y-2">
+              <p className="text-gray-400 text-xs font-semibold uppercase tracking-wider">Ajan Ağırlıkları (Öğrenilmiş)</p>
+              {ai.agent_weights.map(a => (
+                <div key={a.name} className="flex items-center gap-2 text-[11px]">
+                  <span className="text-gray-400 w-20 truncate">{a.label}</span>
+                  <div className="flex-1 h-2 bg-gray-800 rounded-full overflow-hidden">
+                    <div className="h-full bg-indigo-500 rounded-full transition-all"
+                      style={{ width: `${Math.min(100, (a.weight / 2) * 100)}%` }} />
+                  </div>
+                  <span className="text-indigo-400 font-mono w-8 text-right">{a.weight.toFixed(2)}</span>
+                </div>
+              ))}
+            </div>
+
+            {/* Recent Non-Flat Signals */}
+            <div className="space-y-2">
+              <p className="text-gray-400 text-xs font-semibold uppercase tracking-wider">Aktif Sinyaller (Flat Değil)</p>
+              {ai.recent_signals.length === 0 ? (
+                <div className="bg-gray-800/40 rounded-lg p-3 text-center">
+                  <p className="text-gray-600 text-xs">Şu an tüm sinyaller FLAT</p>
+                  <p className="text-gray-700 text-[10px] mt-1">Piyasa yön bekleniyor</p>
+                </div>
+              ) : (
+                <div className="space-y-1 max-h-40 overflow-y-auto">
+                  {ai.recent_signals.map((s, i) => (
+                    <a key={i} href={`/coin/${s.symbol}`}
+                      className="flex items-center justify-between px-2 py-1.5 rounded bg-gray-800/40 hover:bg-gray-800/70 transition-colors">
+                      <span className="text-white text-xs font-bold">{s.symbol.replace('USDT', '')}</span>
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded border font-bold ${DIR_BG[s.direction] ?? ''} ${DIR_COLOR[s.direction] ?? ''}`}>
+                        {s.direction.toUpperCase()}
+                      </span>
+                      <span className="text-gray-400 text-[10px] font-mono">{Math.round(s.confidence * 100)}%</span>
+                    </a>
+                  ))}
+                </div>
+              )}
+
+              {/* Sample vote breakdown */}
+              {ai.sample_votes.length > 0 && (
+                <div className="mt-2 pt-2 border-t border-gray-800/60">
+                  <p className="text-gray-600 text-[10px] mb-1.5">BTC Ajan Oyları:</p>
+                  <div className="flex flex-wrap gap-1">
+                    {ai.sample_votes.map((v, i) => (
+                      <span key={i}
+                        className={`text-[10px] px-1.5 py-0.5 rounded border ${v.signal === 'long' ? 'bg-green-900/30 border-green-800/40 text-green-400' : v.signal === 'short' ? 'bg-red-900/30 border-red-800/40 text-red-400' : 'bg-gray-800/50 border-gray-700/40 text-gray-500'}`}>
+                        {String(v.agent).replace('agent_', '')} {Math.round(v.confidence * 100)}%
+                      </span>
+                    ))}
+                  </div>
                 </div>
               )}
             </div>
           </div>
-
         </div>
-      </div>
+      )}
 
       {/* ── Pipeline + Market ── */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-
-        {/* Pipeline */}
         <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 space-y-4">
-          <h2 className="text-blue-400 font-semibold text-sm">📡 Veri Pipeline Durumu</h2>
-          <PipeBar label="Feature Engine (özellik)"  count={pipe.feature_count} target={400} fresh={pipe.feature_freshness_sec} color="text-blue-400" />
-          <PipeBar label="Signal Engine (sinyal)"     count={pipe.signal_count}  target={400} fresh={pipe.signal_freshness_sec}  color="text-orange-400" />
-          <PipeBar label="Agent System (AI verdict)"  count={pipe.agent_count}   target={400} fresh={null} color="text-purple-400" />
-          <PipeBar label="Context Engine (bağlam)"    count={pipe.context_count} target={400} fresh={null} color="text-cyan-400" />
+          <h2 className="text-blue-400 font-semibold text-sm">📡 Veri Pipeline</h2>
+          <PipeBar label="Feature Engine"  count={pipe.feature_count} target={400} fresh={pipe.feature_freshness_sec} color="text-blue-400" />
+          <PipeBar label="Signal Engine"   count={pipe.signal_count}  target={400} fresh={pipe.signal_freshness_sec}  color="text-orange-400" />
+          <PipeBar label="Agent Verdicts"  count={pipe.agent_count}   target={400} fresh={null} color="text-purple-400" />
+          <PipeBar label="Context Engine"  count={pipe.context_count} target={400} fresh={null} color="text-cyan-400" />
           <div className="pt-3 border-t border-gray-800/60 flex items-center justify-between text-xs">
             <div className="flex items-center gap-2">
               <span className={`w-2 h-2 rounded-full ${pipe.ws_status?.status === 'CONNECTED' ? 'bg-green-400 animate-pulse' : 'bg-red-500'}`} />
-              <span className="text-gray-400">WebSocket Binance USDM</span>
+              <span className="text-gray-400">Binance USDM WebSocket</span>
             </div>
             <span className={`font-bold ${pipe.ws_status?.status === 'CONNECTED' ? 'text-green-400' : 'text-red-400'}`}>
               {pipe.ws_status?.status ?? 'UNKNOWN'} · {pipe.ws_status?.symbols ?? 0} coin
@@ -358,7 +492,6 @@ export default function SystemPage() {
           </div>
         </div>
 
-        {/* Market Context */}
         <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 space-y-4">
           <h2 className="text-cyan-400 font-semibold text-sm">🌐 Market Durumu</h2>
           <div className="grid grid-cols-2 gap-3">
@@ -374,10 +507,10 @@ export default function SystemPage() {
               <p className={`text-[11px] ${CRISIS_COLOR[mkt.crisis_level] ?? 'text-green-400'}`}>{CRISIS_LABEL[mkt.crisis_level] ?? 'Normal'}</p>
             </div>
             <div className="bg-gray-800/50 rounded-xl p-3 text-center">
-              <p className="text-gray-500 text-[10px] uppercase tracking-wider mb-1">Fear & Greed</p>
+              <p className="text-gray-500 text-[10px] uppercase tracking-wider mb-1">Fear &amp; Greed</p>
               {mkt.fear_greed ? (
                 <>
-                  <p className={`font-black text-2xl ${mkt.fear_greed.value < 25 ? 'text-red-400' : mkt.fear_greed.value < 45 ? 'text-orange-400' : mkt.fear_greed.value < 55 ? 'text-yellow-400' : 'text-green-400'}`}>
+                  <p className={`font-black text-2xl ${mkt.fear_greed.value < 25 ? 'text-red-400' : mkt.fear_greed.value < 45 ? 'text-orange-400' : 'text-green-400'}`}>
                     {mkt.fear_greed.value}
                   </p>
                   <p className="text-gray-500 text-[10px]">{mkt.fear_greed.classification}</p>
@@ -407,115 +540,89 @@ export default function SystemPage() {
         </div>
       </div>
 
-      {/* ── Positions + Activity ── */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-
-        {/* Positions Status */}
-        <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
-          <h2 className="text-orange-400 font-semibold text-sm mb-3">💼 Pozisyon Durumu</h2>
-          {pos.open_count === 0 ? (
-            <div className="space-y-3">
-              <div className="flex items-center gap-3 bg-blue-950/30 border border-blue-800/30 rounded-lg p-3 text-xs">
-                <span className="text-blue-400 text-lg shrink-0">ℹ</span>
-                <div>
-                  <p className="text-blue-300 font-semibold">Açık Pozisyon Yok — Bekleme Modunda</p>
-                  <p className="text-gray-500 mt-1">
-                    Shadow sistem 100 kağıt işlem tamamlayana kadar OMS canlı pozisyon açmaz.
-                    Şu an {pipe.signal_count} sinyal aktif, system normal çalışıyor.
-                  </p>
-                </div>
-              </div>
-              <div className="grid grid-cols-3 gap-2 text-xs text-center">
-                <div className="bg-gray-800/50 rounded-lg p-2">
-                  <p className="text-gray-600">Min Güven</p>
-                  <p className="text-white font-bold">60%</p>
-                </div>
-                <div className="bg-gray-800/50 rounded-lg p-2">
-                  <p className="text-gray-600">Maks Pozisyon</p>
-                  <p className="text-white font-bold">3 adet</p>
-                </div>
-                <div className="bg-gray-800/50 rounded-lg p-2">
-                  <p className="text-gray-600">Kaldıraç</p>
-                  <p className="text-white font-bold">Maks 3×</p>
-                </div>
-              </div>
-              <div className="flex items-center justify-between text-xs text-gray-500">
-                <span>Günlük Gerçekleşen P&L:</span>
-                <span className={`font-mono font-bold ${pos.daily_pnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                  {pos.daily_pnl >= 0 ? '+' : ''}${pos.daily_pnl.toFixed(2)}
-                </span>
-              </div>
-            </div>
-          ) : (
-            <div className="space-y-2 text-xs">
-              <div className="flex items-center justify-between bg-green-950/20 border border-green-800/30 rounded-lg px-3 py-2">
-                <span className="text-green-400 font-semibold">{pos.open_count} Açık Pozisyon</span>
-                <a href="/positions" className="text-orange-400 hover:text-orange-300">Detaylar →</a>
-              </div>
-              <div className="flex items-center justify-between text-gray-400 px-1">
-                <span>Günlük P&L</span>
-                <span className={`font-mono font-bold ${pos.daily_pnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                  {pos.daily_pnl >= 0 ? '+' : ''}${pos.daily_pnl.toFixed(2)}
-                </span>
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* Activity Feed */}
-        <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
-          <div className="px-4 py-3 border-b border-gray-800 flex items-center justify-between">
-            <h2 className="text-green-400 font-semibold text-sm">⚡ Canlı Aktivite</h2>
-            <span className="text-xs text-gray-600">{data.activity.length} olay · 5s</span>
+      {/* ── LIVE LOGS ── */}
+      <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
+        <div className="px-4 py-3 border-b border-gray-800 flex items-center justify-between gap-3">
+          <h2 className="text-white font-semibold text-sm shrink-0">📋 Canlı Sistem Logları</h2>
+          <div className="flex items-center gap-1 flex-wrap">
+            {[
+              { key: 'all',    label: 'Tümü' },
+              { key: 'signal', label: '📶 Sinyal' },
+              { key: 'trade',  label: '💼 Trade' },
+              { key: 'error',  label: '🔴 Hata' },
+            ].map(f => (
+              <button key={f.key} onClick={() => setLogFilter(f.key)}
+                className={`text-[11px] px-2 py-0.5 rounded border transition-colors ${logFilter === f.key ? 'bg-orange-500/20 border-orange-500/40 text-orange-400' : 'border-gray-700 text-gray-500 hover:text-white'}`}>
+                {f.label}
+              </button>
+            ))}
           </div>
-          {data.activity.length === 0 ? (
-            <div className="p-6 text-center">
-              <p className="text-gray-500 text-xs">Henüz aktivite yok — signal engine ısınıyor (~60s)</p>
-            </div>
-          ) : (
-            <div className="divide-y divide-gray-800/40 max-h-52 overflow-y-auto">
-              {data.activity.map((ev, i) => {
-                const e = ev as Record<string, unknown>
-                const rawTs = e.time as number | undefined
-                const secs = rawTs ? Math.floor(Date.now() / 1000 - rawTs) : null
-                const ago = secs == null ? '—' : secs < 60 ? `${secs}s` : `${Math.floor(secs / 60)}dk`
-                const isLong  = e.direction === 'long'
-                const isShort = e.direction === 'short'
-                return (
-                  <div key={i} className="flex items-center gap-2.5 px-4 py-2 text-xs hover:bg-gray-800/20">
-                    <span className={`shrink-0 ${e.type === 'scan_summary' ? 'text-blue-400' : isLong ? 'text-green-400' : isShort ? 'text-red-400' : 'text-purple-400'}`}>
-                      {e.type === 'scan_summary' ? '⟳' : e.type === 'regime_change' ? '⇄' : isLong ? '▲' : isShort ? '▼' : '◉'}
-                    </span>
-                    <div className="flex-1 min-w-0 truncate text-gray-400">
-                      {e.symbol != null && <span className="text-white font-bold mr-1">{String(e.symbol)}</span>}
-                      {e.type === 'scan_summary'
-                        ? <span>{String(e.total ?? '')} coin · ▲{String(e.long ?? '')} ▼{String(e.short ?? '')}</span>
-                        : e.type === 'signal'
-                        ? <span className={isLong ? 'text-green-400' : 'text-red-400'}>{String(e.direction ?? '').toUpperCase()} {Math.round(((e.confidence as number) ?? 0) * 100)}%</span>
-                        : e.type === 'rsi_alert'
-                        ? <span>RSI {(e.rsi as number | null)?.toFixed(1) ?? '—'}</span>
-                        : e.type === 'regime_change'
-                        ? <span className="text-purple-400">rejim → {String(e.regime ?? '')}</span>
-                        : <span>{String(e.type ?? '')}</span>}
-                    </div>
-                    <span className="text-gray-700 font-mono shrink-0">{ago}</span>
-                  </div>
-                )
-              })}
-            </div>
-          )}
+          <span className="text-[11px] text-gray-600 shrink-0">{filteredLogs.length} kayıt</span>
         </div>
+        {filteredLogs.length === 0 ? (
+          <div className="p-6 text-center">
+            <p className="text-gray-500 text-xs">Log yok — signal engine ısınıyor (~60s)</p>
+          </div>
+        ) : (
+          <div className="max-h-96 overflow-y-auto">
+            {filteredLogs.map((ev, i) => (
+              <LogLine key={i} e={ev as Record<string, unknown>} />
+            ))}
+          </div>
+        )}
       </div>
 
-      {/* ── How it learns (static explanation) ── */}
+      {/* ── Positions ── */}
+      <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
+        <h2 className="text-orange-400 font-semibold text-sm mb-3">💼 Pozisyon Durumu</h2>
+        {pos.open_count === 0 ? (
+          <div className="space-y-3">
+            <div className="flex items-center gap-3 bg-blue-950/30 border border-blue-800/30 rounded-lg p-3 text-xs">
+              <span className="text-blue-400 text-lg shrink-0">ℹ</span>
+              <div>
+                <p className="text-blue-300 font-semibold">Açık Pozisyon Yok — Bekleme Modunda</p>
+                <p className="text-gray-500 mt-1">
+                  Shadow sistem 100 kağıt işlem tamamlayana kadar OMS canlı pozisyon açmaz.
+                  Şu an {pipe.signal_count} sinyal aktif.
+                </p>
+              </div>
+            </div>
+            <div className="grid grid-cols-3 gap-2 text-xs text-center">
+              {[
+                { l: 'Min Güven', v: '55%' },
+                { l: 'Maks Pozisyon', v: '3 adet' },
+                { l: 'Maks Kaldıraç', v: '3×' },
+              ].map(m => (
+                <div key={m.l} className="bg-gray-800/50 rounded-lg p-2">
+                  <p className="text-gray-600">{m.l}</p>
+                  <p className="text-white font-bold">{m.v}</p>
+                </div>
+              ))}
+            </div>
+            <div className="flex items-center justify-between text-xs text-gray-500">
+              <span>Günlük P&L:</span>
+              <span className={`font-mono font-bold ${pos.daily_pnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                {pos.daily_pnl >= 0 ? '+' : ''}${pos.daily_pnl.toFixed(2)}
+              </span>
+            </div>
+          </div>
+        ) : (
+          <div className="flex items-center justify-between bg-green-950/20 border border-green-800/30 rounded-lg px-3 py-2 text-xs">
+            <span className="text-green-400 font-semibold">{pos.open_count} Açık Pozisyon</span>
+            <a href="/positions" className="text-orange-400 hover:text-orange-300">Detaylar →</a>
+          </div>
+        )}
+      </div>
+
+      {/* ── How it learns ── */}
       <div className="bg-gray-900/60 border border-gray-800/60 rounded-xl p-4">
         <h2 className="text-white font-semibold text-sm mb-3">🎓 Yapay Zeka Nasıl Öğreniyor?</h2>
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-xs">
           {[
-            { icon: '🧬', title: 'NEAT Evrimi', color: 'border-purple-800/40', desc: 'Her 3 saatte bir genomlar üzerinde mutasyon ve çaprazlama uygulanır. Fitness = Sharpe × WR × (1-MaxDD). En yüksek fitness genomları hayatta kalır ve bir sonraki nesle geçer.' },
-            { icon: '🤖', title: '9 Ajan Tartışması', color: 'border-orange-800/40', desc: 'Boğa, Ayı, Teknik, Haber, Makro, Zincir-üstü, Risk ve Evrim ajanları her coin için tartışır. Debate ajanı sonucu sentezler ve confidence veriri. Her ajanın doğruluk oranı takip edilir.' },
-            { icon: '👻', title: 'Shadow Backtest', color: 'border-indigo-800/40', desc: '3 paralel kağıt-işlem evreni çalışır. 100 işlem sonrası Sharpe ≥1.5, WR ≥52%, DD <10% şartları sağlanırsa strateji canlıya terfi eder. Şu an bu şartlar sağlanmaya çalışılıyor.' },
-            { icon: '📐', title: 'PPO (RL Agent)', color: 'border-green-800/40', desc: '500K adım boyunca gymnasium ortamında eğitilen PPO ajanı pozisyon boyutlandırma ve giriş zamanlamasını optimize eder. Stochastic policy gradient ile kendini sürekli günceller.' },
+            { icon: '🧬', title: 'NEAT Evrimi', color: 'border-purple-800/40', desc: 'Her 3 saatte genomlar üzerinde mutasyon ve çaprazlama. Fitness = Sharpe × WR × (1-MaxDD). En iyi genomlar hayatta kalır.' },
+            { icon: '🤖', title: '9 Ajan Tartışması', color: 'border-orange-800/40', desc: 'Boğa, Ayı, Teknik, Haber, Makro, Zincir-üstü, Risk, Nötr ajanları her coin için tartışır. Zamanla doğru tahmin yapan ajanların ağırlığı artar.' },
+            { icon: '👻', title: 'Shadow Backtest', color: 'border-indigo-800/40', desc: '3 paralel kağıt-işlem evreni. 100 işlem + Sharpe ≥1.5 + WR ≥52% + DD <10% sağlanırsa canlıya terfi eder.' },
+            { icon: '📐', title: 'PPO (RL Agent)', color: 'border-green-800/40', desc: '500K adım gymnasium ortamında eğitilen PPO. Pozisyon boyutu ve giriş zamanlamasını optimize eder.' },
           ].map(item => (
             <div key={item.title} className={`rounded-lg border bg-gray-800/30 p-3 ${item.color}`}>
               <div className="flex items-center gap-2 mb-2">
