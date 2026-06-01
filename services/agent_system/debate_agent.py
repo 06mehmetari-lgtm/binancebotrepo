@@ -63,7 +63,10 @@ class DebateAgent:
 
     # ── Main debate orchestration ─────────────────────────────────────────────
 
-    async def run_debate(self, symbol: str, features: dict, context: dict) -> DebateResult:
+    async def run_debate(
+        self, symbol: str, features: dict, context: dict,
+        training_context: str = "",
+    ) -> DebateResult:
         votes = await asyncio.gather(
             self._technical_vote(features),
             self._onchain_vote(features, context),
@@ -83,12 +86,13 @@ class DebateAgent:
 
         # LLM synthesis — only for high-confidence non-flat signals
         if result.final_signal != "flat" and result.final_confidence > 0.65:
-            result = await self._synthesize(symbol, features, context, result)
+            result = await self._synthesize(symbol, features, context, result, training_context)
 
         return result
 
     async def _synthesize(self, symbol: str, features: dict,
-                          context: dict, base: DebateResult) -> DebateResult:
+                          context: dict, base: DebateResult,
+                          training_context: str = "") -> DebateResult:
         loop = asyncio.get_event_loop()
 
         # 1. Groq
@@ -96,7 +100,7 @@ class DebateAgent:
         if groq:
             try:
                 return await loop.run_in_executor(
-                    None, self._groq_synthesize, groq, symbol, features, context, base
+                    None, self._groq_synthesize, groq, symbol, features, context, base, training_context
                 )
             except Exception as e:
                 logger.debug(f"Groq synthesis skipped for {symbol}: {e}")
@@ -106,7 +110,7 @@ class DebateAgent:
         if ollama:
             try:
                 return await loop.run_in_executor(
-                    None, self._ollama_synthesize, ollama, symbol, features, context, base
+                    None, self._ollama_synthesize, ollama, symbol, features, context, base, training_context
                 )
             except Exception as e:
                 logger.debug(f"Ollama synthesis skipped for {symbol}: {e}")
@@ -114,7 +118,8 @@ class DebateAgent:
         return base
 
     def _build_prompt(self, symbol: str, features: dict,
-                      context: dict, base: DebateResult) -> str:
+                      context: dict, base: DebateResult,
+                      training_context: str = "") -> str:
         rsi    = round(float(features.get("rsi_14", 50)), 1)
         macd   = round(float(features.get("macd_hist", 0)), 4)
         bb_pos = round(float(features.get("bb_position", 0.5)), 2)
@@ -125,7 +130,12 @@ class DebateAgent:
         fg     = context.get("fear_greed", 50)
         fund   = round(float(context.get("funding_rate", 0)) * 100, 4)
         drift  = context.get("drift_status", "STABLE")
+        operator_block = (
+            f"OPERATOR INSTRUCTIONS (must be followed above all else):\n{training_context.strip()}\n\n"
+            if training_context.strip() else ""
+        )
         return (
+            f"{operator_block}"
             f"Crypto futures trading signal synthesis for {symbol}.\n"
             f"Rule-based agent consensus: {base.final_signal.upper()} "
             f"confidence={base.final_confidence:.0%} consensus={base.consensus_strength:.0%}\n"
@@ -157,8 +167,9 @@ class DebateAgent:
         )
 
     def _groq_synthesize(self, client, symbol: str, features: dict,
-                         context: dict, base: DebateResult) -> DebateResult:
-        prompt = self._build_prompt(symbol, features, context, base)
+                         context: dict, base: DebateResult,
+                         training_context: str = "") -> DebateResult:
+        prompt = self._build_prompt(symbol, features, context, base, training_context)
         resp = client.chat.completions.create(
             model=GROQ_MODEL,
             messages=[{"role": "user", "content": prompt}],
@@ -169,9 +180,10 @@ class DebateAgent:
         return self._parse_llm_response(raw, base, "Groq")
 
     def _ollama_synthesize(self, ollama_url: str, symbol: str, features: dict,
-                           context: dict, base: DebateResult) -> DebateResult:
+                           context: dict, base: DebateResult,
+                           training_context: str = "") -> DebateResult:
         model = os.getenv("OLLAMA_MODEL", "llama3.1:8b")
-        prompt = self._build_prompt(symbol, features, context, base)
+        prompt = self._build_prompt(symbol, features, context, base, training_context)
         payload = json.dumps({
             "model": model,
             "messages": [{"role": "user", "content": prompt}],

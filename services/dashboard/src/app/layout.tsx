@@ -8,6 +8,7 @@ const NAV_LINKS = [
   { href: '/', label: 'Dashboard' },
   { href: '/system', label: '🖥 Sistem' },
   { href: '/ai', label: '🤖 AI Analiz' },
+  { href: '/training', label: '📚 AI Eğitim' },
   { href: '/positions', label: '💼 Positions' },
   { href: '/scanner', label: '🔍 Scanner' },
   { href: '/markets', label: 'Markets' },

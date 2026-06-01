@@ -40,7 +40,7 @@ async def run_debate_for_symbol(redis: aioredis.Redis, symbol: str):
     features = json.loads(feat_raw)
     context = json.loads(ctx_raw)
 
-    result = await debate.run_debate(symbol, features, context)
+    result = await debate.run_debate(symbol, features, context, _training_context)
 
     # Serialize votes
     votes_payload = [
@@ -76,6 +76,37 @@ async def run_debate_for_symbol(redis: aioredis.Redis, symbol: str):
 
 
 _current_regime: str = "unknown"
+_training_context: str = ""
+
+
+async def reload_training_context(redis: aioredis.Redis) -> str:
+    """Load operator training docs from Redis into a single prompt block."""
+    try:
+        raw = await redis.get("training:docs")
+        if not raw:
+            return ""
+        docs = json.loads(raw)
+        if not docs:
+            return ""
+        parts = [f"[{d.get('title','doc')}]\n{d.get('content','')}" for d in docs[:8]]
+        return "\n---\n".join(parts)
+    except Exception:
+        return ""
+
+
+async def training_reload_loop(redis: aioredis.Redis):
+    """Reload operator training docs every 60 seconds."""
+    global _training_context
+    while True:
+        try:
+            new_ctx = await reload_training_context(redis)
+            if new_ctx != _training_context:
+                doc_count = new_ctx.count("[") if new_ctx else 0
+                log.info(f"Training context reloaded — {doc_count} doc(s) active")
+                _training_context = new_ctx
+        except Exception as e:
+            log.warning(f"Training reload error: {e}")
+        await asyncio.sleep(60)
 
 
 async def weight_update_loop(redis: aioredis.Redis):
@@ -140,7 +171,12 @@ async def main():
             log.info(f"agent_system: {len(active_set)} symbols — rotating batches of 120")
             await asyncio.sleep(10)
 
-    await asyncio.gather(debate_loop(), weight_update_loop(redis), news_scanner.run(redis))
+    await asyncio.gather(
+        debate_loop(),
+        weight_update_loop(redis),
+        training_reload_loop(redis),
+        news_scanner.run(redis),
+    )
 
 
 if __name__ == "__main__":
