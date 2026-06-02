@@ -127,7 +127,7 @@ export async function chatCompletion(
       name: 'OpenRouter',
       url: 'https://openrouter.ai/api/v1/chat/completions',
       keyEnv: 'OPENROUTER_API_KEY',
-      model: 'meta-llama/llama-3.1-8b-instruct:free',
+      model: 'meta-llama/llama-3.3-70b-instruct:free',
       extraHeaders: {
         'HTTP-Referer': 'https://prometheus-trading.io',
         'X-Title': 'Prometheus Trading',
