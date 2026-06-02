@@ -1,7 +1,8 @@
 """
 Multi-provider LLM client with automatic fallback.
-Tries providers in order: Groq → Cerebras → SambaNova → OpenRouter
-On 429 rate limit, automatically moves to the next provider.
+Order: Groq → Cerebras → SambaNova → OpenRouter → Ollama (local, unlimited)
+On 429 / error, automatically moves to the next provider.
+Ollama is always last — no API key required, no rate limits.
 """
 import asyncio
 import logging
@@ -10,6 +11,9 @@ import os
 import aiohttp
 
 log = logging.getLogger(__name__)
+
+OLLAMA_URL   = os.getenv("OLLAMA_URL",   "http://ollama:11434")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.1:8b")
 
 _PROVIDERS = [
     {
@@ -46,6 +50,31 @@ _PROVIDERS = [
 ]
 
 
+async def _ollama_completion(
+    messages: list,
+    temperature: float,
+    max_tokens: int,
+    session: aiohttp.ClientSession,
+) -> str:
+    """Call local Ollama — no rate limits, always available."""
+    payload = {
+        "model": OLLAMA_MODEL,
+        "messages": messages,
+        "stream": False,
+        "options": {"temperature": temperature, "num_predict": max_tokens},
+    }
+    async with session.post(
+        f"{OLLAMA_URL}/api/chat",
+        json=payload,
+        timeout=aiohttp.ClientTimeout(total=120),
+    ) as resp:
+        if resp.status != 200:
+            body = await resp.text()
+            raise RuntimeError(f"Ollama {resp.status}: {body[:120]}")
+        data = await resp.json()
+        return data["message"]["content"]
+
+
 async def chat_completion(
     prompt: str,
     system: str = "",
@@ -53,7 +82,7 @@ async def chat_completion(
     max_tokens: int = 1024,
 ) -> tuple[str, str]:
     """Try each provider in order. Returns (content, provider_name).
-    Raises RuntimeError if all providers fail or are rate-limited."""
+    Falls back to local Ollama if all cloud providers fail."""
     messages = []
     if system:
         messages.append({"role": "system", "content": system})
@@ -62,6 +91,7 @@ async def chat_completion(
     last_error = "tüm sağlayıcılar denendi"
 
     async with aiohttp.ClientSession() as session:
+        # Cloud providers first
         for p in _PROVIDERS:
             api_key = os.getenv(p["key_env"], "")
             if not api_key:
@@ -102,5 +132,15 @@ async def chat_completion(
             except Exception as e:
                 log.warning(f"LLM [{p['name']}] bağlantı hatası: {e}")
                 last_error = str(e)
+
+        # Ollama — local fallback, no rate limits
+        try:
+            log.info("LLM [Ollama] tüm bulut sağlayıcılar başarısız — yerel modele geçiliyor")
+            content = await _ollama_completion(messages, temperature, max_tokens, session)
+            log.info("LLM [Ollama] başarılı")
+            return content, "Ollama"
+        except Exception as e:
+            log.error(f"LLM [Ollama] hata: {e}")
+            last_error = f"Ollama: {e}"
 
     raise RuntimeError(f"Tüm LLM sağlayıcıları başarısız. Son hata: {last_error}")
