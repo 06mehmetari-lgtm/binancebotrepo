@@ -56,6 +56,7 @@ class DebateAgent:
         self, symbol: str, features: dict, context: dict,
         training_context: str = "",
         rag_block: str = "",
+        learned_patterns: dict | None = None,
     ) -> DebateResult:
         votes = await asyncio.gather(
             self._technical_vote(features),
@@ -72,7 +73,7 @@ class DebateAgent:
         if not valid:
             return DebateResult("flat", 0, 0, [], "no votes")
 
-        result = self._aggregate(valid)
+        result = self._aggregate(valid, learned_patterns=learned_patterns, context=context)
 
         # LLM synthesis — only for high-confidence non-flat signals
         # and only if this symbol hasn't been synthesized in the last 2 minutes
@@ -193,7 +194,9 @@ class DebateAgent:
 
     # ── Vote aggregation ──────────────────────────────────────────────────────
 
-    def _aggregate(self, votes: list[AgentVote]) -> DebateResult:
+    def _aggregate(self, votes: list[AgentVote],
+                   learned_patterns: dict | None = None,
+                   context: dict | None = None) -> DebateResult:
         scores = {"long": 0.0, "short": 0.0, "flat": 0.0}
         total_w = 0.0
         for v in votes:
@@ -206,6 +209,25 @@ class DebateAgent:
         confidence = scores[final]
         if confidence < 0.50:
             final = "flat"
+
+        # ── Yerel öğrenme: geçmiş trade istatistiklerine göre güven ayarı ─────
+        # LLM olmadan da öğrenilmiş kurallar devreye girer
+        pattern_tag = ""
+        if learned_patterns and final != "flat" and context is not None:
+            regime = learned_patterns.get("current_regime", context.get("regime", "unknown"))
+            key = f"{regime}:{final}"
+            win_rate = learned_patterns.get(key)
+            sample_n = learned_patterns.get(f"{key}:n", 0)
+            if win_rate is not None and sample_n >= 5:
+                if win_rate >= 0.60:
+                    confidence = min(confidence * 1.12, 1.0)
+                    pattern_tag = f" +pattern({win_rate:.0%})"
+                elif win_rate <= 0.38:
+                    confidence *= 0.80
+                    pattern_tag = f" -pattern({win_rate:.0%})"
+                    if confidence < 0.50:
+                        final = "flat"
+
         signals = [v.signal for v in votes]
         consensus = max(signals.count("long"), signals.count("short"), signals.count("flat")) / len(signals)
         supporting = [v.agent_name for v in votes if v.signal == final]
@@ -213,7 +235,7 @@ class DebateAgent:
         return DebateResult(
             final_signal=final, final_confidence=confidence,
             consensus_strength=consensus, all_votes=votes,
-            majority_reasoning=f"For: {supporting} | Against: {opposing}",
+            majority_reasoning=f"For: {supporting} | Against: {opposing}{pattern_tag}",
         )
 
     # ── Individual agent votes (rule-based, fast) ─────────────────────────────
@@ -251,11 +273,12 @@ class DebateAgent:
     async def _sentiment_vote(self, ctx: dict) -> AgentVote:
         reddit = float(ctx.get("reddit_sentiment", 0))
         fg     = float(ctx.get("fear_greed", 50)) / 100
-        contrarian_fg = 1 - fg
-        score = reddit * 0.4 + contrarian_fg * 0.6
-        signal = "long" if score > 0.6 else ("short" if score < 0.4 else "flat")
-        conf = abs(score - 0.5) * 2
-        return AgentVote("sentiment", signal, min(conf, 1.0), {"reddit": reddit, "fear_greed": fg})
+        # Contrarian: 0 when neutral (fg=0.5), positive when fear, negative when greed
+        contrarian_score = (0.5 - fg)
+        score = reddit * 0.4 + contrarian_score * 0.6
+        signal = "long" if score > 0.15 else ("short" if score < -0.15 else "flat")
+        conf = min(abs(score) / 0.5, 1.0)
+        return AgentVote("sentiment", signal, conf, {"reddit": reddit, "fear_greed": fg})
 
     async def _macro_vote(self, ctx: dict) -> AgentVote:
         vix = float(ctx.get("vix_level", 20))
@@ -279,10 +302,10 @@ class DebateAgent:
 
     async def _bear_vote(self, f: dict, ctx: dict) -> AgentVote:
         bear = 0
-        if float(f.get("rsi_14", 50)) > 65:              bear += 1  # was 70
-        if float(f.get("imbalance_5", 0)) < -0.15:       bear += 1  # was -0.2
-        if float(ctx.get("fear_greed", 50)) > 75:         bear += 1  # was 80
-        if float(ctx.get("funding_rate", 0)) > 0.001:     bear += 1  # was 0.002
+        if float(f.get("rsi_14", 50)) > 70:              bear += 1
+        if float(f.get("imbalance_5", 0)) < -0.2:        bear += 1
+        if float(ctx.get("fear_greed", 50)) > 80:         bear += 1
+        if float(ctx.get("funding_rate", 0)) > 0.002:     bear += 1
         if float(ctx.get("vix_level", 20)) > 35:          bear += 1
         if float(f.get("cvd_5m", 0)) < -0.2:              bear += 1  # strong sell pressure
         if float(f.get("bear_confluence", 0)) >= 2:        bear += 1  # both TFs agree bearish

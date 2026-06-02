@@ -52,6 +52,7 @@ async def run_debate_for_symbol(redis: aioredis.Redis, symbol: str):
         symbol, features, context,
         training_context=_training_context,
         rag_block=rag_block,
+        learned_patterns=_learned_patterns,
     )
 
     # Serialize votes
@@ -100,6 +101,7 @@ async def run_debate_for_symbol(redis: aioredis.Redis, symbol: str):
 
 _current_regime: str = "unknown"
 _training_context: str = ""
+_learned_patterns: dict = {}  # {regime:direction → win_rate, regime:direction:n → count}
 
 
 async def reload_training_context(redis: aioredis.Redis) -> str:
@@ -377,6 +379,52 @@ async def _process_training_queue_batch(redis: aioredis.Redis, batch_size: int =
         await redis.lrem("training:queue", 1, raw)
 
 
+async def _refresh_learned_patterns(redis: aioredis.Redis):
+    """
+    Trade geçmişinden (regime × yön) → kazanma oranı istatistikleri çıkar.
+    Minimum 5 trade olmayan kombinasyonlar göz ardı edilir.
+    Bu veriler LLM olmadan da sinyallere etki eder.
+    """
+    global _learned_patterns
+    try:
+        raws = await redis.lrange("training:lessons", 0, 299)
+        counts: dict[str, dict] = {}
+        for r in raws:
+            try:
+                lesson = json.loads(r)
+            except Exception:
+                continue
+            outcome = lesson.get("outcome")
+            regime  = lesson.get("regime", "unknown")
+            side    = lesson.get("side", "")
+            if outcome not in ("WIN", "LOSS") or not side:
+                continue
+            key = f"{regime}:{side}"
+            c = counts.setdefault(key, {"wins": 0, "losses": 0})
+            if outcome == "WIN":
+                c["wins"] += 1
+            else:
+                c["losses"] += 1
+
+        patterns: dict = {}
+        for key, c in counts.items():
+            total = c["wins"] + c["losses"]
+            if total >= 5:
+                patterns[key] = c["wins"] / total
+                patterns[f"{key}:n"] = total
+
+        ctx_raw = await redis.get("context:latest:BTCUSDT")
+        if ctx_raw:
+            ctx = json.loads(ctx_raw)
+            patterns["current_regime"] = ctx.get("regime", "unknown")
+
+        _learned_patterns = patterns
+        if patterns:
+            log.info(f"Learned patterns updated: {len([k for k in patterns if ':n' not in k and k != 'current_regime'])} combos")
+    except Exception as e:
+        log.debug(f"Learned patterns refresh error: {e}")
+
+
 async def llm_stats_push_loop(redis: aioredis.Redis):
     """Push in-memory LLM provider stats to Redis every 30s for the dashboard."""
     from llm_client import get_provider_stats
@@ -449,6 +497,10 @@ async def weight_update_loop(redis: aioredis.Redis):
             await redis.set("agents:weights", json.dumps(new_weights), ex=600)
         except Exception as e:
             log.warning(f"Weight update error: {e}")
+
+        # Refresh local learned patterns (regime × direction win rates)
+        await _refresh_learned_patterns(redis)
+
         await asyncio.sleep(300)
 
 

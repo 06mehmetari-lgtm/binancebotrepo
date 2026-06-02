@@ -229,6 +229,15 @@ async def chat_completion(
                             _set_cooldown(api_key)
                             _stat(p["name"])["rate_limits"] += 1
                             continue  # sonraki key dene
+                        if resp.status in (402, 403):
+                            # 402 = insufficient credits, 403 = forbidden — skip provider permanently
+                            body = await resp.text()
+                            log.warning(f"LLM [{p['name']}] {resp.status} (bakiye/erişim sorunu) — atlanıyor")
+                            last_error = f"{p['name']} {resp.status}"
+                            _stat(p["name"])["errors"] += 1
+                            _stat(p["name"])["last_error"] = f"HTTP {resp.status}"
+                            _set_cooldown(api_key, seconds=86400)  # 24h bloke
+                            break
                         if resp.status != 200:
                             body = await resp.text()
                             log.warning(f"LLM [{p['name']}] {resp.status}: {body[:80]}")

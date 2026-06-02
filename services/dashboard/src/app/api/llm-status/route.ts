@@ -63,8 +63,10 @@ export async function GET() {
       if (name === 'Ollama') status = 'local'
       else if (keysConfigured === 0) status = 'no_key'
       else if (inCooldown && keysReady === 0) status = 'rate_limited'
+      else if (rateLimits > 0 && successes === 0 && !inCooldown) status = 'rate_limited'
       else if (successes > 0) status = 'working'
       else if (errors > 0 && successes === 0 && calls > 0) status = 'error'
+      else if (calls === 0 && keysConfigured > 0) status = 'unknown'
       else status = 'unknown'
 
       const estimatedRemaining = lim.daily !== null
