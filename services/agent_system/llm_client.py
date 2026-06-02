@@ -113,7 +113,7 @@ _PROVIDERS = [
         "name": "Cerebras",
         "url": "https://api.cerebras.ai/v1/chat/completions",
         "key_env": "CEREBRAS_API_KEY",
-        "model": "gpt-oss-120b",
+        "model": "llama-3.3-70b",
         "headers": {},
     },
     {
