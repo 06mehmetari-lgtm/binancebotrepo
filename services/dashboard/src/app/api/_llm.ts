@@ -53,6 +53,19 @@ const PROVIDERS: Provider[] = [
   },
 ]
 
+// Per-provider rate limit cooldown (ms timestamp)
+const providerCooldown: Record<string, number> = {}
+const RATE_LIMIT_COOLDOWN_MS = 65_000
+
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) =>
+      setTimeout(() => reject(new Error(`timeout after ${ms}ms`)), ms)
+    ),
+  ])
+}
+
 export async function chatCompletion(
   prompt: string,
   options: { system?: string; temperature?: number; maxTokens?: number } = {},
@@ -64,27 +77,35 @@ export async function chatCompletion(
   messages.push({ role: 'user', content: prompt })
 
   let lastError = 'tüm sağlayıcılar denendi'
+  const now = Date.now()
 
   for (const p of PROVIDERS) {
-    // Ollama has no API key
+    // Skip cloud providers without API key
     if (!p.isLocal) {
       const apiKey = process.env[p.keyEnv]
       if (!apiKey) continue
+
+      // Skip if rate-limited recently
+      const cooldownUntil = providerCooldown[p.name] ?? 0
+      if (now < cooldownUntil) continue
     }
 
     try {
       if (p.isLocal) {
-        // Ollama uses /api/chat with a different payload shape
-        const res = await fetch(p.url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            model: p.model,
-            messages,
-            stream: false,
-            options: { temperature, num_predict: maxTokens },
+        // Ollama — different payload, 90s timeout
+        const res = await withTimeout(
+          fetch(p.url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              model: p.model,
+              messages,
+              stream: false,
+              options: { temperature, num_predict: maxTokens },
+            }),
           }),
-        })
+          90_000,
+        )
         if (!res.ok) {
           const text = await res.text()
           lastError = `Ollama ${res.status}: ${text.slice(0, 80)}`
@@ -92,22 +113,27 @@ export async function chatCompletion(
         }
         const data = await res.json()
         const content: string = data.message?.content ?? ''
+        if (!content) { lastError = 'Ollama boş yanıt'; continue }
         return { content, provider: 'Ollama' }
       }
 
-      // Cloud providers — OpenAI-compatible
+      // Cloud providers — OpenAI-compatible, 30s timeout
       const apiKey = process.env[p.keyEnv]!
-      const res = await fetch(p.url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${apiKey}`,
-          ...p.extraHeaders,
-        },
-        body: JSON.stringify({ model: p.model, messages, temperature, max_tokens: maxTokens }),
-      })
+      const res = await withTimeout(
+        fetch(p.url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${apiKey}`,
+            ...p.extraHeaders,
+          },
+          body: JSON.stringify({ model: p.model, messages, temperature, max_tokens: maxTokens }),
+        }),
+        30_000,
+      )
 
       if (res.status === 429) {
+        providerCooldown[p.name] = Date.now() + RATE_LIMIT_COOLDOWN_MS
         lastError = `${p.name} 429 rate limit`
         continue
       }
@@ -118,6 +144,7 @@ export async function chatCompletion(
       }
       const data = await res.json()
       const content: string = data.choices?.[0]?.message?.content ?? ''
+      if (!content) { lastError = `${p.name} boş yanıt`; continue }
       return { content, provider: p.name }
     } catch (err) {
       lastError = `${p.name}: ${err}`
