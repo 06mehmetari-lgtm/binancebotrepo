@@ -147,6 +147,13 @@ _PROVIDERS = [
         "model": os.getenv("ZAI_MODEL", "GLM-4.5"),
         "headers": {},
     },
+    {
+        "name": "HuggingFace",
+        "url": "https://api-inference.huggingface.co/v1/chat/completions",
+        "key_env": "HUGGINGFACE_API_KEY",
+        "model": "meta-llama/Llama-3.3-70B-Instruct",
+        "headers": {},
+    },
 ]
 
 

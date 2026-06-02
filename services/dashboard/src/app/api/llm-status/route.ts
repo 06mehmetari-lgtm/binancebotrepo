@@ -12,7 +12,8 @@ const LIMITS: Record<string, { daily: number | null; note: string }> = {
   DeepSeek:   { daily: null,  note: 'Token başı ücret, günlük sınır yok' },
   ZAI:        { daily: null,  note: 'Plana göre değişir' },
   Anthropic:  { daily: null,  note: 'Token başı ücret, günlük sınır yok' },
-  Ollama:     { daily: null,  note: 'Yerel model, sınırsız' },
+  Ollama:       { daily: null,  note: 'Yerel model, sınırsız' },
+  HuggingFace:  { daily: null,  note: 'Ücretsiz: dakika başı limit var' },
 }
 
 const KEY_ENVS: Record<string, string> = {
@@ -23,7 +24,8 @@ const KEY_ENVS: Record<string, string> = {
   Cohere:     'COHERE_API_KEY',
   DeepSeek:   'DEEPSEEK_API_KEY',
   ZAI:        'ZAI_API_KEY',
-  Anthropic:  'ANTHROPIC_API_KEY',
+  Anthropic:    'ANTHROPIC_API_KEY',
+  HuggingFace:  'HUGGINGFACE_API_KEY',
 }
 
 function countKeys(baseEnv: string): number {
@@ -39,7 +41,7 @@ export async function GET() {
     const agentStats: Record<string, Record<string, number | string>> = raw ? JSON.parse(raw) : {}
     const now = Date.now() / 1000
 
-    const providers = ['Groq', 'Cerebras', 'SambaNova', 'OpenRouter', 'Cohere', 'DeepSeek', 'ZAI', 'Anthropic', 'Ollama']
+    const providers = ['Groq', 'Cerebras', 'SambaNova', 'OpenRouter', 'Cohere', 'DeepSeek', 'ZAI', 'Anthropic', 'HuggingFace', 'Ollama']
 
     const result = providers.map(name => {
       const s = agentStats[name] ?? {}
