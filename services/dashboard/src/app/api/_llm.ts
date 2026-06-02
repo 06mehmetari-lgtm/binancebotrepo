@@ -113,7 +113,7 @@ export async function chatCompletion(
       name: 'Cerebras',
       url: 'https://api.cerebras.ai/v1/chat/completions',
       keyEnv: 'CEREBRAS_API_KEY',
-      model: 'llama3.3-70b',
+      model: 'gpt-oss-120b',
       extraHeaders: {} as Record<string, string>,
     },
     {
