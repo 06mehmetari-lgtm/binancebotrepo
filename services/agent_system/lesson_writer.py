@@ -78,15 +78,20 @@ async def _generate_lesson(trade_data: dict, redis: aioredis.Redis) -> str:
 
 
 async def _store_lesson(redis: aioredis.Redis, lesson: str, symbol: str, trade_data: dict, pnl_pct: float):
+    ctx_raw = await redis.get(f"context:latest:{symbol}")
+    ctx = json.loads(ctx_raw) if ctx_raw else {}
     entry = {
-        "lesson": lesson,
-        "symbol": symbol,
-        "side": trade_data.get("side", "unknown"),
-        "pnl_pct": round(pnl_pct, 4),
-        "outcome": "WIN" if pnl_pct > 0 else "LOSS",
+        "lesson":       lesson,
+        "symbol":       symbol,
+        "side":         trade_data.get("side", "unknown"),
+        "pnl_pct":      round(pnl_pct, 4),
+        "outcome":      "WIN" if pnl_pct > 0 else "LOSS",
         "close_reason": trade_data.get("close_reason", "unknown"),
-        "confidence": round(float(trade_data.get("confidence", 0)), 3),
-        "ts": time.time(),
+        "confidence":   round(float(trade_data.get("confidence", 0)), 3),
+        "regime":       trade_data.get("regime", ctx.get("regime", "unknown")),
+        "crisis_level": int(trade_data.get("crisis_level", ctx.get("crisis_level", 0))),
+        "hold_seconds": int(trade_data.get("hold_seconds", 0)),
+        "ts":           time.time(),
     }
     entry_json = json.dumps(entry)
 

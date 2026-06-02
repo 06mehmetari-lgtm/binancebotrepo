@@ -11,6 +11,7 @@ from regime_router import get_weights_for_regime
 from groq_news_scanner import GroqNewsScanner
 from lesson_writer import lesson_writer_loop
 from event_learner import event_learner_loop, learn_from_debate
+from strategy_extractor import strategy_extractor_loop
 import rag_context
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
@@ -167,6 +168,21 @@ async def reload_training_context(redis: aioredis.Redis) -> str:
                 "RİSK BLOKLARI (immunity sistemi neden engelledi, gelecekte ne yapılmalı):\n"
                 + "\n\n".join(lessons)
             )
+    except Exception:
+        pass
+
+    # 6. AI tarafından üretilmiş strateji belgesi (en güncel)
+    try:
+        docs_raw = await redis.get("training:docs")
+        if docs_raw:
+            docs = json.loads(docs_raw)
+            for doc in docs:
+                if doc.get("title", "").startswith("AI Öğrenilmiş Strateji"):
+                    sections.append(
+                        f"AI ÖĞRENILMIŞ STRATEJİ BELGESİ ({doc['title']}):\n"
+                        + doc.get("content", "")[:2000]
+                    )
+                    break  # sadece en yenisi
     except Exception:
         pass
 
@@ -462,6 +478,7 @@ async def main():
         news_scanner.run(redis),
         lesson_writer_loop(REDIS_URL),
         event_learner_loop(redis, REDIS_URL),
+        strategy_extractor_loop(redis),
     )
 
 
