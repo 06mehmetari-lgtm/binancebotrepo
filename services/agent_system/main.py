@@ -377,6 +377,18 @@ async def _process_training_queue_batch(redis: aioredis.Redis, batch_size: int =
         await redis.lrem("training:queue", 1, raw)
 
 
+async def llm_stats_push_loop(redis: aioredis.Redis):
+    """Push in-memory LLM provider stats to Redis every 30s for the dashboard."""
+    from llm_client import get_provider_stats
+    while True:
+        try:
+            stats = get_provider_stats()
+            await redis.set("llm:provider_stats", json.dumps(stats), ex=300)
+        except Exception as e:
+            log.debug(f"LLM stats push: {e}")
+        await asyncio.sleep(30)
+
+
 async def training_reload_loop(redis: aioredis.Redis):
     """Process PDF queue in parallel batches + reload training context every 15 seconds."""
     global _training_context
@@ -481,6 +493,7 @@ async def main():
         event_learner_loop(redis, REDIS_URL),
         strategy_extractor_loop(redis),
         system_observer_loop(redis, REDIS_URL),
+        llm_stats_push_loop(redis),
     )
 
 

@@ -25,6 +25,41 @@ RATE_LIMIT_COOLDOWN = 65
 
 _ollama_lock: asyncio.Lock | None = None
 
+# Per-provider session stats (in-memory, pushed to Redis by main.py)
+_stats: dict[str, dict] = {}
+
+
+def _stat(provider: str) -> dict:
+    return _stats.setdefault(provider, {
+        "calls": 0, "rate_limits": 0, "errors": 0,
+        "successes": 0, "last_success_ts": 0.0, "last_error": "",
+    })
+
+
+def get_provider_stats() -> dict:
+    """Return stats + key readiness for each provider. Called by main.py every 30s."""
+    result = {}
+    now = time.time()
+    for p in _PROVIDERS:
+        keys = _collect_keys(p["key_env"])
+        ready = sum(1 for k in keys if _is_ready(k))
+        # Earliest cooldown expiry among all keys
+        cooldown_until = max(
+            (_key_cooldown.get(_key_tag(k), 0.0) for k in keys),
+            default=0.0,
+        )
+        s = _stat(p["name"])
+        result[p["name"]] = {
+            **s,
+            "keys_total": len(keys),
+            "keys_ready": ready,
+            "cooldown_until": cooldown_until if cooldown_until > now else 0.0,
+        }
+    # Ollama (no API key concept)
+    s = _stat("Ollama")
+    result["Ollama"] = {**s, "keys_total": 1, "keys_ready": 1, "cooldown_until": 0.0}
+    return result
+
 
 def _get_ollama_lock() -> asyncio.Lock:
     global _ollama_lock
@@ -183,6 +218,7 @@ async def chat_completion(
                     "temperature": temperature,
                     "max_tokens": max_tokens,
                 }
+                _stat(p["name"])["calls"] += 1
                 try:
                     async with session.post(
                         p["url"], headers=headers, json=payload,
@@ -191,11 +227,14 @@ async def chat_completion(
                         if resp.status == 429:
                             log.warning(f"LLM [{p['name']}] 429 rate limit")
                             _set_cooldown(api_key)
+                            _stat(p["name"])["rate_limits"] += 1
                             continue  # sonraki key dene
                         if resp.status != 200:
                             body = await resp.text()
                             log.warning(f"LLM [{p['name']}] {resp.status}: {body[:80]}")
                             last_error = f"{p['name']} {resp.status}"
+                            _stat(p["name"])["errors"] += 1
+                            _stat(p["name"])["last_error"] = last_error
                             break  # bu provider'ı atla
                         data = await resp.json()
                         content = data["choices"][0]["message"]["content"]
@@ -203,14 +242,20 @@ async def chat_completion(
                             last_error = f"{p['name']} boş yanıt"
                             continue
                         log.debug(f"LLM [{p['name']}] ...{api_key[-4:]} başarılı")
+                        _stat(p["name"])["successes"] += 1
+                        _stat(p["name"])["last_success_ts"] = time.time()
                         return content, p["name"]
                 except asyncio.TimeoutError:
                     log.warning(f"LLM [{p['name']}] timeout")
                     last_error = f"{p['name']} timeout"
+                    _stat(p["name"])["errors"] += 1
+                    _stat(p["name"])["last_error"] = "timeout"
                     break
                 except Exception as e:
                     log.warning(f"LLM [{p['name']}] bağlantı hatası: {e}")
                     last_error = str(e)
+                    _stat(p["name"])["errors"] += 1
+                    _stat(p["name"])["last_error"] = str(e)[:80]
                     break
 
             if provider_succeeded:
@@ -219,11 +264,16 @@ async def chat_completion(
         # Ollama — yerel yedek, sıralı (lock ile)
         try:
             log.info("LLM [Ollama] tüm cloud sağlayıcılar başarısız — yerel modele geçiliyor")
+            _stat("Ollama")["calls"] += 1
             content = await _ollama_completion(messages, temperature, max_tokens, session)
             log.info("LLM [Ollama] başarılı")
+            _stat("Ollama")["successes"] += 1
+            _stat("Ollama")["last_success_ts"] = time.time()
             return content, "Ollama"
         except Exception as e:
             log.error(f"LLM [Ollama] hata: {e}")
+            _stat("Ollama")["errors"] += 1
+            _stat("Ollama")["last_error"] = str(e)[:80]
             last_error = f"Ollama: {e}"
 
     raise RuntimeError(f"Tüm LLM sağlayıcıları başarısız. Son hata: {last_error}")

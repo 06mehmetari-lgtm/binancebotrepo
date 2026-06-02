@@ -604,15 +604,199 @@ function StrategyDocTab() {
   )
 }
 
+// ── Tab 5: LLM Durum ─────────────────────────────────────────────────────────
+
+interface LLMProvider {
+  name: string
+  status: 'working' | 'rate_limited' | 'no_key' | 'error' | 'local' | 'unknown'
+  keysConfigured: number
+  keysReady: number
+  calls: number
+  rateLimits: number
+  errors: number
+  successes: number
+  lastSuccessTs: number
+  lastError: string
+  cooldownUntil: number
+  cooldownSecsLeft: number
+  dailyLimit: number | null
+  estimatedRemaining: number | null
+  note: string
+}
+
+function statusBadge(status: LLMProvider['status']) {
+  switch (status) {
+    case 'working':      return <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-green-900/40 text-green-400 border border-green-700/40">✓ Çalışıyor</span>
+    case 'rate_limited': return <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-yellow-900/40 text-yellow-400 border border-yellow-700/40">⏳ Limit Doldu</span>
+    case 'no_key':       return <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-gray-800 text-gray-500 border border-gray-700">— Key Yok</span>
+    case 'error':        return <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-red-900/40 text-red-400 border border-red-700/40">✕ Hata</span>
+    case 'local':        return <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-blue-900/40 text-blue-400 border border-blue-700/40">🖥 Yerel</span>
+    default:             return <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-gray-800 text-gray-600 border border-gray-700">? Bilinmiyor</span>
+  }
+}
+
+function timeAgo(ts: number) {
+  if (!ts) return '—'
+  const diff = Math.floor(Date.now() / 1000 - ts)
+  if (diff < 60) return `${diff}s önce`
+  if (diff < 3600) return `${Math.floor(diff / 60)}dk önce`
+  return `${Math.floor(diff / 3600)}sa önce`
+}
+
+function LLMStatusTab() {
+  const [providers, setProviders] = useState<LLMProvider[]>([])
+  const [loading, setLoading] = useState(true)
+  const [lastUpdate, setLastUpdate] = useState('')
+
+  const fetch_ = useCallback(async () => {
+    try {
+      const data = await fetch('/api/llm-status').then(r => r.json())
+      if (Array.isArray(data)) {
+        setProviders(data)
+        setLastUpdate(new Date().toLocaleTimeString('tr-TR'))
+      }
+    } catch { /* ignore */ } finally { setLoading(false) }
+  }, [])
+
+  useEffect(() => { fetch_(); const t = setInterval(fetch_, 30000); return () => clearInterval(t) }, [fetch_])
+
+  const working    = providers.filter(p => p.status === 'working' || p.status === 'local').length
+  const limited    = providers.filter(p => p.status === 'rate_limited').length
+  const noKey      = providers.filter(p => p.status === 'no_key').length
+  const totalCalls = providers.reduce((s, p) => s + p.calls, 0)
+
+  if (loading) return <div className="text-center py-16 text-gray-600">LLM durumu yükleniyor...</div>
+
+  return (
+    <div className="space-y-4">
+      {/* Summary cards */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        {[
+          { label: 'Çalışan', value: working.toString(), color: 'text-green-400' },
+          { label: 'Limitli', value: limited.toString(), color: limited > 0 ? 'text-yellow-400' : 'text-gray-500' },
+          { label: 'Key Yok', value: noKey.toString(), color: noKey > 0 ? 'text-red-400' : 'text-gray-500' },
+          { label: 'Toplam İstek', value: totalCalls.toString(), color: 'text-white' },
+        ].map(s => (
+          <div key={s.label} className="border border-gray-800 rounded-xl p-3 bg-gray-900/40 text-center">
+            <p className={`text-xl font-bold font-mono ${s.color}`}>{s.value}</p>
+            <p className="text-gray-500 text-xs mt-0.5">{s.label}</p>
+          </div>
+        ))}
+      </div>
+
+      {/* Provider table */}
+      <div className="border border-gray-800 rounded-xl bg-gray-900/40 overflow-hidden">
+        <div className="flex items-center justify-between px-4 py-3 border-b border-gray-800">
+          <h3 className="text-white text-sm font-semibold">Provider Durumu</h3>
+          {lastUpdate && <span className="text-[10px] text-gray-600">Son güncelleme: {lastUpdate}</span>}
+        </div>
+        <div className="divide-y divide-gray-800/50">
+          {providers.map(p => (
+            <div key={p.name} className="px-4 py-3 space-y-2">
+              {/* Row 1: name + status + keys */}
+              <div className="flex items-center gap-3 flex-wrap">
+                <span className="text-white font-bold text-sm w-24">{p.name}</span>
+                {statusBadge(p.status)}
+                <span className="text-xs text-gray-500 ml-auto">
+                  {p.name !== 'Ollama'
+                    ? `${p.keysReady}/${p.keysConfigured} key hazır`
+                    : 'Yerel model'
+                  }
+                </span>
+              </div>
+
+              {/* Row 2: stats */}
+              <div className="flex gap-4 flex-wrap text-[11px]">
+                <span className="text-gray-500">
+                  İstek: <span className="text-gray-300 font-mono">{p.calls}</span>
+                </span>
+                <span className={p.rateLimits > 0 ? 'text-yellow-500' : 'text-gray-500'}>
+                  Rate limit: <span className="font-mono">{p.rateLimits}</span>
+                </span>
+                <span className={p.errors > 0 ? 'text-red-400' : 'text-gray-500'}>
+                  Hata: <span className="font-mono">{p.errors}</span>
+                </span>
+                <span className="text-gray-500">
+                  Son başarı: <span className="text-gray-300">{timeAgo(p.lastSuccessTs)}</span>
+                </span>
+              </div>
+
+              {/* Row 3: daily limit bar or cooldown */}
+              {p.status === 'rate_limited' && p.cooldownSecsLeft > 0 && (
+                <div className="text-[11px] text-yellow-400">
+                  Soğuma: {p.cooldownSecsLeft}s kaldı
+                </div>
+              )}
+              {p.dailyLimit !== null && (
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between text-[10px] text-gray-500">
+                    <span>{p.note}</span>
+                    <span className="font-mono">
+                      {p.estimatedRemaining !== null
+                        ? `~${p.estimatedRemaining} istek kaldı`
+                        : '—'
+                      }
+                    </span>
+                  </div>
+                  {p.estimatedRemaining !== null && (
+                    <div className="h-1.5 bg-gray-800 rounded-full overflow-hidden">
+                      <div
+                        className={`h-full rounded-full transition-all ${
+                          p.estimatedRemaining / p.dailyLimit > 0.3
+                            ? 'bg-green-500/60'
+                            : p.estimatedRemaining / p.dailyLimit > 0.1
+                              ? 'bg-yellow-500/60'
+                              : 'bg-red-500/60'
+                        }`}
+                        style={{ width: `${Math.min(100, (p.estimatedRemaining / p.dailyLimit) * 100)}%` }}
+                      />
+                    </div>
+                  )}
+                </div>
+              )}
+              {p.dailyLimit === null && p.status !== 'no_key' && (
+                <p className="text-[10px] text-gray-600">{p.note}</p>
+              )}
+              {p.lastError && p.status === 'error' && (
+                <p className="text-[10px] text-red-400/80 font-mono truncate">{p.lastError}</p>
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Key recommendation */}
+      {noKey > 0 && (
+        <div className="border border-yellow-700/40 rounded-xl p-4 bg-yellow-900/10 space-y-2">
+          <h4 className="text-yellow-400 text-sm font-semibold">Eksik Key&apos;ler</h4>
+          <div className="space-y-1">
+            {providers.filter(p => p.status === 'no_key').map(p => (
+              <div key={p.name} className="flex items-center gap-2 text-xs">
+                <span className="text-red-400">✕</span>
+                <span className="text-white font-bold w-24">{p.name}</span>
+                <span className="text-gray-400">{p.note}</span>
+              </div>
+            ))}
+          </div>
+          <p className="text-[10px] text-gray-500 pt-1">
+            Eksik key&apos;leri .env dosyasına ekle. Çoklu key için GROQ_API_KEY_1, GROQ_API_KEY_2 formatını kullan.
+          </p>
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ── Main Page ────────────────────────────────────────────────────────────────
 
-type TabId = 'lessons' | 'feed' | 'stats' | 'strategy'
+type TabId = 'lessons' | 'feed' | 'stats' | 'strategy' | 'llm'
 
 const TABS: { id: TabId; label: string; icon: string }[] = [
   { id: 'lessons',  label: 'AI Dersleri',       icon: '📖' },
   { id: 'feed',     label: 'Canlı Akış',         icon: '📡' },
   { id: 'stats',    label: 'Strateji Analizi',   icon: '📊' },
   { id: 'strategy', label: 'Strateji Belgesi',   icon: '🧠' },
+  { id: 'llm',      label: 'LLM Durum',          icon: '🔌' },
 ]
 
 export default function LearningPage() {
@@ -634,12 +818,12 @@ export default function LearningPage() {
       </div>
 
       {/* Tabs */}
-      <div className="flex gap-1 border-b border-gray-800 pb-0">
+      <div className="flex gap-1 border-b border-gray-800 pb-0 overflow-x-auto">
         {TABS.map(t => (
           <button
             key={t.id}
             onClick={() => setTab(t.id)}
-            className={`flex items-center gap-1.5 px-4 py-2.5 text-xs font-medium rounded-t-lg transition-colors border-b-2 -mb-px ${
+            className={`flex items-center gap-1.5 px-3 py-2.5 text-xs font-medium rounded-t-lg transition-colors border-b-2 -mb-px shrink-0 ${
               tab === t.id
                 ? 'border-orange-500 text-orange-400 bg-orange-900/10'
                 : 'border-transparent text-gray-500 hover:text-gray-300 hover:bg-gray-800/40'
@@ -657,6 +841,7 @@ export default function LearningPage() {
         {tab === 'feed'     && <FeedTab />}
         {tab === 'stats'    && <StatsTab />}
         {tab === 'strategy' && <StrategyDocTab />}
+        {tab === 'llm'      && <LLMStatusTab />}
       </div>
     </div>
   )
