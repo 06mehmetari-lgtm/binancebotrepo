@@ -55,6 +55,7 @@ interface DocInsights {
 interface AnalysisData {
   symbol: string
   price: number
+  timestamp?: number
   has_features: boolean
   features_age_s: number | null
   regime: string | null
