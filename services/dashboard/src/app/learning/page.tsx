@@ -115,7 +115,7 @@ function LessonCard({ lesson }: { lesson: Lesson }) {
             ? 'border-blue-700/40 bg-blue-900/20 text-blue-400'
             : 'border-purple-700/40 bg-purple-900/20 text-purple-400'
         }`}>
-          {lesson.side.toUpperCase()}
+          {(lesson.side || 'unknown').toUpperCase()}
         </span>
         {lesson.regime && (
           <span className="text-xs px-2 py-0.5 rounded border border-gray-700/40 bg-gray-900/20 text-gray-400">
