@@ -159,26 +159,120 @@ async def _collect_knowledge(redis: aioredis.Redis) -> str:
     except Exception as e:
         log.debug(f"Knowledge collect [docs]: {e}")
 
-    # Hardcoded market mechanics (always included)
+    # Hardcoded market mechanics — all indicators (always included)
     sections.append("""
-### PİYASA MEKANİKLERİ (TEMEL BİLGİ)
-- RSI > 70: Aşırı alım → SHORT olasılığı artar. RSI < 30: Aşırı satım → LONG olasılığı artar
-- MACD hist pozitif → yukarı momentum. Negatif → aşağı momentum
-- Funding rate > 0.03%: LONG'lar SHORT'lara ödeme yapar → aşırı LONG pozisyon tehlikeli
-- Funding rate < -0.03%: SHORT'lar LONG'lara ödeme yapar → sıkışma riski
-- OI (açık faiz) artarken fiyat düşüyor → SHORT baskısı güçlü
-- OI artarken fiyat yükseliyor → LONG momentum güçlü
-- OI düşüyor + fiyat düşüyor → LONG pozisyonları kapatılıyor (zayıf)
-- Hacim oranı > 2x: Anormal hacim → trend değişimi veya kırılım sinyali
-- ADX > 25: Güçlü trend. ADX < 20: Yatay piyasa (ranging)
-- VIX > 40: Piyasa panik modunda → FLAT tercih et, leverage düşür
-- BB (Bollinger) üst bant kırılımı → aşırı alım veya güçlü breakout
-- Trending_down rejimde SHORT ağırlıklı işlem yap
-- Volatile rejimde FLAT'te kal, risk düşür
-- Ranging rejimde support-resistance al-sat stratejisi
-- Zarar eden trade'den sonra aynı yönde trade açma — piyasa koşulları değişmemiş olabilir
-- Kaldıraç: Maksimum 3x. Daha yüksek kaldıraç = daha yüksek tasfiye riski
-- Pozisyon büyüklüğü: Portfolyonun maksimum %5'i tek trade'de""")
+### PİYASA MEKANİKLERİ VE İNDİKATÖR KILAVUZU (TEMEL BİLGİ)
+
+## TREND İNDİKATÖRLERİ
+- EMA 20 > EMA 50 > EMA 200 = güçlü boğa trendi (Golden Cross). Tersi = ayı trendi (Death Cross)
+- Fiyat EMA 200 üstünde → uzun vadeli boğa. Altında → uzun vadeli ayı
+- HMA (Hull MA) = düşük gecikmeli trend yönü — ani dönüşleri erken yakalar
+- Supertrend yönü = +1 (boğa, fiyat üstte) / -1 (ayı, fiyat altta). Yön değişimi = güçlü sinyal
+- Supertrend mesafesi < 1 ATR: Stop seviyesi yakın, dikkatli ol
+- Parabolic SAR boğa (psar_bull=1): fiyat SAR'ın üstünde → LONG eğilimi
+- Parabolic SAR ayı (psar_bull=0): fiyat SAR'ın altında → SHORT eğilimi
+- Donchian pozisyon > 0.8: fiyat 20 günlük zirveye yakın → potansiyel breakout veya aşırı alım
+- Donchian pozisyon < 0.2: fiyat 20 günlük dibe yakın → potansiyel destek veya aşırı satım
+
+## İCHİMOKU BULUTU
+- ichi_price_vs_cloud = +1: fiyat bulutun üstünde → GÜÇLÜ BOĞA — bulut destek
+- ichi_price_vs_cloud = -1: fiyat bulutun altında → GÜÇLÜ AYI — bulut direnç
+- ichi_price_vs_cloud = 0: fiyat bulutun içinde → NÖTR, yön belirsiz
+- ichi_cloud_thick yüksek: bulut kalın = kırılması zor destek/direnç
+- ichi_tk_cross > 0: Tenkan > Kijun → kısa vadeli boğa momentum
+- ichi_chikou_signal > 0: Chikou 26 bar öncesinin fiyatının üstünde → boğa teyidi
+
+## MOMENTUM İNDİKATÖRLERİ
+- RSI > 70: Aşırı alım → SHORT olasılığı artar, momentum tükenebilir
+- RSI < 30: Aşırı satım → LONG olasılığı artar, dipten dönüş bekle
+- RSI güçlü trende 14 gün 70 üstünde kalabilir — trendi görmezden gelme
+- MACD hist pozitif ve artıyor → momentum hızlanıyor (LONG lehine)
+- MACD hist negatif ve düşüyor → momentum hızlanıyor (SHORT lehine)
+- MACD hist yönü fiyat yönüyle çelişiyorsa → UYUMSUZLUK (Divergence) = dönüş sinyali
+- Stochastic K > 80: aşırı alım bölgesi. K < 20: aşırı satım bölgesi
+- CCI > +100: güçlü yukarı hareket. CCI < -100: güçlü aşağı hareket
+- Williams %R > -20: aşırı alım. < -80: aşırı satım
+
+## TREND GÜCÜ / YÖN (ADX, AROON, VORTEX)
+- ADX < 20: Yatay piyasa (ranging) → osilatörlere bak (RSI, Stochastic)
+- ADX 20-40: Trend oluşuyor → trend takip stratejisi
+- ADX > 40: Güçlü trend → trend karşıtı işlem açma!
+- DI+ > DI- (di_cross > 0): alıcılar baskın → boğa trendi
+- DI- > DI+ (di_cross < 0): satıcılar baskın → ayı trendi
+- ADX divergence: fiyat yeni yüksek yaparken ADX düşüyorsa → trend zayıflıyor
+- Aroon Up 100'e yakın + Aroon Down 0'a yakın: güçlü boğa trendi, tersine işlem yapma
+- Aroon Up ve Down birbirini keserse → yeni trend başlıyor
+- Aroon osc > 70: güçlü boğa. < -70: güçlü ayı. 0 civarı: ranging
+- VI+ > VI- (vi_diff > 0): yukarı akış baskın → boğa. VI- > VI+: ayı
+- VI+ ve VI- 1.20 üstüne çıkması → aşırı tek yönlü momentum
+
+## HACİM ANALİZİ
+- VWAP: Kurumsal ortalama maliyet fiyatı
+  * Fiyat VWAP üstünde (price_above_vwap=1): kurumsal alımlar kazançta → LONG eğilimi
+  * Fiyat VWAP altında: kurumsal alımlar zararda → satış baskısı olabilir
+  * VWAP mesafesi > 3 ATR: fiyat VWAP'tan çok uzak → geri dönüş olası
+- OBV değişimi pozitif: fiyat düşmeden hacim artıyor → birikim (accumulation) = LONG sinyali
+- OBV değişimi negatif: fiyat yükselmeden hacim düşüyor → dağıtım (distribution) = SHORT sinyali
+- CMF > 0.1: güçlü para girişi. CMF < -0.1: güçlü para çıkışı
+- MFI > 80: aşırı alım (hacim destekli). MFI < 20: aşırı satım (hacim destekli)
+- A/D Line artıyorken fiyat düşüyorsa → bullish divergence (dip yakın)
+- Hacim oranı > 2x: anormal hacim → trend değişimi veya kırılım yakın
+- Vol surge (vol_surge=1): patlama sinyali — yönü DI+ / DI- ile teyit et
+
+## SMART MONEY CONCEPTS (SMC) — KURUMSAL PARA TAKİBİ
+- struct_bullish = 1: HH + HL yapısı (Higher High + Higher Low) → boğa trendi onaylı
+- struct_bearish = 1: LH + LL yapısı (Lower High + Lower Low) → ayı trendi onaylı
+- bos_bullish = 1: Break of Structure yukarı → trend devam ediyor, LONG lehine
+- bos_bearish = 1: Break of Structure aşağı → trend devam ediyor, SHORT lehine
+- choch_bullish = 1: Change of Character — ayı trendi bitti, boğa başlıyor → LONG fırsatı
+- choch_bearish = 1: Change of Character — boğa trendi bitti, ayı başlıyor → SHORT fırsatı
+- price_in_bull_ob = 1: Fiyat boğa Order Block içinde → kurumsal alım bölgesi, LONG için ideal giriş
+- price_in_bear_ob = 1: Fiyat ayı Order Block içinde → kurumsal satım bölgesi, SHORT için ideal giriş
+- bull_fvg_dist küçük (< 1 ATR): Fiyat altındaki bir bullish FVG'ye yakın → destek gibi davranabilir
+- bear_fvg_dist küçük (< 1 ATR): Fiyat üstündeki bir bearish FVG'ye yakın → direnç gibi davranabilir
+- dist_to_resistance küçük (< 1 ATR): Güçlü direnç yakın → pozisyon büyüklüğünü küçült
+- dist_to_support küçük (< 1 ATR): Güçlü destek yakın → LONG için güvenli alan
+- CHoCH'u tespit edince aceleden işlem açma — gövde kapanışını (body close) bekle
+
+## VOLATİLİTE
+- ATR yüksek: büyük hareketler bekleniyor → stop mesafesini genişlet, pozisyonu küçült
+- ATR düşük (piyasa sıkışık): Bollinger Squeeze oluşuyorsa büyük patlama yakın
+- BB Squeeze (bb_squeeze düşük): bantlar daraldı → breakout gelecek, yönü DI+/DI- ile belirle
+- Bollinger üst bandı kırılması: aşırı alım VEYA güçlü breakout (ADX ile teyit et)
+
+## ÇOKLU ZAMAN DİLİMİ (MTF) CONFLUENCE
+- trend_alignment_3tf > 0.5: 4 TF (1m/1h/4h/1d) boğa uyumu → yüksek kalite LONG sinyali
+- trend_alignment_3tf < -0.5: 4 TF ayı uyumu → yüksek kalite SHORT sinyali
+- major_bull_align = 2: 4H ve Daily aynı anda boğa → uzun vadeli trend güçlü
+- major_bear_align = 2: 4H ve Daily aynı anda ayı → uzun vadeli trend aşağı
+- 1m'de SHORT sinyali ama Daily trend yukarıysa → FLAT kal (trende karşı gitme)
+- ichi_signal_4h = +1: 4H Ichimoku bulutunun üstünde → orta vadeli boğa teyidi
+- adx_4h > 30 + trend_4h > 0: 4H'te güçlü boğa trendi → 1m long sinyallerini destekler
+
+## KRİPTO ÖZGÜL VERİLER
+- Funding rate > 0.03%: LONG'lar SHORT'lara ödeme yapar → aşırı LONG, sıkışma riski
+- Funding rate < -0.03%: SHORT'lar LONG'lara ödeme yapar → aşırı SHORT, squeeze riski
+- OI artarken fiyat yükseliyor → güçlü LONG momentum, trend sağlam
+- OI artarken fiyat düşüyor → güçlü SHORT baskısı
+- OI azalırken fiyat düşüyor → LONG'lar pozisyon kapatıyor (zayıf piyasa)
+- OI azalırken fiyat yükseliyor → SHORT'lar kapatıyor (short squeeze)
+- VIX > 40: panik modu → FLAT, leverage düşür
+- Fear&Greed < 20: aşırı korku → dip yakın olabilir, LONG için izle
+- Fear&Greed > 80: aşırı açgözlülük → zirve yakın olabilir, SHORT için izle
+
+## REJİM STRATEJİLERİ
+- trending_up rejimde: ADX > 25 olmadan LONG açma. EMA sıralanmış mı kontrol et
+- trending_down rejimde: SHORT öncelikli. LONG sinyallerini %20 güven indirimi uygula
+- ranging rejimde: Destek alıp dirence sat. RSI + Stochastic kullan, EMA'ları yoksay
+- volatile rejimde: FLAT tercih et. Pozisyon açacaksan 0.5× normal büyüklükle aç
+
+## RİSK YÖNETİMİ
+- Maksimum kaldıraç: 3× — daha fazlası tasfiye (liquidation) riskini katlar
+- Tek trade: maksimum portföyün %5'i
+- Günlük zarar: %10'u geçerse FLAT — piyasayı anlayamıyorsun demektir
+- Zarar eden trade'in hemen ardından aynı yönde işlem açma
+- Order Block içine girmeden önce zaman dilimi uyumunu kontrol et
+- FVG doldurulursa geçerliliğini yitirir — eski haritayı kullanma""")
 
     return "\n".join(sections)
 

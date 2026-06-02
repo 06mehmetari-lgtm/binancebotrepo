@@ -8,40 +8,43 @@ import urllib.request
 import pandas as pd
 import redis.asyncio as aioredis
 
-from price_features import PriceFeatureBuilder
+from price_features  import PriceFeatureBuilder
+from smc_features    import SMCFeatureBuilder
 from orderbook_features import OrderBookFeatureBuilder
 from crypto_features import CryptoFeatureBuilder
-from cvd_features import CVDFeatureBuilder
-from volume_profile import VolumeProfileBuilder
-from mtf_features import MTFFeatureBuilder
-from drift_detector import DriftDetector
-from ml_signal import MLSignalPredictor
-from online_learner import OnlineLearner
+from cvd_features    import CVDFeatureBuilder
+from volume_profile  import VolumeProfileBuilder
+from mtf_features    import MTFFeatureBuilder
+from drift_detector  import DriftDetector
+from ml_signal       import MLSignalPredictor
+from online_learner  import OnlineLearner
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
 
-REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379")
+REDIS_URL  = os.getenv("REDIS_URL", "redis://redis:6379")
 SYMBOLS_RAW = os.getenv("SYMBOLS", "AUTO")
-TOP_N = int(os.getenv("TOP_SYMBOLS", "500"))
+TOP_N       = int(os.getenv("TOP_SYMBOLS", "500"))
 
-SYMBOL_REFRESH_INTERVAL = 300
+SYMBOL_REFRESH_INTERVAL = 300   # saniye
 
-price_builder   = PriceFeatureBuilder()
-ob_builder      = OrderBookFeatureBuilder()
-crypto_builder  = CryptoFeatureBuilder()
-cvd_builder     = CVDFeatureBuilder()
-vp_builder      = VolumeProfileBuilder()
-mtf_builder     = MTFFeatureBuilder()
+price_builder  = PriceFeatureBuilder()
+smc_builder    = SMCFeatureBuilder()
+ob_builder     = OrderBookFeatureBuilder()
+crypto_builder = CryptoFeatureBuilder()
+cvd_builder    = CVDFeatureBuilder()
+vp_builder     = VolumeProfileBuilder()
+mtf_builder    = MTFFeatureBuilder()
 drift_detectors: dict[str, DriftDetector] = {}
-ml_predictor    = MLSignalPredictor()
+ml_predictor   = MLSignalPredictor()
 online_learner  = OnlineLearner(ml_predictor)
 
 OHLCV_HISTORY: dict[str, list] = {}
 
 
+# ── Sembol keşfi ─────────────────────────────────────────────────────────────
+
 def _resolve_symbols_from_env() -> list[str]:
-    """Called only as a last resort when Redis has no data yet."""
     if SYMBOLS_RAW.strip().upper() != "AUTO":
         return [s.strip() for s in SYMBOLS_RAW.split(",") if s.strip()]
     try:
@@ -56,7 +59,7 @@ def _resolve_symbols_from_env() -> list[str]:
         log.info(f"Binance REST discovery: {len(syms)} symbols")
         return syms
     except Exception as e:
-        log.warning(f"Binance REST discovery failed: {e} — using extended fallback list")
+        log.warning(f"Binance REST discovery failed: {e}")
         return [
             "BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT",
             "ADAUSDT", "DOGEUSDT", "AVAXUSDT", "LINKUSDT", "DOTUSDT",
@@ -66,26 +69,24 @@ def _resolve_symbols_from_env() -> list[str]:
 
 
 async def discover_symbols_from_redis(redis: aioredis.Redis) -> list[str]:
-    """Discover all symbols that data_ingestion is actively streaming into Redis."""
     def _decode(key: bytes | str) -> str:
         return key.decode() if isinstance(key, bytes) else key
 
-    # data_ingestion writes binance:kline:{symbol.lower()} for every subscribed symbol
     kline_keys = await redis.keys("binance:kline:*")
     if kline_keys:
         symbols = sorted(_decode(k).replace("binance:kline:", "").upper() for k in kline_keys)
-        log.info(f"Redis symbol discovery: {len(symbols)} symbols from binance:kline:* keys")
+        log.info(f"Redis symbol discovery: {len(symbols)} symbols")
         return symbols
 
-    # Fallback: orderbook keys (written by data_ingestion for all depth stream symbols)
     ob_keys = await redis.keys("binance:ob:*")
     if ob_keys:
         symbols = sorted(_decode(k).replace("binance:ob:", "").upper() for k in ob_keys)
-        log.info(f"Redis symbol discovery (OB): {len(symbols)} symbols from binance:ob:* keys")
+        log.info(f"Redis symbol discovery (OB): {len(symbols)} symbols")
         return symbols
-
     return []
 
+
+# ── Kline bootstrap (1m) ──────────────────────────────────────────────────────
 
 def _fetch_klines_sync(symbol: str, limit: int = 300) -> list:
     url = f"https://fapi.binance.com/fapi/v1/klines?symbol={symbol}&interval=1m&limit={limit}"
@@ -102,7 +103,7 @@ async def bootstrap_klines(symbols: list[str]):
     loop = asyncio.get_event_loop()
     for symbol in symbols:
         if len(OHLCV_HISTORY.get(symbol, [])) >= 30:
-            continue  # already bootstrapped
+            continue
         candles = await loop.run_in_executor(None, _fetch_klines_sync, symbol)
         if candles:
             OHLCV_HISTORY[symbol] = candles
@@ -111,20 +112,98 @@ async def bootstrap_klines(symbols: list[str]):
             OHLCV_HISTORY.setdefault(symbol, [])
 
 
+# ── Higher Timeframe kline cache (4H ve 1D) ───────────────────────────────────
+
+def _fetch_htf_klines_sync(symbol: str, interval: str, limit: int) -> list[dict] | None:
+    """Belirtilen interval için OHLCV listesi döner (dict formatında)."""
+    url = (
+        f"https://fapi.binance.com/fapi/v1/klines"
+        f"?symbol={symbol}&interval={interval}&limit={limit}"
+    )
+    try:
+        with urllib.request.urlopen(url, timeout=15) as r:
+            data = json.loads(r.read())
+        return [
+            {
+                "open":   k[1], "high":  k[2],
+                "low":    k[3], "close": k[4], "volume": k[5],
+            }
+            for k in data
+        ]
+    except Exception as e:
+        log.debug(f"HTF klines {symbol} {interval}: {e}")
+        return None
+
+
+async def htf_cache_loop(redis: aioredis.Redis, symbols_getter):
+    """
+    4H klines: her 30 dakikada bir güncellenir (TTL 35dk)
+    1D klines: her 60 dakikada bir güncellenir (TTL 65dk)
+    """
+    loop = asyncio.get_event_loop()
+
+    last_4h: dict[str, float] = {}
+    last_1d: dict[str, float] = {}
+
+    INTERVAL_4H = 1800   # 30 dakika
+    INTERVAL_1D = 3600   # 60 dakika
+    TTL_4H      = 2100   # 35 dakika
+    TTL_1D      = 3900   # 65 dakika
+
+    while True:
+        symbols = symbols_getter()
+        now = time.time()
+
+        # Sembolleri 4H ve 1D için güncelle — her 5 sembol arasında küçük bekleme
+        for i, symbol in enumerate(symbols):
+            try:
+                # 4H güncelle
+                if now - last_4h.get(symbol, 0) >= INTERVAL_4H:
+                    klines = await loop.run_in_executor(
+                        None, _fetch_htf_klines_sync, symbol, "4h", 200
+                    )
+                    if klines:
+                        await redis.set(f"klines:4h:{symbol}", json.dumps(klines), ex=TTL_4H)
+                        last_4h[symbol] = now
+
+                # 1D güncelle
+                if now - last_1d.get(symbol, 0) >= INTERVAL_1D:
+                    klines = await loop.run_in_executor(
+                        None, _fetch_htf_klines_sync, symbol, "1d", 300
+                    )
+                    if klines:
+                        await redis.set(f"klines:1d:{symbol}", json.dumps(klines), ex=TTL_1D)
+                        last_1d[symbol] = now
+
+            except Exception as e:
+                log.debug(f"HTF cache error {symbol}: {e}")
+
+            # Her 5 sembolde bir API'ya biraz nefes aldır
+            if (i + 1) % 5 == 0:
+                await asyncio.sleep(0.5)
+
+        # Döngü gecikmesi: tüm semboller işlendikten sonra 60s bekle
+        await asyncio.sleep(60)
+
+
+# ── Tekil sembol feature hesaplama ───────────────────────────────────────────
+
 async def compute_features(redis: aioredis.Redis, symbol: str) -> dict | None:
     try:
-        sym_lo = symbol.lower()
+        sym_lo   = symbol.lower()
         pipeline = redis.pipeline()
-        pipeline.lindex(f"binance:ob:{sym_lo}", 0)        # 0
-        pipeline.lrange(f"binance:trade:{sym_lo}", 0, 499) # 1 — last 500 trades for CVD
-        pipeline.lrange(f"liq:recent:{symbol}", 0, 199)   # 2 — liquidations
-        pipeline.get(f"funding:{symbol}")                  # 3
-        pipeline.get(f"oi:{symbol}")                       # 4
-        pipeline.get(f"ls_ratio:{symbol}")                 # 5
-        pipeline.get("sentiment:fear_greed")               # 6
-        pipeline.get(f"sentiment:reddit:{symbol}")         # 7
-        pipeline.get("macro:vix")                          # 8
-        pipeline.get(f"klines:1h:{symbol}")                # 9
+        pipeline.lindex(f"binance:ob:{sym_lo}", 0)          # 0
+        pipeline.lrange(f"binance:trade:{sym_lo}", 0, 499)  # 1
+        pipeline.lrange(f"liq:recent:{symbol}", 0, 199)     # 2
+        pipeline.get(f"funding:{symbol}")                    # 3
+        pipeline.get(f"oi:{symbol}")                         # 4
+        pipeline.get(f"ls_ratio:{symbol}")                   # 5
+        pipeline.get("sentiment:fear_greed")                 # 6
+        pipeline.get(f"sentiment:reddit:{symbol}")           # 7
+        pipeline.get("macro:vix")                            # 8
+        pipeline.get(f"klines:1h:{symbol}")                  # 9
+        pipeline.get(f"klines:4h:{symbol}")                  # 10
+        pipeline.get(f"klines:1d:{symbol}")                  # 11
         res = await pipeline.execute()
 
         ob_raw      = res[0]
@@ -137,6 +216,8 @@ async def compute_features(redis: aioredis.Redis, symbol: str) -> dict | None:
         reddit_raw  = res[7]
         vix_raw     = res[8]
         klines_1h   = res[9]
+        klines_4h   = res[10]
+        klines_1d   = res[11]
 
         ob_snapshot = json.loads(ob_raw)["data"] if ob_raw else {}
 
@@ -144,7 +225,7 @@ async def compute_features(redis: aioredis.Redis, symbol: str) -> dict | None:
         if funding_raw: crypto.update(json.loads(funding_raw))
         if oi_raw:      crypto.update(json.loads(oi_raw))
         if ls_raw:      crypto.update(json.loads(ls_raw))
-        if fg_raw:      crypto["fear_greed"]      = json.loads(fg_raw).get("value", 50)
+        if fg_raw:      crypto["fear_greed"]       = json.loads(fg_raw).get("value", 50)
         if reddit_raw:  crypto["reddit_sentiment"] = json.loads(reddit_raw).get("score", 0)
         if vix_raw:     crypto["vix_level"]        = json.loads(vix_raw).get("value", 20)
 
@@ -158,15 +239,20 @@ async def compute_features(redis: aioredis.Redis, symbol: str) -> dict | None:
             return None
         last_row = price_feats.iloc[-1].to_dict()
 
+        # SMC features (son 100 mum + ATR)
+        current_atr = float(last_row.get("atr_14", 0) or 0)
+        smc_feats = smc_builder.build(history, current_atr)
+
         ob_feats     = ob_builder.build(ob_snapshot)
         crypto_feats = crypto_builder.build(crypto)
         cvd_feats    = cvd_builder.build(trades_raw, liq_raw)
         vp_feats     = vp_builder.build(history)
-        mtf_feats    = mtf_builder.build(klines_1h, last_row)
+        mtf_feats    = mtf_builder.build(klines_1h, klines_4h, klines_1d, last_row)
 
         features: dict = {}
         for k, v in last_row.items():
             features[k] = float(v) if v == v else 0.0
+        features.update(smc_feats)
         features.update(ob_feats)
         features.update(crypto_feats)
         features.update(cvd_feats)
@@ -181,7 +267,6 @@ async def compute_features(redis: aioredis.Redis, symbol: str) -> dict | None:
         drift = drift_detectors[symbol].update(rsi)
         features["drift_status"] = "DRIFTING" if drift else "STABLE"
 
-        # ML signal score — heuristic until first retrain, then learned model
         features["ml_score"] = round(ml_predictor.predict(features), 4)
 
         return features
@@ -191,26 +276,29 @@ async def compute_features(redis: aioredis.Redis, symbol: str) -> dict | None:
         return None
 
 
+# ── OHLCV güncelleme (WebSocket kline'dan) ───────────────────────────────────
+
 async def update_ohlcv(redis: aioredis.Redis, symbol: str):
     kline_raw = await redis.lindex(f"binance:kline:{symbol.lower()}", 0)
     if not kline_raw:
         return
-    data = json.loads(kline_raw)
+    data  = json.loads(kline_raw)
     kline = data.get("data", {}).get("k", {})
-    if kline and kline.get("x"):  # closed kline only
+    if kline and kline.get("x"):   # yalnızca kapanmış mum
         candle = [
             float(kline["o"]), float(kline["h"]),
             float(kline["l"]), float(kline["c"]),
             float(kline["v"])
         ]
-        history = OHLCV_HISTORY.setdefault(symbol, [])
-        history.append(candle)
-        if len(history) > 500:
-            OHLCV_HISTORY[symbol] = history[-500:]
+        hist = OHLCV_HISTORY.setdefault(symbol, [])
+        hist.append(candle)
+        if len(hist) > 500:
+            OHLCV_HISTORY[symbol] = hist[-500:]
 
+
+# ── ML model yenileme döngüsü ─────────────────────────────────────────────────
 
 async def _model_refresh_loop(redis: aioredis.Redis):
-    """Reload ML model from Redis every 10 minutes (in case online_learner updated it)."""
     while True:
         await asyncio.sleep(600)
         try:
@@ -226,33 +314,38 @@ async def _model_refresh_loop(redis: aioredis.Redis):
             log.warning(f"ML model refresh error: {e}")
 
 
-async def main():
-    redis = await aioredis.from_url(REDIS_URL)
-    redis_learner = await aioredis.from_url(REDIS_URL)
+# ── Ana döngü ─────────────────────────────────────────────────────────────────
 
-    # Wait for data_ingestion to populate Redis keys (retry up to 2 minutes)
+async def main():
+    redis         = await aioredis.from_url(REDIS_URL)
+    redis_learner = await aioredis.from_url(REDIS_URL)
+    redis_htf     = await aioredis.from_url(REDIS_URL)
+
     active_symbols: list[str] = []
     for attempt in range(12):
         active_symbols = await discover_symbols_from_redis(redis)
         if active_symbols:
             break
-        log.info(f"Waiting for data_ingestion keys in Redis (attempt {attempt + 1}/12)...")
+        log.info(f"Waiting for data_ingestion keys (attempt {attempt+1}/12)...")
         await asyncio.sleep(10)
 
     if not active_symbols:
-        log.warning("No symbols found in Redis — falling back to env/REST discovery")
+        log.warning("No symbols in Redis — using env/REST fallback")
         active_symbols = _resolve_symbols_from_env()
 
     log.info(f"feature_engine starting — {len(active_symbols)} symbols")
-
-    log.info("Bootstrapping klines from Binance REST API...")
+    log.info("Bootstrapping 1m klines from Binance REST API...")
     await bootstrap_klines(active_symbols)
 
-    active_set: set[str] = set(active_symbols)
-    last_refresh = time.time()
+    active_set:   set[str] = set(active_symbols)
+    last_refresh: float    = time.time()
 
-    BATCH = 50
+    BATCH    = 50
     FEAT_TTL = 300
+
+    # Paylaşılan sembol listesi getter (htf_cache_loop için closure)
+    def get_active_symbols() -> list[str]:
+        return list(active_set)
 
     async def _process(symbol: str):
         try:
@@ -273,28 +366,22 @@ async def main():
         nonlocal active_set, last_refresh
         while True:
             if time.time() - last_refresh > SYMBOL_REFRESH_INTERVAL:
-                new_symbols = await discover_symbols_from_redis(redis)
-                if new_symbols:
-                    added = set(new_symbols) - active_set
+                new_syms = await discover_symbols_from_redis(redis)
+                if new_syms:
+                    added = set(new_syms) - active_set
                     if added:
                         log.info(f"New symbols discovered: {len(added)}")
                         await bootstrap_klines(list(added))
-                    active_set = set(new_symbols)
+                    active_set = set(new_syms)
                 last_refresh = time.time()
 
             symbols_list = list(active_set)
             for i in range(0, len(symbols_list), BATCH):
                 await asyncio.gather(*[_process(s) for s in symbols_list[i:i + BATCH]])
-
             await asyncio.sleep(1)
 
     async def _priority_scan_loop():
-        """Aktif OMS pozisyonlu sembolleri 3s'de bir öncelikli yeniden tara.
-
-        Normal feature_loop tüm 500+ sembolü işler.
-        Bu döngü sadece açık pozisyon olan sembollere odaklanarak
-        stop-and-reverse kararları için güncel sinyal sağlar.
-        """
+        """Açık pozisyonlu sembolleri 3s'de bir öncelikli tara."""
         while True:
             try:
                 pos_keys = await redis.keys("oms:position:*")
@@ -313,6 +400,7 @@ async def main():
         online_learner.run(redis_learner),
         _model_refresh_loop(redis),
         _priority_scan_loop(),
+        htf_cache_loop(redis_htf, get_active_symbols),
     )
 
 
