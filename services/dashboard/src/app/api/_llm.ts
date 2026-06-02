@@ -151,7 +151,7 @@ export async function chatCompletion(
       name: 'ZAI',
       url: `${process.env.ZAI_BASE_URL ?? 'https://api.z.ai/v1'}/chat/completions`,
       keyEnv: 'ZAI_API_KEY',
-      model: process.env.ZAI_MODEL ?? 'gpt-4o-mini',
+      model: process.env.ZAI_MODEL ?? 'GLM-4.5',
       extraHeaders: {} as Record<string, string>,
     },
   ]

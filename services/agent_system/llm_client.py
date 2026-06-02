@@ -144,7 +144,7 @@ _PROVIDERS = [
         "name": "ZAI",
         "url": os.getenv("ZAI_BASE_URL", "https://api.z.ai/v1") + "/chat/completions",
         "key_env": "ZAI_API_KEY",
-        "model": os.getenv("ZAI_MODEL", "gpt-4o-mini"),
+        "model": os.getenv("ZAI_MODEL", "GLM-4.5"),
         "headers": {},
     },
 ]
