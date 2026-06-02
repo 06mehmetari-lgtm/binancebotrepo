@@ -608,7 +608,7 @@ function StrategyDocTab() {
 
 interface LLMProvider {
   name: string
-  status: 'working' | 'rate_limited' | 'no_key' | 'error' | 'local' | 'unknown'
+  status: 'working' | 'rate_limited' | 'no_key' | 'error' | 'local' | 'standby' | 'unknown'
   keysConfigured: number
   keysReady: number
   calls: number
@@ -632,6 +632,7 @@ function statusBadge(status: LLMProvider['status']) {
     case 'no_key':       return <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-gray-800 text-gray-500 border border-gray-700">— Key Yok</span>
     case 'error':        return <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-red-900/40 text-red-400 border border-red-700/40">✕ Hata</span>
     case 'local':        return <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-blue-900/40 text-blue-400 border border-blue-700/40">🖥 Yerel</span>
+    case 'standby':      return <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-gray-800 text-gray-400 border border-gray-700">⏸ Bekleniyor</span>
     default:             return <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-gray-800 text-gray-600 border border-gray-700">? Bilinmiyor</span>
   }
 }

@@ -46,7 +46,9 @@ export async function GET() {
     const result = providers.map(name => {
       const s = agentStats[name] ?? {}
       const keyEnv = KEY_ENVS[name]
-      const keysConfigured = name === 'Ollama' ? 1 : (keyEnv ? countKeys(keyEnv) : 0)
+      // Prefer backend's count (sees all keys from agent_system env), fall back to dashboard env
+      const keysConfigured = name === 'Ollama' ? 1
+        : (Number(s.keys_total) || (keyEnv ? countKeys(keyEnv) : 0))
       const lim = LIMITS[name] ?? { daily: null, note: '' }
 
       const calls      = Number(s.calls      ?? 0)
@@ -61,14 +63,14 @@ export async function GET() {
       const inCooldown = cooldownUntil > now
       const cooldownSecsLeft = inCooldown ? Math.ceil(cooldownUntil - now) : 0
 
-      let status: 'working' | 'rate_limited' | 'no_key' | 'error' | 'local' | 'unknown'
+      let status: 'working' | 'rate_limited' | 'no_key' | 'error' | 'local' | 'standby' | 'unknown'
       if (name === 'Ollama') status = 'local'
       else if (keysConfigured === 0) status = 'no_key'
       else if (inCooldown && keysReady === 0) status = 'rate_limited'
       else if (rateLimits > 0 && successes === 0 && !inCooldown) status = 'rate_limited'
       else if (successes > 0) status = 'working'
       else if (errors > 0 && successes === 0 && calls > 0) status = 'error'
-      else if (calls === 0 && keysConfigured > 0) status = 'unknown'
+      else if (calls === 0 && keysConfigured > 0) status = 'standby'  // key var ama henüz çağrılmadı
       else status = 'unknown'
 
       // Toplam günlük kapasite = key sayısı × key başı limit
