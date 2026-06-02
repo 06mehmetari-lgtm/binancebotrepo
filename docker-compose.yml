@@ -238,16 +238,12 @@ services:
     restart: unless-stopped
     volumes:
       - ./services/agent_system:/app
+    env_file:
+      - .env
     environment:
       - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379
       - POSTGRES_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/prometheus_trading
       - QDRANT_URL=http://qdrant:6333
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-      - GROQ_API_KEY=${GROQ_API_KEY}
-      - CEREBRAS_API_KEY=${CEREBRAS_API_KEY}
-      - SAMBANOVA_API_KEY=${SAMBANOVA_API_KEY}
-      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
-      - CRYPTOPANIC_KEY=${CRYPTOPANIC_KEY}
       - OLLAMA_URL=http://ollama:11434
       - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3.1:8b}
     depends_on:
@@ -409,16 +405,14 @@ services:
     restart: unless-stopped
     ports:
       - "3000:3000"
+    env_file:
+      - .env
     environment:
       - NEXT_PUBLIC_API_URL=http://localhost:8000
-      - REDIS_PASSWORD=${REDIS_PASSWORD}
       - REDIS_HOST=redis
       - QDRANT_URL=http://qdrant:6333
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-      - GROQ_API_KEY=${GROQ_API_KEY}
-      - CEREBRAS_API_KEY=${CEREBRAS_API_KEY}
-      - SAMBANOVA_API_KEY=${SAMBANOVA_API_KEY}
-      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - OLLAMA_URL=http://ollama:11434
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3.1:8b}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     depends_on:

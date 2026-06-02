@@ -1,14 +1,37 @@
 /**
- * Multi-provider LLM client with automatic fallback.
- * Order: Anthropic → Groq → Cerebras → SambaNova → OpenRouter → Ollama
+ * Multi-provider LLM client with key rotation and automatic fallback.
+ * Order: Anthropic → Groq → Cerebras → SambaNova → OpenRouter → Cohere → DeepSeek → Z.AI → Ollama
  */
 
 const OLLAMA_URL   = process.env.OLLAMA_URL   ?? 'http://ollama:11434'
 const OLLAMA_MODEL = process.env.OLLAMA_MODEL ?? 'llama3.1:8b'
 
-// Per-provider rate limit cooldown (ms timestamp) — persists across requests in same process
-const providerCooldown: Record<string, number> = {}
+// Per-key rate limit cooldown (ms timestamp) — persists across requests in same process
+const keyCooldown: Record<string, number> = {}
 const RATE_LIMIT_COOLDOWN_MS = 65_000
+
+function keyTag(key: string): string {
+  return key.slice(0, 12)
+}
+
+function isKeyReady(key: string): boolean {
+  return Date.now() >= (keyCooldown[keyTag(key)] ?? 0)
+}
+
+function setKeyCooldown(key: string): void {
+  keyCooldown[keyTag(key)] = Date.now() + RATE_LIMIT_COOLDOWN_MS
+}
+
+function collectKeys(baseEnv: string): string[] {
+  const keys: string[] = []
+  const base = process.env[baseEnv]
+  if (base) keys.push(base)
+  for (let i = 1; i <= 20; i++) {
+    const k = process.env[`${baseEnv}_${i}`]
+    if (k && !keys.includes(k)) keys.push(k)
+  }
+  return keys
+}
 
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   return Promise.race([
@@ -28,7 +51,6 @@ async function callAnthropic(
   const apiKey = process.env.ANTHROPIC_API_KEY
   if (!apiKey) throw new Error('ANTHROPIC_API_KEY yok')
 
-  // Anthropic: system ayrı alan, messages sadece user/assistant
   const userMessages = messages.filter(m => m.role !== 'system')
 
   const res = await withTimeout(
@@ -78,7 +100,7 @@ export async function chatCompletion(
     console.warn(`LLM [Anthropic] hata: ${err} — sonraki sağlayıcıya geçiliyor`)
   }
 
-  // 2. Free cloud providers
+  // 2. Free/paid cloud providers with key rotation
   const CLOUD_PROVIDERS = [
     {
       name: 'Groq',
@@ -111,54 +133,80 @@ export async function chatCompletion(
         'X-Title': 'Prometheus Trading',
       },
     },
+    {
+      name: 'Cohere',
+      url: 'https://api.cohere.com/compatibility/v1/chat/completions',
+      keyEnv: 'COHERE_API_KEY',
+      model: 'command-r-plus-08-2024',
+      extraHeaders: {} as Record<string, string>,
+    },
+    {
+      name: 'DeepSeek',
+      url: 'https://api.deepseek.com/v1/chat/completions',
+      keyEnv: 'DEEPSEEK_API_KEY',
+      model: 'deepseek-chat',
+      extraHeaders: {} as Record<string, string>,
+    },
+    {
+      name: 'ZAI',
+      url: `${process.env.ZAI_BASE_URL ?? 'https://api.z.ai/v1'}/chat/completions`,
+      keyEnv: 'ZAI_API_KEY',
+      model: process.env.ZAI_MODEL ?? 'gpt-4o-mini',
+      extraHeaders: {} as Record<string, string>,
+    },
   ]
 
-  const now = Date.now()
   let lastError = 'tüm cloud sağlayıcılar başarısız'
 
   for (const p of CLOUD_PROVIDERS) {
-    const apiKey = process.env[p.keyEnv]
-    if (!apiKey) continue
+    const keys = collectKeys(p.keyEnv)
+    if (keys.length === 0) continue
 
-    const cooldownUntil = providerCooldown[p.name] ?? 0
-    if (now < cooldownUntil) continue
+    let providerSucceeded = false
 
-    try {
-      const res = await withTimeout(
-        fetch(p.url, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${apiKey}`,
-            ...p.extraHeaders,
-          },
-          body: JSON.stringify({
-            model: p.model,
-            messages,
-            temperature,
-            max_tokens: maxTokens,
+    for (const apiKey of keys) {
+      if (!isKeyReady(apiKey)) continue
+
+      try {
+        const res = await withTimeout(
+          fetch(p.url, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${apiKey}`,
+              ...p.extraHeaders,
+            },
+            body: JSON.stringify({
+              model: p.model,
+              messages,
+              temperature,
+              max_tokens: maxTokens,
+            }),
           }),
-        }),
-        30_000,
-      )
+          30_000,
+        )
 
-      if (res.status === 429) {
-        providerCooldown[p.name] = Date.now() + RATE_LIMIT_COOLDOWN_MS
-        lastError = `${p.name} 429`
-        continue
+        if (res.status === 429) {
+          setKeyCooldown(apiKey)
+          lastError = `${p.name} 429`
+          continue  // try next key
+        }
+        if (!res.ok) {
+          const text = await res.text()
+          lastError = `${p.name} ${res.status}: ${text.slice(0, 80)}`
+          break  // skip to next provider
+        }
+        const data = await res.json()
+        const content: string = data.choices?.[0]?.message?.content ?? ''
+        if (!content) { lastError = `${p.name} boş yanıt`; continue }
+        return { content, provider: p.name }
+      } catch (err) {
+        lastError = `${p.name}: ${err}`
+        break  // network error → next provider
       }
-      if (!res.ok) {
-        const text = await res.text()
-        lastError = `${p.name} ${res.status}: ${text.slice(0, 80)}`
-        continue
-      }
-      const data = await res.json()
-      const content: string = data.choices?.[0]?.message?.content ?? ''
-      if (!content) { lastError = `${p.name} boş yanıt`; continue }
-      return { content, provider: p.name }
-    } catch (err) {
-      lastError = `${p.name}: ${err}`
     }
+
+    if (providerSucceeded) break
   }
 
   // 3. Ollama — local fallback, 60s timeout
