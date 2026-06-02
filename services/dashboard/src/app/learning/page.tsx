@@ -789,9 +789,10 @@ function LLMStatusTab() {
 
 // ── Main Page ────────────────────────────────────────────────────────────────
 
-type TabId = 'lessons' | 'feed' | 'stats' | 'strategy' | 'llm'
+type TabId = 'readiness' | 'lessons' | 'feed' | 'stats' | 'strategy' | 'llm'
 
 const TABS: { id: TabId; label: string; icon: string }[] = [
+  { id: 'readiness', label: 'Canlıya Geçiş', icon: '🎯' },
   { id: 'lessons',  label: 'AI Dersleri',       icon: '📖' },
   { id: 'feed',     label: 'Canlı Akış',         icon: '📡' },
   { id: 'stats',    label: 'Strateji Analizi',   icon: '📊' },
@@ -799,8 +800,212 @@ const TABS: { id: TabId; label: string; icon: string }[] = [
   { id: 'llm',      label: 'LLM Durum',          icon: '🔌' },
 ]
 
+// ── Readiness Tab ─────────────────────────────────────────────────────────────
+
+interface Criterion { value: number; target: number; progress: number; label: string; unit: string; invert?: boolean }
+interface ReadinessData {
+  overall: number
+  criteria: { trades: Criterion; winRate: Criterion; sharpe: Criterion; maxDrawdown: Criterion }
+  bestStrategy: string
+  recentTrades: { symbol: string; direction: string; pnl_pct: number; outcome: string; reason: string; confidence: number; regime: string; lesson: string | null; ts: number }[]
+  byReason: Record<string, { wins: number; losses: number }>
+  totalTrades: number; totalWins: number; totalLosses: number; totalPnl: number
+}
+
+function CriterionBar({ c, met }: { c: Criterion; met: boolean }) {
+  const color = met ? 'bg-green-500' : c.progress > 60 ? 'bg-yellow-500' : 'bg-orange-500'
+  const display = c.invert
+    ? `${c.value}${c.unit} (hedef <${c.target}${c.unit})`
+    : `${c.value}${c.unit} / ${c.target}${c.unit}`
+  return (
+    <div>
+      <div className="flex justify-between items-center mb-1">
+        <span className="text-gray-400 text-xs">{c.label}</span>
+        <span className={`text-xs font-semibold ${met ? 'text-green-400' : 'text-gray-300'}`}>
+          {met ? '✓ ' : ''}{display}
+        </span>
+      </div>
+      <div className="h-2 bg-gray-800 rounded-full overflow-hidden">
+        <div className={`h-full rounded-full transition-all duration-500 ${color}`} style={{ width: `${c.progress}%` }} />
+      </div>
+    </div>
+  )
+}
+
+function ReadinessTab() {
+  const [data, setData] = useState<ReadinessData | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [showAll, setShowAll] = useState(false)
+
+  const load = useCallback(async () => {
+    try {
+      const res = await fetch('/api/live-readiness')
+      const d = await res.json()
+      setData(d)
+    } catch { /* ignore */ } finally { setLoading(false) }
+  }, [])
+
+  useEffect(() => { load(); const t = setInterval(load, 15000); return () => clearInterval(t) }, [load])
+
+  if (loading) return <div className="text-center py-16 text-gray-600">Yükleniyor...</div>
+  if (!data) return <div className="text-center py-16 text-gray-600">Veri yok</div>
+
+  const overall = data.overall
+  const c = data.criteria
+  const metTrades  = c.trades.value >= c.trades.target
+  const metWin     = c.winRate.value >= c.winRate.target
+  const metSharpe  = c.sharpe.value >= c.sharpe.target
+  const metDD      = c.maxDrawdown.value <= c.maxDrawdown.target
+  const allMet     = metTrades && metWin && metSharpe && metDD
+  const metCount   = [metTrades, metWin, metSharpe, metDD].filter(Boolean).length
+
+  const ringColor = overall >= 100 ? '#22c55e' : overall >= 70 ? '#f59e0b' : overall >= 40 ? '#f97316' : '#ef4444'
+
+  return (
+    <div className="space-y-4">
+
+      {/* Hero — overall progress */}
+      <div className="border border-gray-800 rounded-xl p-6 bg-gray-900/60 flex flex-col sm:flex-row items-center gap-6">
+        {/* Ring */}
+        <div className="relative w-32 h-32 shrink-0">
+          <svg viewBox="0 0 120 120" className="w-full h-full -rotate-90">
+            <circle cx="60" cy="60" r="52" fill="none" stroke="#1f2937" strokeWidth="12" />
+            <circle cx="60" cy="60" r="52" fill="none" stroke={ringColor} strokeWidth="12"
+              strokeDasharray={`${2 * Math.PI * 52}`}
+              strokeDashoffset={`${2 * Math.PI * 52 * (1 - overall / 100)}`}
+              strokeLinecap="round" className="transition-all duration-700" />
+          </svg>
+          <div className="absolute inset-0 flex flex-col items-center justify-center">
+            <span className="text-2xl font-black text-white">{overall}%</span>
+            <span className="text-[10px] text-gray-500">HAZIR</span>
+          </div>
+        </div>
+
+        {/* Text */}
+        <div className="flex-1 text-center sm:text-left">
+          <h2 className="text-white font-bold text-lg mb-1">
+            {allMet ? '🟢 CANLI TRADİNGE GEÇİŞ HAZIR!' : '🎯 Canlıya Geçiş Hedefi'}
+          </h2>
+          <p className="text-gray-400 text-sm mb-3">
+            {allMet
+              ? 'Tüm kriterler karşılandı. Sistem canlı trading için onaya hazır.'
+              : `${metCount}/4 kriter karşılandı. %100 olduğunda canlıya geçebilirsin.`}
+          </p>
+          <div className="grid grid-cols-2 gap-3 text-xs">
+            <div className="bg-gray-800/60 rounded-lg p-2.5 text-center">
+              <div className="text-gray-500 mb-0.5">Toplam Trade</div>
+              <div className="text-white font-bold text-base">{data.totalTrades}</div>
+            </div>
+            <div className="bg-gray-800/60 rounded-lg p-2.5 text-center">
+              <div className="text-gray-500 mb-0.5">Toplam P&L</div>
+              <div className={`font-bold text-base ${data.totalPnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                {data.totalPnl >= 0 ? '+' : ''}{data.totalPnl.toFixed(2)}%
+              </div>
+            </div>
+            <div className="bg-gray-800/60 rounded-lg p-2.5 text-center">
+              <div className="text-gray-500 mb-0.5">Kazanan</div>
+              <div className="text-green-400 font-bold text-base">{data.totalWins} ✓</div>
+            </div>
+            <div className="bg-gray-800/60 rounded-lg p-2.5 text-center">
+              <div className="text-gray-500 mb-0.5">Kaybeden</div>
+              <div className="text-red-400 font-bold text-base">{data.totalLosses} ✗</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Criteria bars */}
+      <div className="border border-gray-800 rounded-xl p-5 bg-gray-900/60 space-y-4">
+        <h3 className="text-white font-semibold text-sm">Canlıya Geçiş Kriterleri</h3>
+        <CriterionBar c={c.trades}      met={metTrades} />
+        <CriterionBar c={c.winRate}     met={metWin} />
+        <CriterionBar c={c.sharpe}      met={metSharpe} />
+        <CriterionBar c={c.maxDrawdown} met={metDD} />
+        <p className="text-gray-600 text-xs pt-1">
+          Tüm kriterler karşılandığında shadow sistem otomatik olarak canlıya geçiş onayı verir.
+        </p>
+      </div>
+
+      {/* Trade history */}
+      {data.recentTrades.length > 0 && (
+        <div className="border border-gray-800 rounded-xl p-5 bg-gray-900/60">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-white font-semibold text-sm">Son Trade Geçmişi</h3>
+            <button onClick={() => setShowAll(v => !v)} className="text-xs text-gray-500 hover:text-gray-300">
+              {showAll ? 'Az göster' : 'Tümünü göster'}
+            </button>
+          </div>
+          <div className="space-y-2">
+            {(showAll ? data.recentTrades : data.recentTrades.slice(0, 10)).map((t, i) => {
+              const win = t.pnl_pct > 0 || t.outcome === 'WIN'
+              return (
+                <div key={i} className={`rounded-lg p-3 border text-xs ${win ? 'border-green-800/40 bg-green-900/10' : 'border-red-800/40 bg-red-900/10'}`}>
+                  <div className="flex items-center justify-between mb-1">
+                    <div className="flex items-center gap-2">
+                      <span className={`font-bold ${win ? 'text-green-400' : 'text-red-400'}`}>{win ? '▲ WIN' : '▼ LOSS'}</span>
+                      <span className="text-gray-300 font-semibold">{t.symbol}</span>
+                      <span className={`px-1.5 py-0.5 rounded text-[10px] font-semibold ${t.direction === 'long' ? 'bg-green-900/40 text-green-300' : 'bg-red-900/40 text-red-300'}`}>
+                        {t.direction?.toUpperCase()}
+                      </span>
+                    </div>
+                    <span className={`font-bold ${win ? 'text-green-400' : 'text-red-400'}`}>
+                      {t.pnl_pct >= 0 ? '+' : ''}{t.pnl_pct.toFixed(2)}%
+                    </span>
+                  </div>
+                  <div className="flex gap-3 text-gray-500">
+                    <span>Rejim: {t.regime}</span>
+                    <span>Güven: {(t.confidence * 100).toFixed(0)}%</span>
+                    {t.reason !== '—' && <span>Kapanış: {t.reason}</span>}
+                  </div>
+                  {t.lesson && (
+                    <div className="mt-1.5 text-gray-400 border-t border-gray-700/40 pt-1.5">
+                      💡 {t.lesson}
+                    </div>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Breakdown by reason */}
+      {Object.keys(data.byReason).length > 0 && (
+        <div className="border border-gray-800 rounded-xl p-5 bg-gray-900/60">
+          <h3 className="text-white font-semibold text-sm mb-3">Kapanış Nedenine Göre Sonuçlar</h3>
+          <div className="space-y-2">
+            {Object.entries(data.byReason).sort((a, b) => (b[1].wins + b[1].losses) - (a[1].wins + a[1].losses)).map(([reason, stats]) => {
+              const total = stats.wins + stats.losses
+              const wr = total > 0 ? stats.wins / total : 0
+              return (
+                <div key={reason} className="flex items-center gap-3">
+                  <span className="text-gray-400 text-xs w-28 truncate shrink-0">{reason}</span>
+                  <div className="flex-1 h-2 bg-gray-800 rounded-full overflow-hidden">
+                    <div className="h-full bg-green-600 rounded-full" style={{ width: `${wr * 100}%` }} />
+                  </div>
+                  <span className="text-xs text-gray-500 w-20 text-right shrink-0">
+                    {stats.wins}W / {stats.losses}L ({(wr * 100).toFixed(0)}%)
+                  </span>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
+
+      {data.totalTrades === 0 && (
+        <div className="text-center py-8 text-gray-600 text-sm">
+          Henüz trade yok. Shadow system işlem yaptıkça burada görünecek.
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 export default function LearningPage() {
-  const [tab, setTab] = useState<TabId>('lessons')
+  const [tab, setTab] = useState<TabId>('readiness')
 
   return (
     <div className="max-w-4xl mx-auto space-y-4">
@@ -837,6 +1042,7 @@ export default function LearningPage() {
 
       {/* Tab content */}
       <div>
+        {tab === 'readiness' && <ReadinessTab />}
         {tab === 'lessons'  && <LessonsTab />}
         {tab === 'feed'     && <FeedTab />}
         {tab === 'stats'    && <StatsTab />}
