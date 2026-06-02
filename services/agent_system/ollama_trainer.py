@@ -19,7 +19,7 @@ log = logging.getLogger(__name__)
 OLLAMA_URL      = os.getenv("OLLAMA_URL", "http://ollama:11434")
 BASE_MODEL      = os.getenv("OLLAMA_MODEL", "llama3.1:8b")
 TRAINED_MODEL   = "prometheus-trading"
-TRAIN_INTERVAL  = 7200   # rebuild every 2 hours
+TRAIN_INTERVAL  = 300    # rebuild every 5 minutes
 MIN_KNOWLEDGE   = 200    # minimum chars before building
 
 
