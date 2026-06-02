@@ -143,9 +143,12 @@ async def analyze_trade_with_all_llms(redis: aioredis.Redis, trade: dict):
     symbol  = trade.get("symbol", "")
     pnl_pct = float(trade.get("pnl_pct", 0))
 
-    # Load entry features
-    feat_raw = await redis.get(f"ml:entry_features:{symbol}")
-    features = json.loads(feat_raw) if feat_raw else None
+    # Load entry features (full feature dict, not ML vector)
+    feat_raw = await redis.get(f"features:latest:{symbol}")
+    features: dict | None = None
+    if feat_raw:
+        parsed = json.loads(feat_raw)
+        features = parsed if isinstance(parsed, dict) else None
 
     prompt = _build_prompt(trade, features)
     providers = _get_providers()
