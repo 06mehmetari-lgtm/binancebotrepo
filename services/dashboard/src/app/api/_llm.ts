@@ -154,13 +154,6 @@ export async function chatCompletion(
       model: process.env.ZAI_MODEL ?? 'GLM-4.5',
       extraHeaders: {} as Record<string, string>,
     },
-    {
-      name: 'HuggingFace',
-      url: 'https://api-inference.huggingface.co/v1/chat/completions',
-      keyEnv: 'HUGGINGFACE_API_KEY',
-      model: 'Qwen/Qwen2.5-7B-Instruct',
-      extraHeaders: {} as Record<string, string>,
-    },
   ]
 
   let lastError = 'tüm cloud sağlayıcılar başarısız'

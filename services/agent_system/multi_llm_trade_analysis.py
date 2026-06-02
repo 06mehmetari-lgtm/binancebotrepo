@@ -118,7 +118,8 @@ def _get_providers() -> list[dict]:
     add("Cohere",     "https://api.cohere.com/compatibility/v1/chat/completions",    "COHERE_API_KEY",     "command-r-plus-08-2024")
     add("DeepSeek",   "https://api.deepseek.com/v1/chat/completions",                "DEEPSEEK_API_KEY",   "deepseek-chat")
     add("ZAI",        f'{os.getenv("ZAI_BASE_URL","https://api.z.ai/api/paas/v4")}/chat/completions', "ZAI_API_KEY", os.getenv("ZAI_MODEL", "GLM-4.5"))
-    add("HuggingFace","https://api-inference.huggingface.co/v1/chat/completions",    "HUGGINGFACE_API_KEY","Qwen/Qwen2.5-7B-Instruct")
+    # HuggingFace: sunucudan ulaşılamıyor (DNS/firewall), devre dışı
+    # add("HuggingFace","https://api-inference.huggingface.co/v1/chat/completions", "HUGGINGFACE_API_KEY","Qwen/Qwen2.5-7B-Instruct")
     return providers
 
 
