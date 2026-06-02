@@ -89,9 +89,10 @@ async def _get_open_positions(redis: aioredis.Redis) -> list[dict]:
 
 
 async def generate_signal(redis: aioredis.Redis, symbol: str) -> dict | None:
-    context_raw  = await redis.get(f"context:latest:{symbol}")
-    agents_raw   = await redis.get(f"agents:verdicts:{symbol}")
-    features_raw = await redis.get(f"features:latest:{symbol}")
+    context_raw     = await redis.get(f"context:latest:{symbol}")
+    agents_raw      = await redis.get(f"agents:verdicts:{symbol}")
+    features_raw    = await redis.get(f"features:latest:{symbol}")
+    coin_stats_raw  = await redis.hgetall(f"coin:stats:{symbol}")
 
     context        = json.loads(context_raw)  if context_raw  else {}
     agent_verdicts = json.loads(agents_raw)   if agents_raw   else []
@@ -99,6 +100,11 @@ async def generate_signal(redis: aioredis.Redis, symbol: str) -> dict | None:
 
     if not features:
         return None
+
+    # Per-coin history — used for confidence adjustment (Step 4) and blocking (Step 7)
+    coin_trades = int(coin_stats_raw.get(b"total_trades", 0) or 0)
+    coin_wr     = float(coin_stats_raw.get(b"win_rate", 0.5) or 0.5)
+    coin_consec = int(coin_stats_raw.get(b"consecutive_losses", 0) or 0)
 
     stats = _get_kelly_stats(symbol)
     kelly_fraction = kelly.calculate(
@@ -112,6 +118,16 @@ async def generate_signal(redis: aioredis.Redis, symbol: str) -> dict | None:
 
     # ── ML score from feature engine ───────────────────────────────────────
     ml_score = float(features.get("ml_score", 0.0) or 0.0)
+
+    # ── ML fallback when no LLM verdicts available (Step 9) ───────────────
+    if not agent_verdicts and abs(ml_score) > 0.6:
+        fallback_dir  = "long" if ml_score > 0 else "short"
+        fallback_conf = round(min(0.65, 0.50 + abs(ml_score) * 0.20), 3)
+        agent_verdicts = [{
+            "agent": "ml_fallback", "direction": fallback_dir,
+            "signal": fallback_dir, "confidence": fallback_conf,
+        }]
+        log.debug(f"[{symbol}] ML fallback: {fallback_dir} conf={fallback_conf:.2f} ml={ml_score:.3f}")
 
     # ── RL (PPO) signal ────────────────────────────────────────────────────
     rl_raw  = await redis.get(f"rl:signal:{symbol}")
@@ -219,9 +235,29 @@ async def generate_signal(redis: aioredis.Redis, symbol: str) -> dict | None:
         "risk_reward": signal.risk_reward,
     }
 
+    # Inject coin stats into signal for validator and downstream consumers
+    signal_dict["consecutive_losses"] = coin_consec
+
+    # Coin history confidence adjustment (Step 4) — only after ≥10 trades
+    if coin_trades >= 10:
+        if coin_wr < 0.35:
+            signal_dict["confidence"] = round(max(0.0, signal_dict["confidence"] - 0.10), 4)
+        elif coin_wr < 0.45:
+            signal_dict["confidence"] = round(max(0.0, signal_dict["confidence"] - 0.05), 4)
+        elif coin_wr > 0.65:
+            signal_dict["confidence"] = round(min(1.0, signal_dict["confidence"] + 0.05), 4)
+
     is_valid, reason = validator.validate(signal_dict, context)
     signal_dict["is_valid"] = is_valid
     signal_dict["reject_reason"] = "" if is_valid else reason
+
+    # Shadow-tier validity: lower threshold for learning (Step 8)
+    shadow_conf = signal_dict["confidence"]
+    signal_dict["shadow_valid"] = (
+        shadow_conf >= 0.55
+        and signal_dict["direction"] != "flat"
+        and coin_consec < 3
+    )
 
     # Snapshot entry features for ML labeling.
     # feature_engine overwrites ml:signal_features:{symbol} every second —

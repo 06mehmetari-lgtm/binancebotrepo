@@ -191,6 +191,33 @@ async def close_position(
         await redis.ltrim("oms:trade_history", 0, 999)
         await redis.publish("ch:trade_closed", json.dumps(trade))
 
+        # Per-coin stats for signal confidence adjustment and consecutive-loss blocking
+        try:
+            coin_key  = f"coin:stats:{symbol}"
+            sr        = await redis.hgetall(coin_key)
+            w         = int(sr.get(b"wins", 0) or 0)
+            ls        = int(sr.get(b"losses", 0) or 0)
+            consec    = int(sr.get(b"consecutive_losses", 0) or 0)
+            total_pnl = float(sr.get(b"total_pnl", 0) or 0)
+            if pnl_pct > 0:
+                w += 1
+                consec = 0
+            else:
+                ls += 1
+                consec += 1
+            total = w + ls
+            await redis.hset(coin_key, mapping={
+                "wins": w, "losses": ls, "consecutive_losses": consec,
+                "win_rate": round(w / total if total > 0 else 0.5, 4),
+                "total_pnl": round(total_pnl + pnl_pct, 6),
+                "last_pnl": round(pnl_pct, 6),
+                "total_trades": total,
+                "last_updated": time.time(),
+            })
+            await redis.expire(coin_key, 86400 * 30)
+        except Exception as _e:
+            log.warning(f"coin:stats update failed for {symbol}: {_e}")
+
         outcome = "WIN" if pnl_pct > 0 else "LOSS"
         log.info(
             f"[{outcome}] {symbol} {direction.upper()} closed via {close_reason} "
