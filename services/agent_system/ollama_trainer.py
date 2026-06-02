@@ -99,6 +99,87 @@ async def _collect_knowledge(redis: aioredis.Redis) -> str:
     except Exception as e:
         log.debug(f"Knowledge collect [stats]: {e}")
 
+    # Shadow system performance
+    try:
+        shadow_raw = await redis.get("shadow:stats")
+        if shadow_raw:
+            ss = json.loads(shadow_raw)
+            lines = ["\n### SHADOW SİSTEM PERFORMANSI"]
+            for k, v in ss.items():
+                lines.append(f"- {k}: {v}")
+            sections.append("\n".join(lines))
+    except Exception as e:
+        log.debug(f"Knowledge collect [shadow]: {e}")
+
+    # Market depth / order book patterns learned from trades
+    try:
+        depth_lessons = await redis.lrange("training:lessons:depth", 0, 19)
+        if depth_lessons:
+            lines = ["\n### PİYASA DERİNLİK DERSLERİ (ORDER BOOK)"]
+            for item in depth_lessons:
+                try:
+                    d = json.loads(item)
+                    lesson = d.get("lesson") or d.get("text") or str(d)[:200]
+                    lines.append(f"- {lesson}")
+                except Exception:
+                    lines.append(f"- {str(item)[:200]}")
+            sections.append("\n".join(lines))
+    except Exception as e:
+        log.debug(f"Knowledge collect [depth]: {e}")
+
+    # Funding rate behavior patterns
+    try:
+        funding_raw = await redis.get("market:funding_patterns")
+        if funding_raw:
+            fp = json.loads(funding_raw)
+            lines = ["\n### FONLAMA ORANI KALIPLARI"]
+            for pattern, stats in fp.items():
+                lines.append(f"- {pattern}: {stats}")
+            sections.append("\n".join(lines))
+    except Exception as e:
+        log.debug(f"Knowledge collect [funding]: {e}")
+
+    # Training documents (titles + first 500 chars each)
+    try:
+        docs_raw = await redis.get("training:docs")
+        if docs_raw:
+            docs = json.loads(docs_raw)
+            if docs:
+                lines = ["\n### EĞİTİM DOKÜMANLARI ÖZETİ"]
+                char_budget = 8000
+                for doc in docs:
+                    title = doc.get("title", "?")
+                    content = doc.get("content", "")[:500]
+                    entry = f"[{title}] {content}"
+                    if char_budget <= 0:
+                        break
+                    lines.append(entry[:char_budget])
+                    char_budget -= len(entry)
+                sections.append("\n".join(lines))
+    except Exception as e:
+        log.debug(f"Knowledge collect [docs]: {e}")
+
+    # Hardcoded market mechanics (always included)
+    sections.append("""
+### PİYASA MEKANİKLERİ (TEMEL BİLGİ)
+- RSI > 70: Aşırı alım → SHORT olasılığı artar. RSI < 30: Aşırı satım → LONG olasılığı artar
+- MACD hist pozitif → yukarı momentum. Negatif → aşağı momentum
+- Funding rate > 0.03%: LONG'lar SHORT'lara ödeme yapar → aşırı LONG pozisyon tehlikeli
+- Funding rate < -0.03%: SHORT'lar LONG'lara ödeme yapar → sıkışma riski
+- OI (açık faiz) artarken fiyat düşüyor → SHORT baskısı güçlü
+- OI artarken fiyat yükseliyor → LONG momentum güçlü
+- OI düşüyor + fiyat düşüyor → LONG pozisyonları kapatılıyor (zayıf)
+- Hacim oranı > 2x: Anormal hacim → trend değişimi veya kırılım sinyali
+- ADX > 25: Güçlü trend. ADX < 20: Yatay piyasa (ranging)
+- VIX > 40: Piyasa panik modunda → FLAT tercih et, leverage düşür
+- BB (Bollinger) üst bant kırılımı → aşırı alım veya güçlü breakout
+- Trending_down rejimde SHORT ağırlıklı işlem yap
+- Volatile rejimde FLAT'te kal, risk düşür
+- Ranging rejimde support-resistance al-sat stratejisi
+- Zarar eden trade'den sonra aynı yönde trade açma — piyasa koşulları değişmemiş olabilir
+- Kaldıraç: Maksimum 3x. Daha yüksek kaldıraç = daha yüksek tasfiye riski
+- Pozisyon büyüklüğü: Portfolyonun maksimum %5'i tek trade'de""")
+
     return "\n".join(sections)
 
 

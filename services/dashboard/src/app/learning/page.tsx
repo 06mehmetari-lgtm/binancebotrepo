@@ -789,16 +789,313 @@ function LLMStatusTab() {
 
 // ── Main Page ────────────────────────────────────────────────────────────────
 
-type TabId = 'readiness' | 'lessons' | 'feed' | 'stats' | 'strategy' | 'llm'
+type TabId = 'readiness' | 'ollama' | 'lessons' | 'feed' | 'stats' | 'strategy' | 'llm'
 
 const TABS: { id: TabId; label: string; icon: string }[] = [
   { id: 'readiness', label: 'Canlıya Geçiş', icon: '🎯' },
-  { id: 'lessons',  label: 'AI Dersleri',       icon: '📖' },
-  { id: 'feed',     label: 'Canlı Akış',         icon: '📡' },
-  { id: 'stats',    label: 'Strateji Analizi',   icon: '📊' },
-  { id: 'strategy', label: 'Strateji Belgesi',   icon: '🧠' },
-  { id: 'llm',      label: 'LLM Durum',          icon: '🔌' },
+  { id: 'ollama',    label: 'Ollama Beyin',   icon: '🧠' },
+  { id: 'lessons',  label: 'AI Dersleri',     icon: '📖' },
+  { id: 'feed',     label: 'Canlı Akış',      icon: '📡' },
+  { id: 'stats',    label: 'Strateji Analizi', icon: '📊' },
+  { id: 'strategy', label: 'Strateji Belgesi', icon: '📋' },
+  { id: 'llm',      label: 'LLM Durum',       icon: '🔌' },
 ]
+
+// ── Ollama Tab ────────────────────────────────────────────────────────────────
+
+interface OllamaLesson {
+  ts: number; symbol: string; provider: string; outcome: string
+  pnl_pct: number; category: string; lesson: string
+}
+interface OllamaDoc {
+  id: string; title: string; filename?: string; uploadedAt?: number; pageCount?: number
+}
+interface OllamaStatus {
+  activeModel: string; isCustom: boolean; baseModel: string
+  lastTrainTs: number | null; knowledgeChars: number
+  lessonsTotal: number
+  byCat: Record<string, number>
+  byProvider: Record<string, number>
+  recentLessons: OllamaLesson[]
+  docs: OllamaDoc[]
+  patternCount: number
+  agentAccuracy: { name: string; accuracy: number; calls: number }[]
+  totalTrades: number; overallWinRate: number
+}
+
+function OllamaTab() {
+  const [status, setStatus]   = useState<OllamaStatus | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [chatMsg, setChatMsg] = useState('')
+  const [chatSym, setChatSym] = useState('')
+  const [chatReply, setChatReply] = useState<{ reply: string; model: string } | null>(null)
+  const [chatLoading, setChatLoading] = useState(false)
+  const [chatError, setChatError]  = useState<string | null>(null)
+  const [showDocs, setShowDocs]    = useState(false)
+  const [showLessons, setShowLessons] = useState(false)
+
+  const load = useCallback(async () => {
+    try {
+      const r = await fetch('/api/ollama-status')
+      const d = await r.json()
+      setStatus(d)
+    } catch { /* ignore */ } finally { setLoading(false) }
+  }, [])
+
+  useEffect(() => { load(); const t = setInterval(load, 30000); return () => clearInterval(t) }, [load])
+
+  const sendChat = async () => {
+    if (!chatMsg.trim()) return
+    setChatLoading(true); setChatReply(null); setChatError(null)
+    try {
+      const r = await fetch('/api/ollama-chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: chatMsg, symbol: chatSym }),
+      })
+      const d = await r.json()
+      if (d.error) setChatError(d.error)
+      else setChatReply(d)
+    } catch (e: unknown) {
+      setChatError(String(e))
+    } finally { setChatLoading(false) }
+  }
+
+  if (loading) return <div className="text-center py-16 text-gray-600">Yükleniyor...</div>
+  if (!status) return <div className="text-center py-16 text-gray-600">Ollama verisi yok</div>
+
+  const timeSinceTrain = status.lastTrainTs
+    ? Math.round((Date.now() / 1000 - status.lastTrainTs) / 60)
+    : null
+
+  const knowledgeKB = (status.knowledgeChars / 1024).toFixed(1)
+
+  return (
+    <div className="space-y-4">
+
+      {/* Model status hero */}
+      <div className="border border-gray-800 rounded-xl p-5 bg-gray-900/60">
+        <div className="flex items-start gap-4">
+          <div className="text-4xl">🦙</div>
+          <div className="flex-1">
+            <div className="flex items-center gap-2 mb-1">
+              <h2 className="text-white font-bold text-base">{status.activeModel}</h2>
+              {status.isCustom
+                ? <span className="px-2 py-0.5 rounded-full text-[10px] bg-green-900/40 text-green-400 font-semibold">ÖZEL EĞİTİLMİŞ</span>
+                : <span className="px-2 py-0.5 rounded-full text-[10px] bg-gray-700/60 text-gray-400 font-semibold">TEMEL MODEL</span>
+              }
+            </div>
+            <p className="text-gray-500 text-xs mb-3">
+              {status.isCustom
+                ? `Temel: ${status.baseModel} → Prometheus bilgisiyle özelleştirildi`
+                : 'Henüz özel eğitim yapılmadı. 200+ karakter bilgi birikince otomatik eğitilir.'}
+            </p>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+              <div className="bg-gray-800/60 rounded-lg p-2.5 text-center">
+                <div className="text-gray-500 mb-0.5">Bilgi Boyutu</div>
+                <div className="text-orange-400 font-bold text-sm">{knowledgeKB} KB</div>
+              </div>
+              <div className="bg-gray-800/60 rounded-lg p-2.5 text-center">
+                <div className="text-gray-500 mb-0.5">Toplam Ders</div>
+                <div className="text-blue-400 font-bold text-sm">{status.lessonsTotal}</div>
+              </div>
+              <div className="bg-gray-800/60 rounded-lg p-2.5 text-center">
+                <div className="text-gray-500 mb-0.5">Bilinen Kalıp</div>
+                <div className="text-purple-400 font-bold text-sm">{status.patternCount}</div>
+              </div>
+              <div className="bg-gray-800/60 rounded-lg p-2.5 text-center">
+                <div className="text-gray-500 mb-0.5">Son Eğitim</div>
+                <div className="text-white font-bold text-sm">
+                  {timeSinceTrain !== null ? `${timeSinceTrain}dk önce` : '—'}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Chat with Ollama */}
+      <div className="border border-gray-800 rounded-xl p-5 bg-gray-900/60">
+        <h3 className="text-white font-semibold text-sm mb-3">💬 Ollama'ya Sor</h3>
+        <p className="text-gray-500 text-xs mb-3">
+          Bir coin adı gir ve piyasa hakkında soru sor — Ollama tüm öğrendikleriyle cevaplar.
+        </p>
+        <div className="flex gap-2 mb-2">
+          <input
+            value={chatSym}
+            onChange={e => setChatSym(e.target.value.toUpperCase())}
+            placeholder="Coin (ör: BTCUSDT)"
+            className="w-28 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-xs text-white placeholder-gray-600 focus:outline-none focus:border-orange-600"
+          />
+          <input
+            value={chatMsg}
+            onChange={e => setChatMsg(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && sendChat()}
+            placeholder="Soru sor... (ör: RSI aşırı satım bölgesinde mi?)"
+            className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-xs text-white placeholder-gray-600 focus:outline-none focus:border-orange-600"
+          />
+          <button
+            onClick={sendChat}
+            disabled={chatLoading || !chatMsg.trim()}
+            className="px-4 py-2 bg-orange-600 hover:bg-orange-500 disabled:opacity-40 rounded-lg text-xs font-semibold text-white transition-colors"
+          >
+            {chatLoading ? '...' : 'Sor'}
+          </button>
+        </div>
+
+        {chatError && (
+          <div className="mt-2 p-3 bg-red-900/20 border border-red-700/40 rounded-lg text-xs text-red-400">
+            Hata: {chatError}
+          </div>
+        )}
+
+        {chatReply && (
+          <div className="mt-3 p-4 bg-gray-800/60 border border-gray-700/40 rounded-lg">
+            <div className="flex items-center gap-2 mb-2">
+              <span className="text-orange-400 text-xs font-semibold">🦙 {chatReply.model}</span>
+              {chatSym && <span className="text-gray-500 text-xs">| {chatSym}</span>}
+            </div>
+            <pre className="text-gray-300 text-xs whitespace-pre-wrap leading-relaxed font-sans">
+              {chatReply.reply}
+            </pre>
+          </div>
+        )}
+      </div>
+
+      {/* Knowledge breakdown */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        {/* By category */}
+        {Object.keys(status.byCat).length > 0 && (
+          <div className="border border-gray-800 rounded-xl p-4 bg-gray-900/60">
+            <h3 className="text-white font-semibold text-sm mb-3">Ders Kategorileri</h3>
+            <div className="space-y-2">
+              {Object.entries(status.byCat).sort((a, b) => b[1] - a[1]).map(([cat, n]) => (
+                <div key={cat} className="flex items-center gap-2 text-xs">
+                  <span className="text-gray-400 flex-1 truncate">{cat}</span>
+                  <div className="w-16 h-1.5 bg-gray-800 rounded-full overflow-hidden">
+                    <div className="h-full bg-orange-500 rounded-full"
+                      style={{ width: `${Math.min(100, (n / status.lessonsTotal) * 100)}%` }} />
+                  </div>
+                  <span className="text-gray-500 w-6 text-right">{n}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* By provider */}
+        {Object.keys(status.byProvider).length > 0 && (
+          <div className="border border-gray-800 rounded-xl p-4 bg-gray-900/60">
+            <h3 className="text-white font-semibold text-sm mb-3">Ders Kaynakları (LLM)</h3>
+            <div className="space-y-2">
+              {Object.entries(status.byProvider).sort((a, b) => b[1] - a[1]).map(([prov, n]) => (
+                <div key={prov} className="flex items-center gap-2 text-xs">
+                  <span className="text-gray-400 flex-1 truncate">{prov}</span>
+                  <div className="w-16 h-1.5 bg-gray-800 rounded-full overflow-hidden">
+                    <div className="h-full bg-blue-500 rounded-full"
+                      style={{ width: `${Math.min(100, (n / status.lessonsTotal) * 100)}%` }} />
+                  </div>
+                  <span className="text-gray-500 w-6 text-right">{n}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Agent accuracy */}
+      {status.agentAccuracy.length > 0 && (
+        <div className="border border-gray-800 rounded-xl p-4 bg-gray-900/60">
+          <h3 className="text-white font-semibold text-sm mb-3">Ajan Doğruluk Oranları</h3>
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+            {status.agentAccuracy.map(a => (
+              <div key={a.name} className="bg-gray-800/60 rounded-lg p-2.5 text-xs">
+                <div className="text-gray-400 truncate mb-1">{a.name.replace('_agent', '')}</div>
+                <div className="flex items-center gap-1.5">
+                  <div className="flex-1 h-1.5 bg-gray-700 rounded-full overflow-hidden">
+                    <div className={`h-full rounded-full ${a.accuracy >= 0.6 ? 'bg-green-500' : a.accuracy >= 0.5 ? 'bg-yellow-500' : 'bg-red-500'}`}
+                      style={{ width: `${a.accuracy * 100}%` }} />
+                  </div>
+                  <span className="text-white font-bold">{Math.round(a.accuracy * 100)}%</span>
+                </div>
+                <div className="text-gray-600 mt-0.5">{a.calls} çağrı</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Recent lessons */}
+      {status.recentLessons.length > 0 && (
+        <div className="border border-gray-800 rounded-xl p-4 bg-gray-900/60">
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="text-white font-semibold text-sm">Son Öğrenilenler</h3>
+            <button onClick={() => setShowLessons(v => !v)} className="text-xs text-gray-500 hover:text-gray-300">
+              {showLessons ? 'Az göster' : 'Tümünü göster'}
+            </button>
+          </div>
+          <div className="space-y-2">
+            {(showLessons ? status.recentLessons : status.recentLessons.slice(0, 5)).map((l, i) => {
+              const win = l.outcome === 'WIN' || l.outcome === 'win' || l.pnl_pct > 0
+              return (
+                <div key={i} className={`rounded-lg p-3 border text-xs ${win ? 'border-green-800/30 bg-green-900/10' : 'border-red-800/30 bg-red-900/10'}`}>
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className={`font-semibold ${win ? 'text-green-400' : 'text-red-400'}`}>
+                      {win ? '▲' : '▼'} {l.symbol}
+                    </span>
+                    <span className="text-gray-500">{l.provider}</span>
+                    <span className={`ml-auto ${win ? 'text-green-400' : 'text-red-400'}`}>
+                      {l.pnl_pct >= 0 ? '+' : ''}{l.pnl_pct.toFixed(2)}%
+                    </span>
+                  </div>
+                  {l.lesson && (
+                    <p className="text-gray-300 leading-relaxed">{l.lesson}</p>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Documents list */}
+      <div className="border border-gray-800 rounded-xl p-4 bg-gray-900/60">
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-white font-semibold text-sm">
+            Eğitim Dökümanları ({status.docs.length})
+          </h3>
+          {status.docs.length > 3 && (
+            <button onClick={() => setShowDocs(v => !v)} className="text-xs text-gray-500 hover:text-gray-300">
+              {showDocs ? 'Az göster' : 'Tümünü göster'}
+            </button>
+          )}
+        </div>
+        {status.docs.length === 0 ? (
+          <p className="text-gray-600 text-xs">Henüz döküman yüklenmedi. /training sayfasından PDF veya ZIP yükle.</p>
+        ) : (
+          <div className="space-y-2">
+            {(showDocs ? status.docs : status.docs.slice(0, 3)).map(d => (
+              <div key={d.id} className="flex items-center gap-3 bg-gray-800/40 rounded-lg px-3 py-2 text-xs">
+                <span className="text-orange-400 text-base">📄</span>
+                <div className="flex-1 min-w-0">
+                  <div className="text-white truncate font-medium">{d.title}</div>
+                  {d.filename && <div className="text-gray-500 truncate">{d.filename}</div>}
+                </div>
+                {d.pageCount && <span className="text-gray-600 shrink-0">{d.pageCount}s</span>}
+                {d.uploadedAt && (
+                  <span className="text-gray-600 shrink-0">
+                    {new Date(d.uploadedAt).toLocaleDateString('tr-TR')}
+                  </span>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+    </div>
+  )
+}
 
 // ── Readiness Tab ─────────────────────────────────────────────────────────────
 
@@ -1043,6 +1340,7 @@ export default function LearningPage() {
       {/* Tab content */}
       <div>
         {tab === 'readiness' && <ReadinessTab />}
+        {tab === 'ollama'   && <OllamaTab />}
         {tab === 'lessons'  && <LessonsTab />}
         {tab === 'feed'     && <FeedTab />}
         {tab === 'stats'    && <StatsTab />}
