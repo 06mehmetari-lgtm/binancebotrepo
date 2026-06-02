@@ -286,7 +286,11 @@ services:
       - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379
       - POSTGRES_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/prometheus_trading
       - MAX_OPEN_POSITIONS=20
-      - MAX_TRADES_PER_DAY=200
+      - MAX_TRADES_PER_DAY=500
+      - MAX_POSITION_PCT=0.20
+      - MAX_DAILY_LOSS_PCT=0.50
+      - MAX_LEVERAGE=10.0
+      - MIN_CONFIDENCE=0.45
     networks:
       - prometheus_net
 
@@ -302,6 +306,7 @@ services:
       - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379
       - POSTGRES_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/prometheus_trading
       - DRY_RUN=${DRY_RUN:-true}
+      - MAX_POSITION_PCT=0.20
     depends_on:
       - immunity_system
       - redis

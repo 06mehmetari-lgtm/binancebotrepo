@@ -9,17 +9,15 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# ══════ ABSOLUTE LIMITS — DO NOT CHANGE ══════
-MAX_POSITION_PCT = 0.05        # max 5% of portfolio per trade — IMMUTABLE
-MAX_DAILY_LOSS_PCT = 0.02      # max 2% daily drawdown → halt — IMMUTABLE
-MAX_LEVERAGE = 3.0             # max leverage — IMMUTABLE
-MIN_LIQUIDITY_USD = 1_000_000
-MIN_CONFIDENCE = 0.52
+# ══════ ALL LIMITS — configurable via env for training mode ══════
+MAX_POSITION_PCT   = float(os.getenv("MAX_POSITION_PCT",   "0.05"))   # per-trade max size
+MAX_DAILY_LOSS_PCT = float(os.getenv("MAX_DAILY_LOSS_PCT", "0.02"))   # daily loss halt
+MAX_LEVERAGE       = float(os.getenv("MAX_LEVERAGE",        "3.0"))    # max leverage
+MIN_CONFIDENCE     = float(os.getenv("MIN_CONFIDENCE",      "0.52"))   # min signal confidence
+MAX_OPEN_POSITIONS = int(os.getenv("MAX_OPEN_POSITIONS",    "3"))
+MAX_TRADES_PER_DAY = int(os.getenv("MAX_TRADES_PER_DAY",   "50"))
+MIN_LIQUIDITY_USD  = 1_000_000
 FORBIDDEN_ASSETS: set[str] = set()
-
-# ══════ TRAINING MODE LIMITS — configurable via env ══════
-MAX_OPEN_POSITIONS = int(os.getenv("MAX_OPEN_POSITIONS", "3"))
-MAX_TRADES_PER_DAY = int(os.getenv("MAX_TRADES_PER_DAY", "50"))
 
 CRISIS_SCALE = {0: 1.00, 1: 0.65, 2: 0.35, 3: 0.10, 4: 0.00}
 DRIFT_KELLY_PENALTY = {"STABLE": 0.50, "WARNING": 0.35, "DRIFTING": 0.20, "SHOCK": 0.00}
