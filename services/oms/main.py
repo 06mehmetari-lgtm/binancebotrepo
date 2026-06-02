@@ -264,6 +264,21 @@ async def process_signal(redis: aioredis.Redis, symbol: str):
 
     approved = await request_immunity_approval(redis, order_request)
     if not approved:
+        # Faz 2: blok olayını yayınla → event_learner dersi üretir
+        try:
+            feat_raw = await redis.get(f"features:latest:{symbol}")
+            regime   = json.loads(feat_raw).get("regime", "unknown") if feat_raw else "unknown"
+            await redis.publish("ch:immunity_blocked", json.dumps({
+                "symbol":     symbol,
+                "side":       order_request["side"],
+                "size_usd":   round(size_usd, 2),
+                "confidence": confidence,
+                "regime":     regime,
+                "reason":     "immunity_check_failed",
+                "ts":         time.time(),
+            }))
+        except Exception:
+            pass
         return
 
     # Load full AI context before opening position

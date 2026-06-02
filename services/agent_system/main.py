@@ -10,6 +10,7 @@ from debate_agent import DebateAgent
 from regime_router import get_weights_for_regime
 from groq_news_scanner import GroqNewsScanner
 from lesson_writer import lesson_writer_loop
+from event_learner import event_learner_loop, learn_from_debate
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
@@ -74,6 +75,17 @@ async def run_debate_for_symbol(redis: aioredis.Redis, symbol: str):
             f"[{symbol}] {result.final_signal.upper()} conf={result.final_confidence:.2f} "
             f"consensus={result.consensus_strength:.0%} ({len(result.all_votes)} agents)"
         )
+        # Faz 2: yüksek güvenli sinyallerden kalıp dersi üret
+        try:
+            feat_raw = await redis.get(f"features:latest:{symbol}")
+            features = json.loads(feat_raw) if feat_raw else None
+            verdict_with_regime = {
+                **verdict,
+                "regime": context.get("regime", features.get("regime", "unknown") if features else "unknown"),
+            }
+            await learn_from_debate(redis, symbol, verdict_with_regime, features)
+        except Exception as _e:
+            log.debug(f"Debate lesson hata {symbol}: {_e}")
 
 
 _current_regime: str = "unknown"
@@ -81,9 +93,17 @@ _training_context: str = ""
 
 
 async def reload_training_context(redis: aioredis.Redis) -> str:
-    """Load operator training docs + recent trade lessons from Redis."""
+    """
+    Tüm öğrenme kaynaklarını birleştir:
+      1. PDF eğitim dökümanları
+      2. Trade kapanış dersleri (lesson_writer)
+      3. Sinyal kalıp dersleri (event_learner)
+      4. Rejim değişim dersleri (event_learner)
+      5. Blok dersleri — neden bloklandı (event_learner)
+    """
     sections = []
 
+    # 1. PDF dökümanları
     try:
         raw = await redis.get("training:docs")
         if raw:
@@ -94,25 +114,69 @@ async def reload_training_context(redis: aioredis.Redis) -> str:
     except Exception:
         pass
 
+    # 2. Trade kapanış dersleri (son 8)
     try:
-        lesson_raws = await redis.lrange("training:lessons", 0, 9)
-        if lesson_raws:
-            lessons = []
-            for lr in lesson_raws:
-                try:
-                    ld = json.loads(lr)
-                    lessons.append(ld.get("lesson", ""))
-                except Exception:
-                    pass
-            if lessons:
-                sections.append(
-                    "RECENT TRADE LESSONS (AI-generated from actual trades — avoid repeating these mistakes):\n"
-                    + "\n\n".join(lessons)
-                )
+        raws = await redis.lrange("training:lessons", 0, 7)
+        lessons = _extract_lessons(raws)
+        if lessons:
+            sections.append(
+                "SON TRADE DERSLERİ (gerçek işlemlerden — bu hatalar tekrar edilmemeli):\n"
+                + "\n\n".join(lessons)
+            )
+    except Exception:
+        pass
+
+    # 3. Sinyal kalıp dersleri (son 5)
+    try:
+        raws = await redis.lrange("training:lessons:signals", 0, 4)
+        lessons = _extract_lessons(raws)
+        if lessons:
+            sections.append(
+                "SİNYAL KALIP DERSLERİ (hangi göstergeler hangi sinyali üretiyor):\n"
+                + "\n\n".join(lessons)
+            )
+    except Exception:
+        pass
+
+    # 4. Rejim dersleri (son 3)
+    try:
+        raws = await redis.lrange("training:lessons:regime", 0, 2)
+        lessons = _extract_lessons(raws)
+        if lessons:
+            sections.append(
+                "PİYASA REJİM DEĞİŞİM DERSLERİ (yeni rejimde nasıl davranılmalı):\n"
+                + "\n\n".join(lessons)
+            )
+    except Exception:
+        pass
+
+    # 5. Blok dersleri (son 3)
+    try:
+        raws = await redis.lrange("training:lessons:blocked", 0, 2)
+        lessons = _extract_lessons(raws)
+        if lessons:
+            sections.append(
+                "RİSK BLOKLARI (immunity sistemi neden engelledi, gelecekte ne yapılmalı):\n"
+                + "\n\n".join(lessons)
+            )
     except Exception:
         pass
 
     return "\n\n===\n\n".join(sections)
+
+
+def _extract_lessons(raws: list) -> list[str]:
+    """JSON listesinden lesson metinlerini çıkar."""
+    out = []
+    for r in raws:
+        try:
+            ld = json.loads(r)
+            txt = ld.get("lesson", "")
+            if txt:
+                out.append(txt)
+        except Exception:
+            pass
+    return out
 
 
 async def _groq_analyze_queued(raw_text: str, filename: str) -> str:
@@ -328,7 +392,17 @@ async def weight_update_loop(redis: aioredis.Redis):
                 regime = ctx.get("regime", "unknown")
                 if regime != _current_regime:
                     log.info(f"RegimeRouter: regime changed {_current_regime} → {regime}")
+                    old = _current_regime
                     _current_regime = regime
+                    # Faz 2: rejim değişim olayını yayınla → event_learner dinler
+                    try:
+                        await redis.publish("ch:regime_changed", json.dumps({
+                            "old_regime": old,
+                            "new_regime": regime,
+                            "ts": time.time(),
+                        }))
+                    except Exception:
+                        pass
 
             # Combine learned weights + regime multipliers
             new_weights = get_weights_for_regime(_current_regime, learned)
@@ -379,6 +453,7 @@ async def main():
         training_reload_loop(redis),
         news_scanner.run(redis),
         lesson_writer_loop(REDIS_URL),
+        event_learner_loop(redis, REDIS_URL),
     )
 
 
