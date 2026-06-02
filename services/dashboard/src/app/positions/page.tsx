@@ -130,7 +130,7 @@ function EmptyState({ maxPositions }: { maxPositions: number }) {
       <div className="flex flex-wrap justify-center gap-2 mt-4 text-xs text-gray-600">
         <span className="bg-gray-800 px-2 py-1 rounded">Min güven: %60</span>
         <span className="bg-gray-800 px-2 py-1 rounded">Maks {maxPositions} eş zamanlı pozisyon</span>
-        <span className="bg-gray-800 px-2 py-1 rounded">Trade başına maks %5 portföy</span>
+        <span className="bg-gray-800 px-2 py-1 rounded">Sınırsız pozisyon büyüklüğü</span>
       </div>
     </div>
   )
@@ -325,13 +325,13 @@ export default function PositionsPage() {
         <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 space-y-2">
           <div className="flex justify-between text-xs text-gray-400">
             <span>Açık Sermaye</span>
-            <span>${totalExposed.toFixed(0)} / $10.000 portföy (maks $500/pozisyon)</span>
+            <span>${totalExposed.toFixed(0)} açık · Sınırsız pozisyon büyüklüğü</span>
           </div>
           <div className="h-2 bg-gray-700 rounded-full overflow-hidden">
             <div className="h-full bg-orange-500 rounded-full transition-all"
-              style={{ width: `${Math.min(totalExposed / 500 * 100, 100)}%` }} />
+              style={{ width: `${Math.min(totalExposed / 10000 * 100, 100)}%` }} />
           </div>
-          <p className="text-xs text-gray-600">%{(totalExposed / 10000 * 100).toFixed(2)} portföy · Pozisyon başına maks %5</p>
+          <p className="text-xs text-gray-600">%{(totalExposed / 10000 * 100).toFixed(2)} portföy kullanımı · Sınırsız</p>
         </div>
       )}
 

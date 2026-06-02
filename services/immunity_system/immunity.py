@@ -10,8 +10,8 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 # ══════ ALL LIMITS — configurable via env for training mode ══════
-MAX_POSITION_PCT   = float(os.getenv("MAX_POSITION_PCT",   "0.05"))   # per-trade max size
-MAX_DAILY_LOSS_PCT = float(os.getenv("MAX_DAILY_LOSS_PCT", "0.02"))   # daily loss halt
+MAX_POSITION_PCT   = float(os.getenv("MAX_POSITION_PCT",   "1.00"))   # per-trade max size (shadow learning: unlimited)
+MAX_DAILY_LOSS_PCT = float(os.getenv("MAX_DAILY_LOSS_PCT", "1.00"))   # daily loss halt (shadow learning: unlimited)
 MAX_LEVERAGE       = float(os.getenv("MAX_LEVERAGE",        "3.0"))    # max leverage
 MIN_CONFIDENCE     = float(os.getenv("MIN_CONFIDENCE",      "0.52"))   # min signal confidence
 MAX_OPEN_POSITIONS = int(os.getenv("MAX_OPEN_POSITIONS",    "3"))
