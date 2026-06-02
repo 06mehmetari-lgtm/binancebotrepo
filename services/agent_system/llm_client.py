@@ -7,6 +7,7 @@ Ollama is always last — no API key required, no rate limits.
 import asyncio
 import logging
 import os
+import time
 
 import aiohttp
 
@@ -27,27 +28,41 @@ _PROVIDERS = [
         "name": "Cerebras",
         "url": "https://api.cerebras.ai/v1/chat/completions",
         "key_env": "CEREBRAS_API_KEY",
-        "model": "llama-3.3-70b",
+        "model": "llama3.1-8b",
         "headers": {},
     },
     {
         "name": "SambaNova",
         "url": "https://api.sambanova.ai/v1/chat/completions",
         "key_env": "SAMBANOVA_API_KEY",
-        "model": "Meta-Llama-3.3-70B-Instruct",
+        "model": "Meta-Llama-3.1-8B-Instruct",
         "headers": {},
     },
     {
         "name": "OpenRouter",
         "url": "https://openrouter.ai/api/v1/chat/completions",
         "key_env": "OPENROUTER_API_KEY",
-        "model": "mistralai/mistral-7b-instruct:free",
+        "model": "google/gemma-2-9b-it:free",
         "headers": {
             "HTTP-Referer": "https://prometheus-trading.io",
             "X-Title": "Prometheus Trading",
         },
     },
 ]
+
+# Per-provider rate limit cooldown: provider_name → resume_at timestamp
+_provider_cooldown: dict[str, float] = {}
+RATE_LIMIT_COOLDOWN = 65  # saniye — Groq/SambaNova penceresi 60s
+
+# Ollama'ya aynı anda tek istek (local model, sıralı çalışır)
+_ollama_lock: asyncio.Lock | None = None
+
+
+def _get_ollama_lock() -> asyncio.Lock:
+    global _ollama_lock
+    if _ollama_lock is None:
+        _ollama_lock = asyncio.Lock()
+    return _ollama_lock
 
 
 async def _ollama_completion(
@@ -63,16 +78,20 @@ async def _ollama_completion(
         "stream": False,
         "options": {"temperature": temperature, "num_predict": max_tokens},
     }
-    async with session.post(
-        f"{OLLAMA_URL}/api/chat",
-        json=payload,
-        timeout=aiohttp.ClientTimeout(total=120),
-    ) as resp:
-        if resp.status != 200:
-            body = await resp.text()
-            raise RuntimeError(f"Ollama {resp.status}: {body[:120]}")
-        data = await resp.json()
-        return data["message"]["content"]
+    async with _get_ollama_lock():
+        async with session.post(
+            f"{OLLAMA_URL}/api/chat",
+            json=payload,
+            timeout=aiohttp.ClientTimeout(total=180),
+        ) as resp:
+            if resp.status != 200:
+                body = await resp.text()
+                raise RuntimeError(f"Ollama {resp.status}: {body[:120]}")
+            data = await resp.json()
+            content = data.get("message", {}).get("content", "")
+            if not content:
+                raise RuntimeError("Ollama yanıt içeriği boş")
+            return content
 
 
 async def chat_completion(
@@ -82,12 +101,14 @@ async def chat_completion(
     max_tokens: int = 1024,
 ) -> tuple[str, str]:
     """Try each provider in order. Returns (content, provider_name).
-    Falls back to local Ollama if all cloud providers fail."""
+    Falls back to local Ollama if all cloud providers fail.
+    Rate-limited providers are skipped for 65 seconds after a 429."""
     messages = []
     if system:
         messages.append({"role": "system", "content": system})
     messages.append({"role": "user", "content": prompt})
 
+    now = time.time()
     last_error = "tüm sağlayıcılar denendi"
 
     async with aiohttp.ClientSession() as session:
@@ -95,6 +116,13 @@ async def chat_completion(
         for p in _PROVIDERS:
             api_key = os.getenv(p["key_env"], "")
             if not api_key:
+                continue
+
+            # Skip if this provider hit a rate limit recently
+            resume_at = _provider_cooldown.get(p["name"], 0)
+            if now < resume_at:
+                remaining = int(resume_at - now)
+                log.debug(f"LLM [{p['name']}] cooldown — {remaining}s kaldı, atlanıyor")
                 continue
 
             headers = {
@@ -114,7 +142,8 @@ async def chat_completion(
                     timeout=aiohttp.ClientTimeout(total=90),
                 ) as resp:
                     if resp.status == 429:
-                        log.warning(f"LLM [{p['name']}] rate limit — sonraki sağlayıcıya geçiliyor")
+                        _provider_cooldown[p["name"]] = time.time() + RATE_LIMIT_COOLDOWN
+                        log.warning(f"LLM [{p['name']}] rate limit — {RATE_LIMIT_COOLDOWN}s cooldown")
                         last_error = f"{p['name']} 429"
                         continue
                     if resp.status != 200:
@@ -124,6 +153,9 @@ async def chat_completion(
                         continue
                     data = await resp.json()
                     content = data["choices"][0]["message"]["content"]
+                    if not content:
+                        last_error = f"{p['name']} boş yanıt"
+                        continue
                     log.debug(f"LLM [{p['name']}] başarılı")
                     return content, p["name"]
             except asyncio.TimeoutError:
@@ -133,7 +165,7 @@ async def chat_completion(
                 log.warning(f"LLM [{p['name']}] bağlantı hatası: {e}")
                 last_error = str(e)
 
-        # Ollama — local fallback, no rate limits
+        # Ollama — local fallback, queued (one at a time to avoid overload)
         try:
             log.info("LLM [Ollama] tüm bulut sağlayıcılar başarısız — yerel modele geçiliyor")
             content = await _ollama_completion(messages, temperature, max_tokens, session)

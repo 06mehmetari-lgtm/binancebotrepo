@@ -26,19 +26,19 @@ const PROVIDERS: Provider[] = [
     name: 'Cerebras',
     url: 'https://api.cerebras.ai/v1/chat/completions',
     keyEnv: 'CEREBRAS_API_KEY',
-    model: 'llama-3.3-70b',
+    model: 'llama3.1-8b',
   },
   {
     name: 'SambaNova',
     url: 'https://api.sambanova.ai/v1/chat/completions',
     keyEnv: 'SAMBANOVA_API_KEY',
-    model: 'Meta-Llama-3.3-70B-Instruct',
+    model: 'Meta-Llama-3.1-8B-Instruct',
   },
   {
     name: 'OpenRouter',
     url: 'https://openrouter.ai/api/v1/chat/completions',
     keyEnv: 'OPENROUTER_API_KEY',
-    model: 'mistralai/mistral-7b-instruct:free',
+    model: 'google/gemma-2-9b-it:free',
     extraHeaders: {
       'HTTP-Referer': 'https://prometheus-trading.io',
       'X-Title': 'Prometheus Trading',

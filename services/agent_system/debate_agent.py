@@ -8,11 +8,16 @@ import asyncio
 import json
 import logging
 import os
+import time
 import urllib.request
 import urllib.error
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
+
+# LLM sentezi aynı sembol için en fazla 2 dakikada bir çalışır
+_symbol_llm_ts: dict[str, float] = {}
+LLM_SYMBOL_COOLDOWN = 120  # saniye
 
 
 @dataclass
@@ -70,8 +75,14 @@ class DebateAgent:
         result = self._aggregate(valid)
 
         # LLM synthesis — only for high-confidence non-flat signals
-        if result.final_signal != "flat" and result.final_confidence > 0.65:
-            # Geçmiş benzer durumları training_context'e ekle (Faz 3 RAG)
+        # and only if this symbol hasn't been synthesized in the last 2 minutes
+        now = time.time()
+        llm_eligible = (
+            result.final_signal != "flat"
+            and result.final_confidence > 0.65
+            and now - _symbol_llm_ts.get(symbol, 0) > LLM_SYMBOL_COOLDOWN
+        )
+        if llm_eligible:
             enriched_context = training_context
             if rag_block:
                 enriched_context = (
@@ -79,6 +90,7 @@ class DebateAgent:
                     if training_context else rag_block
                 )
             result = await self._synthesize(symbol, features, context, result, enriched_context)
+            _symbol_llm_ts[symbol] = time.time()
 
         return result
 
