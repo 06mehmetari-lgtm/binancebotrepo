@@ -14,6 +14,7 @@ from event_learner import event_learner_loop, learn_from_debate
 from strategy_extractor import strategy_extractor_loop
 from system_observer import system_observer_loop
 from ollama_trainer import ollama_training_loop
+from multi_llm_trade_analysis import multi_llm_trade_loop
 import rag_context
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
@@ -548,6 +549,7 @@ async def main():
         system_observer_loop(redis, REDIS_URL),
         llm_stats_push_loop(redis),
         ollama_training_loop(redis),
+        multi_llm_trade_loop(REDIS_URL),
     )
 
 

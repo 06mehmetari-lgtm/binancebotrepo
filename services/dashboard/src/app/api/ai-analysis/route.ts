@@ -244,9 +244,10 @@ export async function GET(req: Request) {
       )
     }
 
-    return NextResponse.json({
+    const result = {
       symbol,
       price,
+      timestamp: Math.floor(Date.now() / 1000),
       has_features:    !!features,
       features_age_s:  features?.timestamp
         ? Math.round(Date.now() / 1000 - Number(features.timestamp))
@@ -272,7 +273,17 @@ export async function GET(req: Request) {
         confidence: Number(rlSignal.confidence ?? 0),
       } : null,
       doc_insights,
-    })
+    }
+
+    // Save to per-symbol history (keep last 50 analyses)
+    if (result.has_features || result.votes.length > 0) {
+      const histKey = `ai:analysis:history:${symbol}`
+      await redis.lpush(histKey, JSON.stringify(result))
+      await redis.ltrim(histKey, 0, 49)
+      await redis.expire(histKey, 86400 * 30)
+    }
+
+    return NextResponse.json(result)
   } finally {
     await redis.quit()
   }

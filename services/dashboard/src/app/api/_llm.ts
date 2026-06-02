@@ -158,7 +158,7 @@ export async function chatCompletion(
       name: 'HuggingFace',
       url: 'https://api-inference.huggingface.co/v1/chat/completions',
       keyEnv: 'HUGGINGFACE_API_KEY',
-      model: 'meta-llama/Llama-3.3-70B-Instruct',
+      model: 'Qwen/Qwen2.5-7B-Instruct',
       extraHeaders: {} as Record<string, string>,
     },
   ]

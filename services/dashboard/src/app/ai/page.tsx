@@ -583,6 +583,22 @@ export default function AIPage() {
   ])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
+  const [history, setHistory] = useState<AnalysisData[]>([])
+  const [historySymbol, setHistorySymbol] = useState('')
+  const [showHistory, setShowHistory] = useState(false)
+
+  const loadHistory = useCallback(async (symbol: string) => {
+    if (!symbol) return
+    try {
+      const res = await fetch(`/api/analysis-history?symbol=${symbol}`)
+      const data = await res.json()
+      if (data.history?.length > 0) {
+        setHistory(data.history)
+        setHistorySymbol(symbol)
+        setShowHistory(true)
+      }
+    } catch { /* ignore */ }
+  }, [])
   const bottomRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
 
@@ -613,6 +629,8 @@ export default function AIPage() {
           data,
           id: `a-${Date.now()}`,
         }])
+        // Load history for this coin in background
+        if (data.symbol) loadHistory(data.symbol)
       }
     } catch {
       setMessages(prev => [...prev, {
@@ -726,6 +744,34 @@ export default function AIPage() {
           ))}
         </div>
       </div>
+
+      {/* Analysis History Panel */}
+      {showHistory && history.length > 0 && (
+        <div className="border-t border-gray-800 py-2">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-xs text-gray-500 font-semibold">
+              📊 {historySymbol} — Son {history.length} Analiz Geçmişi
+            </span>
+            <button onClick={() => setShowHistory(false)} className="text-gray-600 hover:text-gray-400 text-xs">✕</button>
+          </div>
+          <div className="flex gap-2 overflow-x-auto pb-1">
+            {history.slice(0, 10).map((h, i) => {
+              const dir = h.verdict?.direction ?? h.signal?.direction ?? 'flat'
+              const conf = h.verdict?.confidence ?? h.signal?.confidence ?? 0
+              const ts = h.timestamp ? new Date(h.timestamp * 1000).toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' }) : '—'
+              const bg = dir === 'long' ? 'border-green-700/40 bg-green-900/10' : dir === 'short' ? 'border-red-700/40 bg-red-900/10' : 'border-gray-700/40'
+              const col = dir === 'long' ? 'text-green-400' : dir === 'short' ? 'text-red-400' : 'text-gray-400'
+              return (
+                <div key={i} className={`flex-shrink-0 border rounded-lg px-3 py-2 text-center min-w-[80px] ${bg}`}>
+                  <div className={`text-xs font-bold ${col}`}>{dir.toUpperCase()}</div>
+                  <div className="text-gray-500 text-[10px]">{(conf * 100).toFixed(0)}%</div>
+                  <div className="text-gray-600 text-[10px]">{ts}</div>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
 
       {/* Input */}
       <form onSubmit={handleSubmit} className="flex gap-2 pt-2">

@@ -83,14 +83,19 @@ export default function TrainingPage() {
   }, [fetchDocs, fetchQueue])
 
   const handleFile = (f: File) => {
-    if (!f.name.toLowerCase().endsWith('.pdf')) { setStatusMsg('Sadece PDF kabul edilir.'); return }
-    setFile(f); setTitle(f.name.replace(/\.pdf$/i, '')); setStatusMsg(''); setUploadState('idle')
+    const n = f.name.toLowerCase()
+    if (!n.endsWith('.pdf') && !n.endsWith('.zip')) {
+      setStatusMsg('Sadece PDF veya ZIP dosyası kabul edilir.')
+      return
+    }
+    setFile(f); setTitle(f.name.replace(/\.(pdf|zip)$/i, '')); setStatusMsg(''); setUploadState('idle')
   }
 
   const handleUpload = async () => {
     if (!file) return
     setUploadState('extracting')
-    setStatusMsg('PDF okunuyor — metin çıkarılıyor...')
+    const isZip = file.name.toLowerCase().endsWith('.zip')
+    setStatusMsg(isZip ? 'ZIP açılıyor — PDF\'ler çıkarılıyor...' : 'PDF okunuyor — metin çıkarılıyor...')
 
     const fd = new FormData()
     fd.append('pdf', file)
@@ -101,7 +106,10 @@ export default function TrainingPage() {
       const data = await res.json()
       if (data.queued) {
         setUploadState('queued')
-        setStatusMsg('Kuyruğa eklendi! Groq rate limit açılınca otomatik analiz edilecek.')
+        const msg = data.count > 1
+          ? `${data.count} PDF kuyruğa eklendi! Groq rate limit açılınca sırayla analiz edilecek.`
+          : 'Kuyruğa eklendi! Groq rate limit açılınca otomatik analiz edilecek.'
+        setStatusMsg(msg + (data.errors?.length ? ` (${data.errors.length} PDF atlandı)` : ''))
         setFile(null); setTitle('')
         if (fileInputRef.current) fileInputRef.current.value = ''
         fetchQueue()
@@ -149,7 +157,7 @@ export default function TrainingPage() {
         {/* LEFT — upload */}
         <div className="lg:col-span-2 space-y-4">
           <div className="border border-gray-800 rounded-xl p-5 bg-gray-900/60">
-            <h2 className="text-white font-semibold text-sm mb-4">PDF Yükle</h2>
+            <h2 className="text-white font-semibold text-sm mb-4">PDF / ZIP Yükle</h2>
 
             <div
               className={`relative border-2 border-dashed rounded-xl p-6 text-center transition-all cursor-pointer
@@ -160,21 +168,24 @@ export default function TrainingPage() {
               onDrop={e => { e.preventDefault(); setDragging(false); const f = e.dataTransfer.files[0]; if (f) handleFile(f) }}
               onClick={() => fileInputRef.current?.click()}
             >
-              <input ref={fileInputRef} type="file" accept=".pdf" className="hidden"
+              <input ref={fileInputRef} type="file" accept=".pdf,.zip" className="hidden"
                 onChange={e => { const f = e.target.files?.[0]; if (f) handleFile(f) }} />
               {file ? (
                 <div className="space-y-2">
-                  <div className="text-4xl">📄</div>
+                  <div className="text-4xl">{file.name.toLowerCase().endsWith('.zip') ? '🗜️' : '📄'}</div>
                   <p className="text-white text-sm font-semibold truncate">{file.name}</p>
                   <p className="text-gray-500 text-xs">{fileSize(file.size)}</p>
+                  {file.name.toLowerCase().endsWith('.zip') && (
+                    <p className="text-blue-400 text-xs">ZIP içindeki tüm PDF&apos;ler toplu yüklenir</p>
+                  )}
                   <button type="button" onClick={e => { e.stopPropagation(); setFile(null); setTitle(''); setUploadState('idle'); setStatusMsg('') }}
                     className="text-xs text-red-600 hover:text-red-400 transition-colors">Kaldır</button>
                 </div>
               ) : (
                 <div className="space-y-2">
                   <div className="text-4xl opacity-40">📁</div>
-                  <p className="text-gray-400 text-sm">PDF sürükle veya tıkla</p>
-                  <p className="text-gray-600 text-xs">Maksimum 20 MB</p>
+                  <p className="text-gray-400 text-sm">PDF veya ZIP sürükle / tıkla</p>
+                  <p className="text-gray-600 text-xs">ZIP ile birden fazla PDF toplu yükle • Max 50 MB</p>
                 </div>
               )}
             </div>
