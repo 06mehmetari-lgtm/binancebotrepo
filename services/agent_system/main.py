@@ -12,6 +12,7 @@ from groq_news_scanner import GroqNewsScanner
 from lesson_writer import lesson_writer_loop
 from event_learner import event_learner_loop, learn_from_debate
 from strategy_extractor import strategy_extractor_loop
+from system_observer import system_observer_loop
 import rag_context
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
@@ -479,6 +480,7 @@ async def main():
         lesson_writer_loop(REDIS_URL),
         event_learner_loop(redis, REDIS_URL),
         strategy_extractor_loop(redis),
+        system_observer_loop(redis, REDIS_URL),
     )
 
 
