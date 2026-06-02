@@ -120,7 +120,7 @@ export async function chatCompletion(
       name: 'SambaNova',
       url: 'https://api.sambanova.ai/v1/chat/completions',
       keyEnv: 'SAMBANOVA_API_KEY',
-      model: 'Qwen2.5-72B-Instruct',
+      model: 'DeepSeek-V3.1',
       extraHeaders: {} as Record<string, string>,
     },
     {

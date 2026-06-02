@@ -113,7 +113,7 @@ _PROVIDERS = [
         "name": "SambaNova",
         "url": "https://api.sambanova.ai/v1/chat/completions",
         "key_env": "SAMBANOVA_API_KEY",
-        "model": "Qwen2.5-72B-Instruct",
+        "model": "DeepSeek-V3.1",
         "headers": {},
     },
     {
