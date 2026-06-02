@@ -132,25 +132,19 @@ async def _groq_analyze_queued(raw_text: str, filename: str) -> str:
     return content
 
 
-async def _process_training_queue(redis: aioredis.Redis):
-    """Process one pending PDF from training:queue using Groq.
-    Returns True if an item was processed (or failed), False if queue empty."""
-    item_raw = await redis.lindex("training:queue", 0)  # peek oldest
-    if not item_raw:
-        return False
-
+async def _process_single_item(redis: aioredis.Redis, item_raw: str) -> bool:
+    """Process one PDF item. Returns True on success, False on rate-limit, None on hard error."""
     item: dict = {}
     item_id = ""
     try:
         item = json.loads(item_raw)
         item_id = item.get("id", "")
 
-        # Skip if already processed
+        # Skip if already done
         status_raw = await redis.get(f"training:queue:status:{item_id}")
         if status_raw:
             status = json.loads(status_raw)
             if status.get("status") == "done":
-                await redis.lpop("training:queue")
                 return True
 
         # Mark as processing
@@ -162,7 +156,7 @@ async def _process_training_queue(redis: aioredis.Redis):
 
         analysed = await _groq_analyze_queued(item.get("raw_text", ""), item.get("filename", "doc"))
 
-        # Add to training:docs
+        # Append to training:docs (atomic-ish: read-modify-write)
         docs_raw = await redis.get("training:docs")
         docs = json.loads(docs_raw) if docs_raw else []
         docs.insert(0, {
@@ -175,25 +169,24 @@ async def _process_training_queue(redis: aioredis.Redis):
         })
         await redis.set("training:docs", json.dumps(docs))
 
-        # Mark done and remove from queue
         await redis.set(
             f"training:queue:status:{item_id}",
             json.dumps({"status": "done", "processed_at": time.time()}),
             ex=86400 * 7,
         )
-        await redis.lpop("training:queue")
         log.info(f"Training queue: '{item.get('title','')}' öğrenildi ({item.get('filename','')})")
         return True
 
     except ValueError as e:
         if "429" in str(e) or "rate_limit" in str(e):
-            log.warning("Training queue: Groq rate limit — bir sonraki döngüde tekrar denenecek")
+            log.warning(f"Training queue rate limit — tekrar denenecek: {item.get('filename','')}")
             if item_id:
                 await redis.set(
                     f"training:queue:status:{item_id}",
                     json.dumps({"status": "pending", "error": "rate_limit", "retry_after": time.time() + 65}),
                     ex=86400,
                 )
+            return False
         else:
             log.error(f"Training queue error: {e}")
             if item_id:
@@ -202,20 +195,83 @@ async def _process_training_queue(redis: aioredis.Redis):
                     json.dumps({"status": "error", "error": str(e)}),
                     ex=86400,
                 )
-            await redis.lpop("training:queue")  # skip broken item
-        return False
+            return True  # treat as done to advance queue
     except Exception as e:
         log.error(f"Training queue unexpected error: {e}")
-        return False
+        if item_id:
+            await redis.set(
+                f"training:queue:status:{item_id}",
+                json.dumps({"status": "error", "error": str(e)[:200]}),
+                ex=86400,
+            )
+        return True  # advance past broken item
+
+
+async def _process_training_queue_batch(redis: aioredis.Redis, batch_size: int = 4):
+    """Process up to batch_size pending PDFs in parallel. Removes completed items."""
+    all_items = await redis.lrange("training:queue", 0, -1)
+    if not all_items:
+        return
+
+    # Collect pending items (skip already-done ones inline)
+    pending = []
+    done_ids = set()
+    for raw in all_items:
+        try:
+            item = json.loads(raw)
+            item_id = item.get("id", "")
+            status_raw = await redis.get(f"training:queue:status:{item_id}")
+            if status_raw:
+                st = json.loads(status_raw).get("status")
+                if st == "done":
+                    done_ids.add(item_id)
+                    continue
+                if st == "processing":
+                    continue  # already in flight
+            pending.append((item_id, raw))
+        except Exception:
+            continue
+
+    # Remove already-done items from the list head
+    while True:
+        head_raw = await redis.lindex("training:queue", 0)
+        if not head_raw:
+            break
+        try:
+            head_id = json.loads(head_raw).get("id", "")
+        except Exception:
+            head_id = ""
+        if head_id in done_ids:
+            await redis.lpop("training:queue")
+            done_ids.discard(head_id)
+        else:
+            break
+
+    if not pending:
+        return
+
+    batch = pending[:batch_size]
+    log.info(f"Training queue: {len(pending)} bekliyor — {len(batch)} paralel işleniyor")
+
+    results = await asyncio.gather(
+        *[_process_single_item(redis, raw) for _, raw in batch],
+        return_exceptions=True,
+    )
+
+    # Remove successfully processed items from queue
+    for (item_id, raw), result in zip(batch, results):
+        if result is True:
+            # Find and remove this specific item from list
+            await redis.lrem("training:queue", 1, raw)
 
 
 async def training_reload_loop(redis: aioredis.Redis):
-    """Process PDF queue + reload training context every 60 seconds."""
+    """Process PDF queue in parallel batches + reload training context every 15 seconds."""
     global _training_context
     while True:
-        # Process one queued PDF (rate-limit safe: one per 60s cycle)
+        # Process up to 4 PDFs in parallel
         try:
-            await _process_training_queue(redis)
+            await _process_training_queue_batch(redis, batch_size=4)
         except Exception as e:
             log.warning(f"Queue processor error: {e}")
 
@@ -229,7 +285,7 @@ async def training_reload_loop(redis: aioredis.Redis):
         except Exception as e:
             log.warning(f"Training reload error: {e}")
 
-        await asyncio.sleep(60)
+        await asyncio.sleep(15)
 
 
 async def weight_update_loop(redis: aioredis.Redis):
