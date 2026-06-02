@@ -23,7 +23,7 @@ _PROVIDERS = [
         "name": "Cerebras",
         "url": "https://api.cerebras.ai/v1/chat/completions",
         "key_env": "CEREBRAS_API_KEY",
-        "model": "llama3.3-70b",
+        "model": "llama-3.3-70b",
         "headers": {},
     },
     {
@@ -37,7 +37,7 @@ _PROVIDERS = [
         "name": "OpenRouter",
         "url": "https://openrouter.ai/api/v1/chat/completions",
         "key_env": "OPENROUTER_API_KEY",
-        "model": "meta-llama/llama-3.1-8b-instruct:free",
+        "model": "mistralai/mistral-7b-instruct:free",
         "headers": {
             "HTTP-Referer": "https://prometheus-trading.io",
             "X-Title": "Prometheus Trading",
