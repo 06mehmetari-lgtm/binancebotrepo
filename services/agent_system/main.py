@@ -132,22 +132,27 @@ async def _groq_analyze_queued(raw_text: str, filename: str) -> str:
     return content
 
 
-async def _process_single_item(redis: aioredis.Redis, item_raw: str) -> bool:
-    """Process one PDF item. Returns True on success, False on rate-limit, None on hard error."""
+# Lock to prevent concurrent writes to training:docs
+_docs_write_lock = asyncio.Lock()
+
+
+async def _analyze_item(redis: aioredis.Redis, item_raw: str) -> tuple[dict | None, str | None, str | None]:
+    """
+    LLM analysis only — no Redis write to training:docs.
+    Returns (item_dict, item_id, analysed_text) on success,
+            (item_dict, item_id, None) on rate-limit,
+            (None, None, None) on hard error.
+    """
     item: dict = {}
     item_id = ""
     try:
         item = json.loads(item_raw)
         item_id = item.get("id", "")
 
-        # Skip if already done
         status_raw = await redis.get(f"training:queue:status:{item_id}")
-        if status_raw:
-            status = json.loads(status_raw)
-            if status.get("status") == "done":
-                return True
+        if status_raw and json.loads(status_raw).get("status") == "done":
+            return item, item_id, "__already_done__"
 
-        # Mark as processing
         await redis.set(
             f"training:queue:status:{item_id}",
             json.dumps({"status": "processing", "started_at": time.time()}),
@@ -155,27 +160,7 @@ async def _process_single_item(redis: aioredis.Redis, item_raw: str) -> bool:
         )
 
         analysed = await _groq_analyze_queued(item.get("raw_text", ""), item.get("filename", "doc"))
-
-        # Append to training:docs (atomic-ish: read-modify-write)
-        docs_raw = await redis.get("training:docs")
-        docs = json.loads(docs_raw) if docs_raw else []
-        docs.insert(0, {
-            "id": item_id,
-            "title": item.get("title", item.get("filename", "PDF")),
-            "content": analysed,
-            "source": "pdf",
-            "filename": item.get("filename", ""),
-            "created_at": item.get("created_at", time.time()),
-        })
-        await redis.set("training:docs", json.dumps(docs))
-
-        await redis.set(
-            f"training:queue:status:{item_id}",
-            json.dumps({"status": "done", "processed_at": time.time()}),
-            ex=86400 * 7,
-        )
-        log.info(f"Training queue: '{item.get('title','')}' öğrenildi ({item.get('filename','')})")
-        return True
+        return item, item_id, analysed
 
     except ValueError as e:
         if "429" in str(e) or "rate_limit" in str(e):
@@ -186,7 +171,7 @@ async def _process_single_item(redis: aioredis.Redis, item_raw: str) -> bool:
                     json.dumps({"status": "pending", "error": "rate_limit", "retry_after": time.time() + 65}),
                     ex=86400,
                 )
-            return False
+            return item, item_id, None  # stay in queue
         else:
             log.error(f"Training queue error: {e}")
             if item_id:
@@ -195,7 +180,7 @@ async def _process_single_item(redis: aioredis.Redis, item_raw: str) -> bool:
                     json.dumps({"status": "error", "error": str(e)}),
                     ex=86400,
                 )
-            return True  # treat as done to advance queue
+            return item, item_id, "__error__"
     except Exception as e:
         log.error(f"Training queue unexpected error: {e}")
         if item_id:
@@ -204,18 +189,44 @@ async def _process_single_item(redis: aioredis.Redis, item_raw: str) -> bool:
                 json.dumps({"status": "error", "error": str(e)[:200]}),
                 ex=86400,
             )
-        return True  # advance past broken item
+        return item, item_id, "__error__"
+
+
+async def _save_doc(redis: aioredis.Redis, item: dict, item_id: str, analysed: str):
+    """Write one doc to training:docs under lock — prevents parallel overwrite."""
+    async with _docs_write_lock:
+        docs_raw = await redis.get("training:docs")
+        docs = json.loads(docs_raw) if docs_raw else []
+        # Avoid duplicates
+        if any(d.get("id") == item_id for d in docs):
+            return
+        docs.insert(0, {
+            "id": item_id,
+            "title": item.get("title", item.get("filename", "PDF")),
+            "content": analysed,
+            "source": "pdf",
+            "filename": item.get("filename", ""),
+            "created_at": item.get("created_at", time.time()),
+        })
+        await redis.set("training:docs", json.dumps(docs))
+
+    await redis.set(
+        f"training:queue:status:{item_id}",
+        json.dumps({"status": "done", "processed_at": time.time()}),
+        ex=86400 * 7,
+    )
+    log.info(f"Training queue: '{item.get('title','')}' öğrenildi ({item.get('filename','')})")
 
 
 async def _process_training_queue_batch(redis: aioredis.Redis, batch_size: int = 4):
-    """Process up to batch_size pending PDFs in parallel. Removes completed items."""
+    """Analyse up to batch_size PDFs in parallel, then save results sequentially."""
     all_items = await redis.lrange("training:queue", 0, -1)
     if not all_items:
         return
 
-    # Collect pending items (skip already-done ones inline)
+    # Collect pending (skip done/in-flight)
     pending = []
-    done_ids = set()
+    done_ids: set[str] = set()
     for raw in all_items:
         try:
             item = json.loads(raw)
@@ -227,12 +238,12 @@ async def _process_training_queue_batch(redis: aioredis.Redis, batch_size: int =
                     done_ids.add(item_id)
                     continue
                 if st == "processing":
-                    continue  # already in flight
+                    continue
             pending.append((item_id, raw))
         except Exception:
             continue
 
-    # Remove already-done items from the list head
+    # Drain fully-done items from queue head
     while True:
         head_raw = await redis.lindex("training:queue", 0)
         if not head_raw:
@@ -251,18 +262,30 @@ async def _process_training_queue_batch(redis: aioredis.Redis, batch_size: int =
         return
 
     batch = pending[:batch_size]
-    log.info(f"Training queue: {len(pending)} bekliyor — {len(batch)} paralel işleniyor")
+    log.info(f"Training queue: {len(pending)} bekliyor — {len(batch)} paralel analiz ediliyor")
 
     results = await asyncio.gather(
-        *[_process_single_item(redis, raw) for _, raw in batch],
+        *[_analyze_item(redis, raw) for _, raw in batch],
         return_exceptions=True,
     )
 
-    # Remove successfully processed items from queue
+    # Save results sequentially (lock prevents race condition on training:docs)
+    to_remove: list[str] = []
     for (item_id, raw), result in zip(batch, results):
-        if result is True:
-            # Find and remove this specific item from list
-            await redis.lrem("training:queue", 1, raw)
+        if isinstance(result, Exception):
+            log.error(f"Training batch exception: {result}")
+            continue
+        item, rid, analysed = result
+        if analysed == "__already_done__" or analysed == "__error__":
+            to_remove.append(raw)
+        elif analysed is None:
+            pass  # rate-limited, leave in queue
+        else:
+            await _save_doc(redis, item, rid, analysed)
+            to_remove.append(raw)
+
+    for raw in to_remove:
+        await redis.lrem("training:queue", 1, raw)
 
 
 async def training_reload_loop(redis: aioredis.Redis):
