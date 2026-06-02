@@ -1,59 +1,12 @@
 /**
  * Multi-provider LLM client with automatic fallback.
- * Order: Groq → Cerebras → SambaNova → OpenRouter → Ollama (local, unlimited)
+ * Order: Anthropic → Groq → Cerebras → SambaNova → OpenRouter → Ollama
  */
-
-interface Provider {
-  name: string
-  url: string
-  keyEnv: string
-  model: string
-  extraHeaders?: Record<string, string>
-  isLocal?: boolean
-}
 
 const OLLAMA_URL   = process.env.OLLAMA_URL   ?? 'http://ollama:11434'
 const OLLAMA_MODEL = process.env.OLLAMA_MODEL ?? 'llama3.1:8b'
 
-const PROVIDERS: Provider[] = [
-  {
-    name: 'Groq',
-    url: 'https://api.groq.com/openai/v1/chat/completions',
-    keyEnv: 'GROQ_API_KEY',
-    model: 'llama-3.3-70b-versatile',
-  },
-  {
-    name: 'Cerebras',
-    url: 'https://api.cerebras.ai/v1/chat/completions',
-    keyEnv: 'CEREBRAS_API_KEY',
-    model: 'llama3.1-8b',
-  },
-  {
-    name: 'SambaNova',
-    url: 'https://api.sambanova.ai/v1/chat/completions',
-    keyEnv: 'SAMBANOVA_API_KEY',
-    model: 'Meta-Llama-3.1-8B-Instruct',
-  },
-  {
-    name: 'OpenRouter',
-    url: 'https://openrouter.ai/api/v1/chat/completions',
-    keyEnv: 'OPENROUTER_API_KEY',
-    model: 'google/gemma-2-9b-it:free',
-    extraHeaders: {
-      'HTTP-Referer': 'https://prometheus-trading.io',
-      'X-Title': 'Prometheus Trading',
-    },
-  },
-  {
-    name: 'Ollama',
-    url: `${OLLAMA_URL}/api/chat`,
-    keyEnv: '',
-    model: OLLAMA_MODEL,
-    isLocal: true,
-  },
-]
-
-// Per-provider rate limit cooldown (ms timestamp)
+// Per-provider rate limit cooldown (ms timestamp) — persists across requests in same process
 const providerCooldown: Record<string, number> = {}
 const RATE_LIMIT_COOLDOWN_MS = 65_000
 
@@ -66,6 +19,47 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   ])
 }
 
+async function callAnthropic(
+  messages: { role: string; content: string }[],
+  system: string,
+  temperature: number,
+  maxTokens: number,
+): Promise<string> {
+  const apiKey = process.env.ANTHROPIC_API_KEY
+  if (!apiKey) throw new Error('ANTHROPIC_API_KEY yok')
+
+  // Anthropic: system ayrı alan, messages sadece user/assistant
+  const userMessages = messages.filter(m => m.role !== 'system')
+
+  const res = await withTimeout(
+    fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: maxTokens,
+        temperature,
+        system: system || 'You are a helpful assistant.',
+        messages: userMessages,
+      }),
+    }),
+    30_000,
+  )
+
+  if (!res.ok) {
+    const text = await res.text()
+    throw new Error(`Anthropic ${res.status}: ${text.slice(0, 120)}`)
+  }
+  const data = await res.json()
+  const content = data.content?.[0]?.text ?? ''
+  if (!content) throw new Error('Anthropic boş yanıt')
+  return content
+}
+
 export async function chatCompletion(
   prompt: string,
   options: { system?: string; temperature?: number; maxTokens?: number } = {},
@@ -76,49 +70,60 @@ export async function chatCompletion(
   if (system) messages.push({ role: 'system', content: system })
   messages.push({ role: 'user', content: prompt })
 
-  let lastError = 'tüm sağlayıcılar denendi'
+  // 1. Anthropic — en güvenilir, birinci sıra
+  try {
+    const content = await callAnthropic(messages, system, temperature, maxTokens)
+    return { content, provider: 'Anthropic' }
+  } catch (err) {
+    console.warn(`LLM [Anthropic] hata: ${err} — sonraki sağlayıcıya geçiliyor`)
+  }
+
+  // 2. Free cloud providers
+  const CLOUD_PROVIDERS = [
+    {
+      name: 'Groq',
+      url: 'https://api.groq.com/openai/v1/chat/completions',
+      keyEnv: 'GROQ_API_KEY',
+      model: 'llama-3.3-70b-versatile',
+      extraHeaders: {} as Record<string, string>,
+    },
+    {
+      name: 'Cerebras',
+      url: 'https://api.cerebras.ai/v1/chat/completions',
+      keyEnv: 'CEREBRAS_API_KEY',
+      model: 'llama3.1-8b',
+      extraHeaders: {} as Record<string, string>,
+    },
+    {
+      name: 'SambaNova',
+      url: 'https://api.sambanova.ai/v1/chat/completions',
+      keyEnv: 'SAMBANOVA_API_KEY',
+      model: 'Meta-Llama-3.1-8B-Instruct',
+      extraHeaders: {} as Record<string, string>,
+    },
+    {
+      name: 'OpenRouter',
+      url: 'https://openrouter.ai/api/v1/chat/completions',
+      keyEnv: 'OPENROUTER_API_KEY',
+      model: 'google/gemma-2-9b-it:free',
+      extraHeaders: {
+        'HTTP-Referer': 'https://prometheus-trading.io',
+        'X-Title': 'Prometheus Trading',
+      },
+    },
+  ]
+
   const now = Date.now()
+  let lastError = 'tüm cloud sağlayıcılar başarısız'
 
-  for (const p of PROVIDERS) {
-    // Skip cloud providers without API key
-    if (!p.isLocal) {
-      const apiKey = process.env[p.keyEnv]
-      if (!apiKey) continue
+  for (const p of CLOUD_PROVIDERS) {
+    const apiKey = process.env[p.keyEnv]
+    if (!apiKey) continue
 
-      // Skip if rate-limited recently
-      const cooldownUntil = providerCooldown[p.name] ?? 0
-      if (now < cooldownUntil) continue
-    }
+    const cooldownUntil = providerCooldown[p.name] ?? 0
+    if (now < cooldownUntil) continue
 
     try {
-      if (p.isLocal) {
-        // Ollama — different payload, 90s timeout
-        const res = await withTimeout(
-          fetch(p.url, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              model: p.model,
-              messages,
-              stream: false,
-              options: { temperature, num_predict: maxTokens },
-            }),
-          }),
-          90_000,
-        )
-        if (!res.ok) {
-          const text = await res.text()
-          lastError = `Ollama ${res.status}: ${text.slice(0, 80)}`
-          continue
-        }
-        const data = await res.json()
-        const content: string = data.message?.content ?? ''
-        if (!content) { lastError = 'Ollama boş yanıt'; continue }
-        return { content, provider: 'Ollama' }
-      }
-
-      // Cloud providers — OpenAI-compatible, 30s timeout
-      const apiKey = process.env[p.keyEnv]!
       const res = await withTimeout(
         fetch(p.url, {
           method: 'POST',
@@ -127,14 +132,19 @@ export async function chatCompletion(
             Authorization: `Bearer ${apiKey}`,
             ...p.extraHeaders,
           },
-          body: JSON.stringify({ model: p.model, messages, temperature, max_tokens: maxTokens }),
+          body: JSON.stringify({
+            model: p.model,
+            messages,
+            temperature,
+            max_tokens: maxTokens,
+          }),
         }),
         30_000,
       )
 
       if (res.status === 429) {
         providerCooldown[p.name] = Date.now() + RATE_LIMIT_COOLDOWN_MS
-        lastError = `${p.name} 429 rate limit`
+        lastError = `${p.name} 429`
         continue
       }
       if (!res.ok) {
@@ -149,6 +159,33 @@ export async function chatCompletion(
     } catch (err) {
       lastError = `${p.name}: ${err}`
     }
+  }
+
+  // 3. Ollama — local fallback, 60s timeout
+  try {
+    const res = await withTimeout(
+      fetch(`${OLLAMA_URL}/api/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: OLLAMA_MODEL,
+          messages,
+          stream: false,
+          options: { temperature, num_predict: maxTokens },
+        }),
+      }),
+      60_000,
+    )
+    if (!res.ok) {
+      const text = await res.text()
+      throw new Error(`Ollama ${res.status}: ${text.slice(0, 80)}`)
+    }
+    const data = await res.json()
+    const content: string = data.message?.content ?? ''
+    if (!content) throw new Error('Ollama boş yanıt')
+    return { content, provider: 'Ollama' }
+  } catch (err) {
+    lastError = `Ollama: ${err}`
   }
 
   throw new Error(`Tüm LLM sağlayıcıları başarısız. Son hata: ${lastError}`)
