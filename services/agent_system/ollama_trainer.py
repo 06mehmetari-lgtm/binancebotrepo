@@ -323,26 +323,51 @@ Bu bilgileri her kararında uygula. Geçmiş hatalarından öğren, kazananı ta
         return False
 
 
+async def _check_ollama_alive() -> bool:
+    """Return True if Ollama API responds to /api/tags."""
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f"{OLLAMA_URL}/api/tags",
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as resp:
+                return resp.status == 200
+    except Exception as e:
+        log.warning(f"Ollama bağlantı kontrolü başarısız: {e}")
+        return False
+
+
 async def ollama_training_loop(redis: aioredis.Redis) -> None:
     """Main loop — rebuild prometheus-trading model every 2h with latest knowledge."""
     from llm_client import set_ollama_model
 
-    # Check if already trained model exists on startup
-    await asyncio.sleep(120)  # wait 2min for system to warm up
+    await asyncio.sleep(30)  # wait 30s for system to warm up
 
     while True:
         try:
             log.info("Ollama trainer: bilgi toplanıyor...")
             knowledge = await _collect_knowledge(redis)
 
+            # Always write knowledge size so the dashboard can show it
+            await redis.set("ollama:knowledge_chars", str(len(knowledge)), ex=86400)
+            await redis.set("ollama:knowledge_preview", knowledge[:500], ex=86400)
+
             if len(knowledge) >= MIN_KNOWLEDGE:
+                # Check connectivity before attempting the expensive model build
+                if not await _check_ollama_alive():
+                    log.warning("Ollama yanıt vermiyor — model oluşturma atlandı, sonraki döngüde tekrar denenecek")
+                    await asyncio.sleep(TRAIN_INTERVAL)
+                    continue
+
                 success = await _create_model(knowledge)
                 if success:
                     set_ollama_model(TRAINED_MODEL)
-                    await redis.set("ollama:trained_model",   TRAINED_MODEL,     ex=TRAIN_INTERVAL + 600)
-                    await redis.set("ollama:last_train_ts",   str(time.time()),   ex=86400)
+                    await redis.set("ollama:trained_model",   TRAINED_MODEL,      ex=TRAIN_INTERVAL + 600)
+                    await redis.set("ollama:last_train_ts",   str(time.time()),    ex=86400)
                     await redis.set("ollama:knowledge_chars", str(len(knowledge)), ex=86400)
                     log.info(f"Ollama eğitim tamamlandı — aktif model: {TRAINED_MODEL}")
+                else:
+                    log.error("Ollama model oluşturma başarısız — bilgi boyutu Redis'e yazıldı ama model güncellenemedi")
             else:
                 log.info(f"Ollama trainer: yeterli bilgi yok ({len(knowledge)} < {MIN_KNOWLEDGE}), atlanıyor")
 

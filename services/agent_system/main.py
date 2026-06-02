@@ -421,8 +421,14 @@ async def _refresh_learned_patterns(redis: aioredis.Redis):
             patterns["current_regime"] = ctx.get("regime", "unknown")
 
         _learned_patterns = patterns
+        combo_count = len([k for k in patterns if ':n' not in k and k != 'current_regime'])
         if patterns:
-            log.info(f"Learned patterns updated: {len([k for k in patterns if ':n' not in k and k != 'current_regime'])} combos")
+            log.info(f"Learned patterns updated: {combo_count} combos")
+        # Redis'e yaz — ollama_trainer ve dashboard okusun
+        try:
+            await redis.set("agent:learned_patterns", json.dumps(patterns), ex=3700)
+        except Exception:
+            pass
     except Exception as e:
         log.debug(f"Learned patterns refresh error: {e}")
 
