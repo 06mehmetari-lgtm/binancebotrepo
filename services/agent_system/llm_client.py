@@ -4,7 +4,7 @@ Multi-provider LLM client — key rotation + automatic fallback.
 Provider sırası: Groq → Cerebras → SambaNova → OpenRouter → Cohere → DeepSeek → Z.AI → Ollama
 
 Her provider için çoklu key desteği:
-  GROQ_API_KEY, GROQ_API_KEY_1, GROQ_API_KEY_2, ... GROQ_API_KEY_20
+  GROQ_API_KEY, GROQ_API_KEY_1, GROQ_API_KEY_2, ... GROQ_API_KEY_50
 429 gelince o KEY 65s atlanır, aynı provider'ın diğer key'i denenir.
 """
 import asyncio
@@ -76,12 +76,12 @@ def _get_ollama_lock() -> asyncio.Lock:
 
 
 def _collect_keys(base_env: str) -> list[str]:
-    """GROQ_API_KEY + GROQ_API_KEY_1 … GROQ_API_KEY_20 → liste"""
+    """GROQ_API_KEY + GROQ_API_KEY_1 … GROQ_API_KEY_50 → liste"""
     keys: list[str] = []
     base = os.getenv(base_env, "")
     if base:
         keys.append(base)
-    for i in range(1, 21):
+    for i in range(1, 51):
         k = os.getenv(f"{base_env}_{i}", "")
         if k and k not in keys:
             keys.append(k)
