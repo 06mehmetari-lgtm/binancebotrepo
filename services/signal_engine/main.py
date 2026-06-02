@@ -120,9 +120,10 @@ async def generate_signal(redis: aioredis.Redis, symbol: str) -> dict | None:
     ml_score = float(features.get("ml_score", 0.0) or 0.0)
 
     # ── ML fallback when no LLM verdicts available (Step 9) ───────────────
-    if not agent_verdicts and abs(ml_score) > 0.6:
+    # Requires |ml_score| > 0.65 to pass MIN_CONFIDENCE=0.70 validator
+    if not agent_verdicts and abs(ml_score) > 0.65:
         fallback_dir  = "long" if ml_score > 0 else "short"
-        fallback_conf = round(min(0.65, 0.50 + abs(ml_score) * 0.20), 3)
+        fallback_conf = round(min(0.80, 0.45 + abs(ml_score) * 0.45), 3)
         agent_verdicts = [{
             "agent": "ml_fallback", "direction": fallback_dir,
             "signal": fallback_dir, "confidence": fallback_conf,
