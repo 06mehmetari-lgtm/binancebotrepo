@@ -620,6 +620,7 @@ interface LLMProvider {
   cooldownUntil: number
   cooldownSecsLeft: number
   dailyLimit: number | null
+  totalDailyCapacity: number | null
   estimatedRemaining: number | null
   note: string
 }
@@ -727,13 +728,13 @@ function LLMStatusTab() {
                   Soğuma: {p.cooldownSecsLeft}s kaldı
                 </div>
               )}
-              {p.dailyLimit !== null && (
+              {p.totalDailyCapacity !== null && (
                 <div className="space-y-1">
                   <div className="flex items-center justify-between text-[10px] text-gray-500">
                     <span>{p.note}</span>
-                    <span className="font-mono">
+                    <span className="font-mono text-gray-400">
                       {p.estimatedRemaining !== null
-                        ? `~${p.estimatedRemaining} istek kaldı`
+                        ? `~${p.estimatedRemaining.toLocaleString()} istek kaldı`
                         : '—'
                       }
                     </span>
@@ -742,13 +743,13 @@ function LLMStatusTab() {
                     <div className="h-1.5 bg-gray-800 rounded-full overflow-hidden">
                       <div
                         className={`h-full rounded-full transition-all ${
-                          p.estimatedRemaining / p.dailyLimit > 0.3
+                          p.estimatedRemaining / p.totalDailyCapacity > 0.3
                             ? 'bg-green-500/60'
-                            : p.estimatedRemaining / p.dailyLimit > 0.1
+                            : p.estimatedRemaining / p.totalDailyCapacity > 0.1
                               ? 'bg-yellow-500/60'
                               : 'bg-red-500/60'
                         }`}
-                        style={{ width: `${Math.min(100, (p.estimatedRemaining / p.dailyLimit) * 100)}%` }}
+                        style={{ width: `${Math.min(100, (p.estimatedRemaining / p.totalDailyCapacity) * 100)}%` }}
                       />
                     </div>
                   )}

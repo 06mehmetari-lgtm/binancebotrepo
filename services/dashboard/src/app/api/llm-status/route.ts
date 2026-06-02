@@ -30,7 +30,7 @@ const KEY_ENVS: Record<string, string> = {
 
 function countKeys(baseEnv: string): number {
   let n = process.env[baseEnv] ? 1 : 0
-  for (let i = 1; i <= 20; i++) if (process.env[`${baseEnv}_${i}`]) n++
+  for (let i = 1; i <= 50; i++) if (process.env[`${baseEnv}_${i}`]) n++
   return n
 }
 
@@ -71,9 +71,15 @@ export async function GET() {
       else if (calls === 0 && keysConfigured > 0) status = 'unknown'
       else status = 'unknown'
 
-      const estimatedRemaining = lim.daily !== null
-        ? Math.max(0, lim.daily - calls)
+      // Toplam günlük kapasite = key sayısı × key başı limit
+      const totalDailyCapacity = lim.daily !== null ? lim.daily * Math.max(keysConfigured, 1) : null
+      const estimatedRemaining = totalDailyCapacity !== null
+        ? Math.max(0, totalDailyCapacity - calls)
         : null
+
+      const capacityNote = keysConfigured > 1 && lim.daily !== null
+        ? `${keysConfigured} key × ${lim.daily.toLocaleString()} = ~${totalDailyCapacity!.toLocaleString()} istek/gün`
+        : lim.note
 
       return {
         name,
@@ -89,8 +95,9 @@ export async function GET() {
         cooldownUntil: inCooldown ? cooldownUntil : 0,
         cooldownSecsLeft,
         dailyLimit: lim.daily,
+        totalDailyCapacity,
         estimatedRemaining,
-        note: lim.note,
+        note: capacityNote,
       }
     })
 
