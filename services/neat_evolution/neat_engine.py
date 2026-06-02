@@ -25,6 +25,7 @@ class NEATTradingEngine:
         self.symbol = symbol
         self._features: np.ndarray | None = None
         self._prices: np.ndarray | None = None
+        self._best_genome = None
 
     async def load_training_data(self):
         """Load historical features from DB. Falls back to synthetic data."""
@@ -147,6 +148,7 @@ class NEATTradingEngine:
                 genome.fitness = self.evaluate_genome(genome, config)
 
         best = pop.run(eval_genomes, generations)
+        self._best_genome = best  # store for predict_signal()
         species_count = len(pop.species.species) if hasattr(pop, 'species') else 1
         genome_count = sum(len(s.members) for s in pop.species.species.values()) if hasattr(pop, 'species') else 0
         logger.info(f"NEAT best fitness: {best.fitness:.4f}")
@@ -164,3 +166,29 @@ class NEATTradingEngine:
                 "connections": {f"{k[0]}_{k[1]}": v.enabled for k, v in best.connections.items()}
             }),
         }
+
+    FEATURE_KEYS = [
+        "rsi_14", "macd_hist", "bb_position", "atr_14", "adx_14",
+        "imbalance_5", "funding_rate", "oi_change_1h", "fear_greed_norm", "vix_level",
+    ]
+
+    def predict_signal(self, features: dict) -> dict:
+        """Run best genome on live features → direction + confidence signal."""
+        if self._best_genome is None:
+            return {"direction": "flat", "confidence": 0.0, "source": "neat"}
+        try:
+            net = neat.nn.FeedForwardNetwork.create(self._best_genome, self.config)
+            obs = [float(features.get(k, 0) or 0) for k in self.FEATURE_KEYS]
+            output = net.activate(obs)
+            action = int(np.argmax(output))
+            confidence = float(np.max(output))
+            direction = ["long", "short", "flat"][action]
+            return {
+                "direction": direction,
+                "confidence": round(min(confidence, 0.95), 4),
+                "fitness": float(self._best_genome.fitness or 0),
+                "source": "neat",
+            }
+        except Exception as e:
+            logger.warning(f"NEAT predict_signal error: {e}")
+            return {"direction": "flat", "confidence": 0.0, "source": "neat"}

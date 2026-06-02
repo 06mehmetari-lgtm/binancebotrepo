@@ -199,15 +199,24 @@ class DebateAgent:
                    context: dict | None = None) -> DebateResult:
         scores = {"long": 0.0, "short": 0.0, "flat": 0.0}
         total_w = 0.0
+        regime = (context or {}).get("regime", "unknown")
+        bear_boost = 1.5 if regime == "trending_down" else 1.0
+        bull_dampen = 0.7 if regime == "trending_down" else 1.0
         for v in votes:
             w = self.weights.get(v.agent_name, 1.0)
+            if v.agent_name == "bear":
+                w *= bear_boost
+            elif v.agent_name == "bull":
+                w *= bull_dampen
             scores[v.signal] = scores.get(v.signal, 0) + v.confidence * w
             total_w += w
         if total_w > 0:
             scores = {k: v / total_w for k, v in scores.items()}
         final = max(scores, key=scores.__getitem__)
         confidence = scores[final]
-        if confidence < 0.50:
+        # In a downtrend, lower the minimum threshold for short signals
+        min_conf = 0.44 if (regime == "trending_down" and final == "short") else 0.50
+        if confidence < min_conf:
             final = "flat"
 
         # ── Yerel öğrenme: geçmiş trade istatistiklerine göre güven ayarı ─────
@@ -228,6 +237,17 @@ class DebateAgent:
                     if confidence < 0.50:
                         final = "flat"
 
+        # ── Düşen piyasada short güven takviyesi ─────────────────────────────
+        trend_tag = ""
+        if regime == "trending_down" and final == "short":
+            confidence = min(confidence * 1.20, 0.95)
+            trend_tag = " +downtrend"
+        elif regime == "trending_down" and final == "long":
+            confidence *= 0.80
+            trend_tag = " -uptrend_risk"
+            if confidence < 0.55:
+                final = "flat"
+
         signals = [v.signal for v in votes]
         consensus = max(signals.count("long"), signals.count("short"), signals.count("flat")) / len(signals)
         supporting = [v.agent_name for v in votes if v.signal == final]
@@ -235,7 +255,7 @@ class DebateAgent:
         return DebateResult(
             final_signal=final, final_confidence=confidence,
             consensus_strength=consensus, all_votes=votes,
-            majority_reasoning=f"For: {supporting} | Against: {opposing}{pattern_tag}",
+            majority_reasoning=f"For: {supporting} | Against: {opposing}{pattern_tag}{trend_tag}",
         )
 
     # ── Individual agent votes (rule-based, fast) ─────────────────────────────

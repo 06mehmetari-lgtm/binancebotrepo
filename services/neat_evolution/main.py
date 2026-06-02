@@ -56,6 +56,14 @@ async def evolution_cycle(redis: aioredis.Redis, gm: GenomeManager):
                 if POSTGRES_URL:
                     await gm.save(result)
                 log.info(f"NEAT [{symbol}] fitness={result['fitness']:.4f} nodes={result['nodes']}")
+                # Publish live signal from best genome on current market features
+                feat_raw = await redis.get(f"features:latest:{symbol}")
+                if feat_raw and engine._best_genome is not None:
+                    import json as _json
+                    live_features = _json.loads(feat_raw)
+                    signal = engine.predict_signal(live_features)
+                    await redis.set(f"neat:signal:{symbol}", _json.dumps(signal), ex=EVOLUTION_INTERVAL + 600)
+                    log.info(f"NEAT [{symbol}] live signal: {signal['direction']} conf={signal['confidence']:.3f}")
             except Exception as e:
                 log.error(f"NEAT error [{symbol}]: {e}")
 

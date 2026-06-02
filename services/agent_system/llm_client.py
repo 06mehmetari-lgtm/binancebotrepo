@@ -16,8 +16,15 @@ import aiohttp
 
 log = logging.getLogger(__name__)
 
-OLLAMA_URL   = os.getenv("OLLAMA_URL",   "http://ollama:11434")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.1:8b")
+OLLAMA_URL    = os.getenv("OLLAMA_URL",   "http://ollama:11434")
+OLLAMA_MODEL  = os.getenv("OLLAMA_MODEL", "llama3.1:8b")
+_active_model = OLLAMA_MODEL  # updated at runtime by ollama_trainer
+
+
+def set_ollama_model(name: str) -> None:
+    global _active_model
+    _active_model = name
+    log.info(f"Ollama active model → {name}")
 
 # Per-key cooldown: key_prefix → resume_at (float timestamp)
 _key_cooldown: dict[str, float] = {}
@@ -164,7 +171,7 @@ async def _ollama_completion(
     session: aiohttp.ClientSession,
 ) -> str:
     payload = {
-        "model": OLLAMA_MODEL,
+        "model": _active_model,
         "messages": messages,
         "stream": False,
         "options": {"temperature": temperature, "num_predict": max_tokens},

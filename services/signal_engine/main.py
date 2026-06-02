@@ -117,11 +117,23 @@ async def generate_signal(redis: aioredis.Redis, symbol: str) -> dict | None:
     rl_data = json.loads(rl_raw) if rl_raw else {}
     rl_dir  = rl_data.get("direction", "flat")
     rl_conf = float(rl_data.get("confidence", 0.0))
-    # Inject RL as an additional agent vote so it participates in weighted consensus
     if rl_dir != "flat" and rl_conf > 0:
         agent_verdicts = list(agent_verdicts) + [{
             "agent": "rl_ppo", "direction": rl_dir,
             "signal": rl_dir, "confidence": rl_conf,
+        }]
+
+    # ── NEAT evolution signal ──────────────────────────────────────────────
+    neat_raw  = await redis.get(f"neat:signal:{symbol}")
+    neat_data = json.loads(neat_raw) if neat_raw else {}
+    neat_dir  = neat_data.get("direction", "flat")
+    neat_conf = float(neat_data.get("confidence", 0.0))
+    neat_fit  = float(neat_data.get("fitness", 0.0))
+    # Only use NEAT signal if its genome has meaningful fitness
+    if neat_dir != "flat" and neat_conf > 0 and neat_fit > 0.05:
+        agent_verdicts = list(agent_verdicts) + [{
+            "agent": "neat_evolution", "direction": neat_dir,
+            "signal": neat_dir, "confidence": neat_conf,
         }]
 
     # Single-pass generation: use a neutral direction for ATR calc, then generate once with stops
@@ -200,6 +212,7 @@ async def generate_signal(redis: aioredis.Redis, symbol: str) -> dict | None:
         "volume_ratio": round(float(features.get("volume_ratio", 1) or 1), 2),
         "ml_score": ml_score,
         "rl_direction": rl_dir,
+        "neat_direction": neat_dir,
         "stop_pct": signal.stop_pct,
         "tp_pct": signal.tp_pct,
         "risk_reward": signal.risk_reward,
