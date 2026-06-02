@@ -298,26 +298,46 @@ TEMEL KURALLAR:
 
 Bu bilgileri her kararında uygula. Geçmiş hatalarından öğren, kazananı takip et."""
 
-    modelfile = f'FROM {BASE_MODEL}\nSYSTEM """{system_prompt}"""'
+    # Yeni Ollama API formatı (0.6+): from + system ayrı field
+    # Eski format: modelfile string — her ikisini de dene
+    async def _try_create(session: aiohttp.ClientSession, payload: dict) -> bool:
+        async with session.post(
+            f"{OLLAMA_URL}/api/create",
+            json=payload,
+            timeout=aiohttp.ClientTimeout(total=600),
+        ) as resp:
+            if resp.status == 200:
+                async for _ in resp.content:
+                    pass
+                return True
+            body = await resp.text()
+            log.debug(f"Ollama create deneme başarısız ({resp.status}): {body[:100]}")
+            return False
 
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.post(
-                f"{OLLAMA_URL}/api/create",
-                json={"name": TRAINED_MODEL, "modelfile": modelfile},
-                timeout=aiohttp.ClientTimeout(total=600),
-            ) as resp:
-                if resp.status == 200:
-                    # Consume streamed response to completion
-                    async for _ in resp.content:
-                        pass
-                    log.info(f"Ollama: '{TRAINED_MODEL}' modeli oluşturuldu/güncellendi "
-                             f"({len(knowledge)} karakter bilgi)")
-                    return True
-                else:
-                    body = await resp.text()
-                    log.error(f"Ollama create hata: {resp.status} — {body[:200]}")
-                    return False
+            # Önce yeni API formatını dene (Ollama 0.6+)
+            success = await _try_create(session, {
+                "model":  TRAINED_MODEL,
+                "from":   BASE_MODEL,
+                "system": system_prompt,
+            })
+
+            # Başarısız olursa eski Modelfile formatını dene
+            if not success:
+                modelfile = f'FROM {BASE_MODEL}\nSYSTEM """{system_prompt}"""'
+                success = await _try_create(session, {
+                    "name":      TRAINED_MODEL,
+                    "modelfile": modelfile,
+                })
+
+            if success:
+                log.info(f"Ollama: '{TRAINED_MODEL}' modeli oluşturuldu/güncellendi "
+                         f"({len(knowledge)} karakter bilgi)")
+                return True
+            else:
+                log.error("Ollama create hata: her iki format da başarısız")
+                return False
     except Exception as e:
         log.error(f"Ollama trainer bağlantı hatası: {e}")
         return False
