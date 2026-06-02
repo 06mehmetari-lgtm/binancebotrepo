@@ -11,6 +11,7 @@ from regime_router import get_weights_for_regime
 from groq_news_scanner import GroqNewsScanner
 from lesson_writer import lesson_writer_loop
 from event_learner import event_learner_loop, learn_from_debate
+import rag_context
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
@@ -42,7 +43,14 @@ async def run_debate_for_symbol(redis: aioredis.Redis, symbol: str):
     features = json.loads(feat_raw)
     context = json.loads(ctx_raw)
 
-    result = await debate.run_debate(symbol, features, context, _training_context)
+    # Faz 3: benzer geçmiş durumları Qdrant'tan çek (async, event loop bloke etmez)
+    rag_block = await rag_context.fetch_similar(symbol, features, context, limit=3)
+
+    result = await debate.run_debate(
+        symbol, features, context,
+        training_context=_training_context,
+        rag_block=rag_block,
+    )
 
     # Serialize votes
     votes_payload = [

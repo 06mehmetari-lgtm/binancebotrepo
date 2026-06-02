@@ -50,6 +50,7 @@ class DebateAgent:
     async def run_debate(
         self, symbol: str, features: dict, context: dict,
         training_context: str = "",
+        rag_block: str = "",
     ) -> DebateResult:
         votes = await asyncio.gather(
             self._technical_vote(features),
@@ -70,7 +71,14 @@ class DebateAgent:
 
         # LLM synthesis — only for high-confidence non-flat signals
         if result.final_signal != "flat" and result.final_confidence > 0.65:
-            result = await self._synthesize(symbol, features, context, result, training_context)
+            # Geçmiş benzer durumları training_context'e ekle (Faz 3 RAG)
+            enriched_context = training_context
+            if rag_block:
+                enriched_context = (
+                    training_context + "\n\n===\n\n" + rag_block
+                    if training_context else rag_block
+                )
+            result = await self._synthesize(symbol, features, context, result, enriched_context)
 
         return result
 
