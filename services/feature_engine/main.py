@@ -5,6 +5,7 @@ import os
 import time
 import urllib.request
 
+import numpy as np
 import pandas as pd
 import redis.asyncio as aioredis
 
@@ -260,6 +261,48 @@ async def compute_features(redis: aioredis.Redis, symbol: str) -> dict | None:
         features.update(mtf_feats)
         features["symbol"]    = symbol
         features["timestamp"] = time.time()
+
+        # ── Market Consensus inject ───────────────────────────────────────────
+        consensus_raw = await redis.get("market:consensus")
+        if consensus_raw:
+            try:
+                c = json.loads(consensus_raw)
+                features["market_bull_pct"]     = float(c.get("market_bull_pct",    0.5))
+                features["market_bear_pct"]     = float(c.get("market_bear_pct",    0.5))
+                features["market_consensus"]    = float(c.get("market_consensus",   0.0))
+                features["market_long_conf"]    = float(c.get("market_long_conf",   0.5))
+                features["market_short_conf"]   = float(c.get("market_short_conf",  0.5))
+                features["market_active_count"] = float(c.get("market_active_count", 0))
+                features["btc_trend"]           = float(c.get("btc_trend",          0))
+                features["eth_trend"]           = float(c.get("eth_trend",          0))
+                features["major_align"]         = float(c.get("major_align",        0))
+            except Exception:
+                pass
+        else:
+            features.update({
+                "market_bull_pct": 0.5, "market_bear_pct": 0.5,
+                "market_consensus": 0.0, "market_long_conf": 0.5,
+                "market_short_conf": 0.5, "market_active_count": 0.0,
+                "btc_trend": 0.0, "eth_trend": 0.0, "major_align": 0.0,
+            })
+
+        # ── BTC Korelasyonu ───────────────────────────────────────────────────
+        if symbol != "BTCUSDT":
+            btc_hist = OHLCV_HISTORY.get("BTCUSDT", [])
+            sym_hist = history
+            n = min(len(btc_hist), len(sym_hist), 60)
+            if n >= 10:
+                btc_ret = np.diff([c[3] for c in btc_hist[-n:]])
+                sym_ret = np.diff([c[3] for c in sym_hist[-n:]])
+                if btc_ret.std() > 0 and sym_ret.std() > 0:
+                    corr = float(np.corrcoef(btc_ret, sym_ret)[0, 1])
+                    features["btc_correlation"] = round(float(np.clip(corr, -1, 1)), 4)
+                else:
+                    features["btc_correlation"] = 0.0
+            else:
+                features["btc_correlation"] = 0.0
+        else:
+            features["btc_correlation"] = 1.0
 
         if symbol not in drift_detectors:
             drift_detectors[symbol] = DriftDetector()

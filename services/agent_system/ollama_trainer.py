@@ -159,6 +159,39 @@ async def _collect_knowledge(redis: aioredis.Redis) -> str:
     except Exception as e:
         log.debug(f"Knowledge collect [docs]: {e}")
 
+    # Market consensus (anlık piyasa durumu)
+    try:
+        consensus_raw = await redis.get("market:consensus")
+        if consensus_raw:
+            c = json.loads(consensus_raw)
+            bull   = c.get("market_bull_pct", 0) * 100
+            bear   = c.get("market_bear_pct", 0) * 100
+            score  = c.get("market_consensus", 0)
+            btc    = c.get("btc_trend", 0)
+            eth    = c.get("eth_trend", 0)
+            active = c.get("market_active_count", 0)
+            mood   = (
+                "GÜÇLÜ BOĞA" if score >  0.5 else
+                "BOĞA"       if score >  0.2 else
+                "GÜÇLÜ AYI"  if score < -0.5 else
+                "AYI"        if score < -0.2 else
+                "NÖTR"
+            )
+            btc_txt = "yukarı" if btc > 0 else "aşağı" if btc < 0 else "nötr"
+            eth_txt = "yukarı" if eth > 0 else "aşağı" if eth < 0 else "nötr"
+            sections.append(
+                f"\n### ANLK PİYASA CONSENSUS\n"
+                f"- Piyasa durumu: {mood} (skor: {score:+.2f})\n"
+                f"- Boğa sinyal: %{bull:.0f} | Ayı sinyal: %{bear:.0f}\n"
+                f"- Aktif sinyal sayısı: {active}\n"
+                f"- BTC trendi: {btc_txt} | ETH trendi: {eth_txt}\n"
+                f"- Yorum: Piyasanın %{max(bull, bear):.0f}'i "
+                f"{'LONG' if bull >= bear else 'SHORT'} — "
+                f"bu yönde işlem {'güvenli' if max(bull, bear) > 60 else 'dikkatli'}"
+            )
+    except Exception as e:
+        log.debug(f"Knowledge collect [consensus]: {e}")
+
     # Hardcoded market mechanics — all indicators (always included)
     sections.append("""
 ### PİYASA MEKANİKLERİ VE İNDİKATÖR KILAVUZU (TEMEL BİLGİ)

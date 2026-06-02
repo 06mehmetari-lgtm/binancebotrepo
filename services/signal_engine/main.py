@@ -11,6 +11,7 @@ from kelly_calculator import KellyCalculator
 from signal_validator import SignalValidator
 from atr_stoploss import ATRStopLoss
 from portfolio_guard import PortfolioGuard
+from consensus_tracker import consensus_loop
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
@@ -366,7 +367,12 @@ async def main():
 
             await asyncio.sleep(5)
 
-    await asyncio.gather(signal_loop(), stats_listener(redis_sub))
+    redis_consensus = await aioredis.from_url(REDIS_URL)
+    await asyncio.gather(
+        signal_loop(),
+        stats_listener(redis_sub),
+        consensus_loop(redis_consensus),
+    )
 
 
 if __name__ == "__main__":
