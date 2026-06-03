@@ -243,8 +243,32 @@ def chat_completion(
     max_tokens: int = 280,
     temperature: float = 0.35,
     model_override: str | None = None,
+    model_pool: str | None = None,
+    use_swarm: bool = False,
 ) -> tuple[str | None, str | None]:
-    """Returns (raw_text, provider_label) or (None, None)."""
+    """
+    Returns (raw_text, provider_label) or (None, None).
+    model_pool: groq pool id (fast|main|reason|risk|learning|final|vision|fallback).
+    use_swarm: parallel multi-model consensus (debate JSON).
+    """
+    if model_pool and collect_keys("GROQ_API_KEY"):
+        try:
+            import groq_orchestrator as groq
+
+            if use_swarm and groq._bool_env("AI_ENABLE_SWARM", True):
+                text, label = groq.swarm_consensus(
+                    model_pool, prompt, max_tokens=max_tokens, temperature=temperature
+                )
+                if text:
+                    return text, label
+            text, label = groq.chat_pool(
+                model_pool, prompt, max_tokens=max_tokens, temperature=temperature
+            )
+            if text:
+                return text, label
+        except Exception as e:
+            logger.debug("groq pool %s: %s", model_pool, e)
+
     for pid in provider_order():
         if pid == "ollama":
             try:

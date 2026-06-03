@@ -51,6 +51,9 @@ type HubData = {
     groq: { configured: boolean; model: string; key_count?: number }
     ollama: { ok: boolean; models: string[]; error?: string }
     provider_order?: string[]
+    groq_pools?: Array<{ id: string; label: string; count: number; models: string[] }>
+    ai_swarm?: boolean
+    ai_min_votes?: number
     learn_llm_every_n?: number
   }
   pipeline: {
@@ -503,9 +506,23 @@ export default function LearningPage() {
                 : '✗ Hiç LLM anahtarı yok — .env dosyasına anahtar ekleyin'}
             </p>
             <p className="text-gray-500 text-xs mt-2 font-mono">
-              Model: {d.llm.groq.model} · Sıra:{' '}
-              {(d.llm.provider_order?.length ? d.llm.provider_order.join(' → ') : 'varsayılan zincir')}
+              Legacy: {d.llm.groq.model} · Swarm: {d.llm.ai_swarm ? `açık (min ${d.llm.ai_min_votes ?? 3} oy)` : 'kapalı'}
             </p>
+            {(d.llm.groq_pools ?? []).filter(p => p.count > 0).length > 0 && (
+              <div className="mt-3 flex flex-wrap gap-2">
+                {(d.llm.groq_pools ?? [])
+                  .filter(p => p.count > 0)
+                  .map(p => (
+                    <span
+                      key={p.id}
+                      className="text-[10px] px-2 py-1 rounded bg-gray-800 text-gray-400 border border-gray-700"
+                      title={p.models.join(', ')}
+                    >
+                      {p.label}: {p.count} model
+                    </span>
+                  ))}
+              </div>
+            )}
           </div>
           <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
             <h2 className="text-orange-400 font-bold mb-4">Eksik / yapılandırılmış anahtarlar</h2>

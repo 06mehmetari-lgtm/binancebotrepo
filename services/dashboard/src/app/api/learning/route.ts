@@ -5,6 +5,7 @@ import { discoverSymbols, scanKeys } from '@/lib/universe'
 import { fetchOpenPositions } from '@/lib/positions'
 import { buildStrategyDocument, CURRICULUM } from '@/lib/learning-hub'
 import { anyLlmConfigured, getLlmProviderStatus } from '@/lib/llm-providers'
+import { getGroqPoolStatus } from '@/lib/groq-pools'
 
 const QDRANT_URL = process.env.QDRANT_URL || 'http://qdrant:6333'
 const OLLAMA_URL = process.env.OLLAMA_URL || 'http://ollama:11434'
@@ -260,7 +261,10 @@ export async function GET(req: Request) {
         },
         ollama,
         provider_order: (process.env.LLM_PROVIDER_ORDER ?? '').split(',').map(s => s.trim()).filter(Boolean),
-        agent_model: 'Çoklu LLM zinciri + kural ajanları (debate)',
+        groq_pools: getGroqPoolStatus(),
+        ai_swarm: process.env.AI_ENABLE_SWARM !== 'false',
+        ai_min_votes: Number(process.env.AI_MINIMUM_MODEL_VOTE ?? 3),
+        agent_model: 'Groq model havuzları + swarm consensus (debate)',
         learn_llm_every_n: Number(process.env.LEARNING_LLM_EVERY_N ?? 90),
       },
       pipeline: {

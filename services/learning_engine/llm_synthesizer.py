@@ -56,7 +56,7 @@ def synthesize_coin_insight(symbol: str, profile: dict) -> dict | None:
         prompt,
         max_tokens=320,
         temperature=0.35,
-        model_override=GROQ_MODEL,
+        model_pool="learning",
     )
     if not raw:
         return None

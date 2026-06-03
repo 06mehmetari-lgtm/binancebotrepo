@@ -100,7 +100,8 @@ class DebateAgent:
             prompt,
             max_tokens=120,
             temperature=0.1,
-            model_override=GROQ_MODEL,
+            model_pool="final",
+            use_swarm=True,
         )
         if not raw:
             ollama = self._ollama_url()
