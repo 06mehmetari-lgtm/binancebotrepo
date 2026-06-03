@@ -365,6 +365,13 @@ async def main():
     redis = await aioredis.from_url(REDIS_URL)
     await _publish_llm_status(redis)
     try:
+        async def limits_refresh_loop():
+            from risk_limits import bootstrap_limits
+            await bootstrap_limits(redis)
+            while True:
+                await bootstrap_limits(redis)
+                await asyncio.sleep(5)
+
         await asyncio.gather(
             _supervise("debate_loop", lambda: debate_loop(redis)),
             _supervise(
@@ -373,6 +380,7 @@ async def main():
             ),
             _supervise("weight_update", lambda: weight_update_loop(redis)),
             _supervise("pubsub", lambda: pubsub_listener(redis)),
+            _supervise("risk_limits", limits_refresh_loop),
         )
     finally:
         await redis.aclose()
