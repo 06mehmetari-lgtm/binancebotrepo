@@ -179,7 +179,7 @@ export async function GET(req: Request) {
     })
 
     const dryRun = process.env.DRY_RUN !== 'false'
-    const llmBundle = resolveLlmStatus(llmStatusRaw)
+    const llmBundle = await resolveLlmStatus(llmStatusRaw, redis)
     const llmProviders = llmBundle.providers
     const groqConfigured = llmBundle.groq_configured
     const llmAny = llmBundle.any_configured

@@ -344,15 +344,20 @@ async def _supervise(name: str, coro_fn):
 async def _publish_llm_status(redis) -> None:
     try:
         import json
+        from llm_providers import collect_keys
         from llm_status import build_llm_status_payload
 
+        payload = build_llm_status_payload()
         await redis.set(
             "system:llm:status",
-            json.dumps(build_llm_status_payload()),
+            json.dumps(payload),
             ex=300,
         )
+        n = len(collect_keys("GROQ_API_KEY"))
+        if n:
+            log.debug("llm status redis ok — groq_keys=%s", n)
     except Exception:
-        log.debug("llm status publish skipped", exc_info=True)
+        log.warning("llm status publish failed", exc_info=True)
 
 
 async def main():

@@ -144,3 +144,13 @@ async def persist_global(redis: aioredis.Redis, learners: dict):
     }
     await redis.set("learn:global:v1", json.dumps(global_state), ex=300)
     await redis.set("system:heartbeat:learning_engine", str(time.time()), ex=120)
+    try:
+        from llm_status import build_llm_status_payload
+
+        await redis.set(
+            "system:llm:status",
+            json.dumps(build_llm_status_payload()),
+            ex=300,
+        )
+    except Exception:
+        pass

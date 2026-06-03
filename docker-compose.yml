@@ -193,6 +193,24 @@ services:
       - GROQ_LEARN_MODEL=${GROQ_LEARN_MODEL:-llama-3.1-70b-versatile}
       - OLLAMA_URL=http://ollama:11434
       - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3.1:8b}
+      - GROQ_API_KEY=${GROQ_API_KEY:-${GROQ_API_KEY_1:-}}
+      - GROQ_API_KEY_1=${GROQ_API_KEY_1:-}
+      - GROQ_API_KEY_2=${GROQ_API_KEY_2:-}
+      - GROQ_API_KEY_3=${GROQ_API_KEY_3:-}
+      - GROQ_API_KEY_4=${GROQ_API_KEY_4:-}
+      - GROQ_API_KEY_5=${GROQ_API_KEY_5:-}
+      - GROQ_API_KEY_6=${GROQ_API_KEY_6:-}
+      - GROQ_API_KEY_7=${GROQ_API_KEY_7:-}
+      - GROQ_API_KEY_8=${GROQ_API_KEY_8:-}
+      - GROQ_API_KEY_9=${GROQ_API_KEY_9:-}
+      - GROQ_API_KEY_10=${GROQ_API_KEY_10:-}
+      - CEREBRAS_API_KEY_1=${CEREBRAS_API_KEY_1:-}
+      - CEREBRAS_API_KEY_2=${CEREBRAS_API_KEY_2:-}
+      - LLM_KEY_SLOTS=${LLM_KEY_SLOTS:-32}
+      - LLM_PROVIDER_ORDER=${LLM_PROVIDER_ORDER:-groq,cerebras,sambanova,openrouter,ollama}
+      - GROQ_LEARNING_MODELS=${GROQ_LEARNING_MODELS:-}
+      - GROQ_FALLBACK_MODEL=${GROQ_FALLBACK_MODEL:-}
+      - AI_ENABLE_SWARM=${AI_ENABLE_SWARM:-true}
     depends_on:
       - redis
       - feature_engine
@@ -273,6 +291,36 @@ services:
       - GUARD_EMERGENCY_LOSS_PCT=${GUARD_EMERGENCY_LOSS_PCT:-2.5}
       - GUARD_DEBATE_MAX_AGE=${GUARD_DEBATE_MAX_AGE:-8}
       - GUARD_DEBATE_CONCURRENCY=${GUARD_DEBATE_CONCURRENCY:-2}
+      # LLM keys — host .env → container (compose ${VAR} substitution)
+      - GROQ_API_KEY=${GROQ_API_KEY:-${GROQ_API_KEY_1:-}}
+      - GROQ_API_KEY_1=${GROQ_API_KEY_1:-}
+      - GROQ_API_KEY_2=${GROQ_API_KEY_2:-}
+      - GROQ_API_KEY_3=${GROQ_API_KEY_3:-}
+      - GROQ_API_KEY_4=${GROQ_API_KEY_4:-}
+      - GROQ_API_KEY_5=${GROQ_API_KEY_5:-}
+      - GROQ_API_KEY_6=${GROQ_API_KEY_6:-}
+      - GROQ_API_KEY_7=${GROQ_API_KEY_7:-}
+      - GROQ_API_KEY_8=${GROQ_API_KEY_8:-}
+      - GROQ_API_KEY_9=${GROQ_API_KEY_9:-}
+      - GROQ_API_KEY_10=${GROQ_API_KEY_10:-}
+      - CEREBRAS_API_KEY_1=${CEREBRAS_API_KEY_1:-}
+      - CEREBRAS_API_KEY_2=${CEREBRAS_API_KEY_2:-}
+      - CEREBRAS_MODEL=${CEREBRAS_MODEL:-llama3.1-8b}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - LLM_KEY_SLOTS=${LLM_KEY_SLOTS:-32}
+      - LLM_PROVIDER_ORDER=${LLM_PROVIDER_ORDER:-groq,cerebras,sambanova,openrouter,ollama}
+      - GROQ_DEBATE_MODEL=${GROQ_DEBATE_MODEL:-llama-3.1-70b-versatile}
+      - GROQ_LEARN_MODEL=${GROQ_LEARN_MODEL:-llama-3.1-70b-versatile}
+      - GROQ_FAST_MODELS=${GROQ_FAST_MODELS:-}
+      - GROQ_MAIN_MODELS=${GROQ_MAIN_MODELS:-}
+      - GROQ_LEARNING_MODELS=${GROQ_LEARNING_MODELS:-}
+      - GROQ_FINAL_MODEL=${GROQ_FINAL_MODEL:-}
+      - GROQ_FALLBACK_MODEL=${GROQ_FALLBACK_MODEL:-}
+      - AI_ENABLE_SWARM=${AI_ENABLE_SWARM:-true}
+      - AI_MINIMUM_MODEL_VOTE=${AI_MINIMUM_MODEL_VOTE:-3}
+      - AI_REQUIRED_CONFIDENCE=${AI_REQUIRED_CONFIDENCE:-0.72}
+      - AI_MAX_PARALLEL_REQUEST=${AI_MAX_PARALLEL_REQUEST:-12}
     depends_on:
       - redis
       - postgres
@@ -430,7 +478,21 @@ services:
       - GROQ_LEARN_MODEL=${GROQ_LEARN_MODEL:-llama-3.1-70b-versatile}
       - LLM_KEY_SLOTS=${LLM_KEY_SLOTS:-32}
       - DRY_RUN=${DRY_RUN:-true}
-      # LLM anahtar durumu Redis'ten okunur (system:llm:status) — agent_system .env ile yazar
+      - GROQ_API_KEY=${GROQ_API_KEY:-${GROQ_API_KEY_1:-}}
+      - GROQ_API_KEY_1=${GROQ_API_KEY_1:-}
+      - GROQ_API_KEY_2=${GROQ_API_KEY_2:-}
+      - GROQ_API_KEY_3=${GROQ_API_KEY_3:-}
+      - GROQ_API_KEY_4=${GROQ_API_KEY_4:-}
+      - GROQ_API_KEY_5=${GROQ_API_KEY_5:-}
+      - GROQ_API_KEY_6=${GROQ_API_KEY_6:-}
+      - GROQ_API_KEY_7=${GROQ_API_KEY_7:-}
+      - GROQ_API_KEY_8=${GROQ_API_KEY_8:-}
+      - GROQ_API_KEY_9=${GROQ_API_KEY_9:-}
+      - GROQ_API_KEY_10=${GROQ_API_KEY_10:-}
+      - CEREBRAS_API_KEY_1=${CEREBRAS_API_KEY_1:-}
+      - CEREBRAS_API_KEY_2=${CEREBRAS_API_KEY_2:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
     depends_on:
       - redis
       - ollama

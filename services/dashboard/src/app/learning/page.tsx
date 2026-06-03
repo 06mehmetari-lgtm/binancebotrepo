@@ -54,7 +54,7 @@ type HubData = {
     groq_pools?: Array<{ id: string; label: string; count: number; models: string[] }>
     ai_swarm?: boolean
     ai_min_votes?: number
-    status_source?: 'redis' | 'env'
+    status_source?: 'redis' | 'env' | 'dashboard'
     learn_llm_every_n?: number
   }
   pipeline: {
@@ -507,7 +507,12 @@ export default function LearningPage() {
                 : '✗ LLM anahtarı görünmüyor — agent_system çalışıyor mu? .env kontrol edin'}
             </p>
             <p className="text-gray-600 text-[10px]">
-              Durum kaynağı: {d.llm.status_source === 'redis' ? 'agent_system (.env doğru)' : 'dashboard env (sınırlı)'}
+              Durum kaynağı:{' '}
+              {d.llm.status_source === 'redis'
+                ? 'agent_system / learning_engine'
+                : d.llm.status_source === 'dashboard'
+                  ? 'dashboard → Redis (compose anahtarları OK)'
+                  : 'env yok — docker compose recreate gerekli'}
             </p>
             <p className="text-gray-500 text-xs mt-2 font-mono">
               Legacy: {d.llm.groq.model} · Swarm: {d.llm.ai_swarm ? `açık (min ${d.llm.ai_min_votes ?? 3} oy)` : 'kapalı'}
