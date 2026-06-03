@@ -1,7 +1,8 @@
 FROM python:3.12-slim
 WORKDIR /app
-COPY requirements.txt .
+COPY oms/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-COPY . .
+COPY oms/ ./
+COPY shared/risk_limits.py ./risk_limits.py
 EXPOSE 8010
 CMD ["python", "main.py"]

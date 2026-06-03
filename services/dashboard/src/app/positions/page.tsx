@@ -1,10 +1,12 @@
 'use client'
-import { useEffect, useState, Fragment } from 'react'
+import { useEffect, useState, Fragment, useCallback } from 'react'
+import { useStreamInvalidate } from '@/hooks/useStream'
 import {
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   ReferenceLine, Area, AreaChart,
 } from 'recharts'
 import { PositionDecisionPanel } from '@/components/PositionDecisionPanel'
+import RiskLimitsEditor from '@/components/RiskLimitsEditor'
 import type { PositionDecision } from '@/lib/positions'
 
 type Position = PositionDecision
@@ -153,8 +155,9 @@ export default function PositionsPage() {
   const [emergencyBusy, setEmergencyBusy] = useState(false)
   const [emergencyMsg, setEmergencyMsg] = useState('')
   const [expandedSymbol, setExpandedSymbol] = useState<string | null>(null)
+  const [maxOpenLimit, setMaxOpenLimit] = useState(3)
 
-  const fetchData = async () => {
+  const fetchData = useCallback(async () => {
     try {
       const [posRes, portRes] = await Promise.all([
         fetch('/api/positions'),
@@ -166,13 +169,25 @@ export default function PositionsPage() {
     } catch { /* retry */ } finally {
       setLoading(false)
     }
-  }
+  }, [])
 
   useEffect(() => {
     fetchData()
-    const t = setInterval(fetchData, 2000)
+    fetch('/api/risk-limits')
+      .then(r => r.json())
+      .then(d => {
+        if (d.limits?.max_open_positions) setMaxOpenLimit(d.limits.max_open_positions)
+      })
+      .catch(() => {})
+    const t = setInterval(fetchData, 60000)
     return () => clearInterval(t)
-  }, [])
+  }, [fetchData])
+
+  useStreamInvalidate({
+    hints: ['portfolio', 'guard', 'trade_closed'],
+    debounceMs: 250,
+    onEvent: () => { void fetchData() },
+  })
 
   const runEmergencyClose = async () => {
     const ok = window.confirm(
@@ -300,12 +315,15 @@ export default function PositionsPage() {
         <p className="text-xs text-orange-300 bg-orange-950/30 border border-orange-800/50 rounded-lg px-3 py-2">{emergencyMsg}</p>
       )}
 
+      <RiskLimitsEditor openCount={positions.length} />
+
       {/* Summary stats */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
           <p className="text-gray-500 text-xs uppercase tracking-wider mb-1">Open Positions</p>
           <p className={`text-2xl font-black ${positions.length > 0 ? 'text-white' : 'text-gray-600'}`}>
-            {positions.length} <span className="text-sm font-normal text-gray-500">/ 3 max</span>
+            {positions.length}{' '}
+            <span className="text-sm font-normal text-gray-500">/ {maxOpenLimit} max</span>
           </p>
         </div>
         <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">

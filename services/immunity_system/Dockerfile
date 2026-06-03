@@ -1,7 +1,8 @@
 FROM python:3.12-slim
 WORKDIR /app
-COPY requirements.txt .
+COPY immunity_system/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-COPY . .
+COPY immunity_system/ ./
+COPY shared/risk_limits.py ./risk_limits.py
 EXPOSE 8009
 CMD ["python", "main.py"]

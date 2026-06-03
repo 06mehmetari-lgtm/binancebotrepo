@@ -207,7 +207,15 @@ async def process_signal(redis: aioredis.Redis, symbol: str):
 
     confidence = float(signal.get("confidence", 0))
     kelly = float(signal.get("kelly_fraction", 0.01))
-    size_usd = min(PORTFOLIO_VALUE * kelly * confidence, PORTFOLIO_VALUE * 0.05)
+    try:
+        from risk_limits import get_active_limits
+        max_pos_pct = get_active_limits().max_position_pct
+    except Exception:
+        max_pos_pct = 0.05
+    size_usd = min(
+        PORTFOLIO_VALUE * kelly * confidence,
+        PORTFOLIO_VALUE * max_pos_pct,
+    )
 
     if size_usd < 10:
         return
@@ -334,12 +342,20 @@ async def main():
 
     redis_em = await aioredis.from_url(REDIS_URL)
     redis_guard = await aioredis.from_url(REDIS_URL)
+    async def limits_refresh_loop():
+        from risk_limits import load_from_redis
+        await load_from_redis(redis)
+        while True:
+            await load_from_redis(redis)
+            await asyncio.sleep(5)
+
     await asyncio.gather(
         signal_loop(),
         portfolio_sync_loop(),
         snapshot_portfolio(redis),
         emergency_listener(redis_em),
         guard_listener(redis_guard, apply_guard_close),
+        limits_refresh_loop(),
     )
 
 

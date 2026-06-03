@@ -6,11 +6,8 @@ import time
 
 import redis.asyncio as aioredis
 
-from immunity import (
-    ImmunitySystem,
-    MAX_POSITION_PCT, MAX_DAILY_LOSS_PCT, MAX_LEVERAGE,
-    MAX_OPEN_POSITIONS, MIN_CONFIDENCE, MAX_TRADES_PER_DAY,
-)
+from immunity import ImmunitySystem
+from risk_limits import REDIS_CHANNEL, get_active_limits, load_from_redis
 from circuit_breaker import CircuitBreaker
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
@@ -24,7 +21,6 @@ _last_reset_day = -1
 
 
 def clear_operational_halt(reset_counters: bool = False) -> None:
-    """Clear in-memory halt after dashboard emergency / user resume (not immunity.py limits)."""
     immunity._system_halted = False
     immunity._halt_until = 0.0
     if reset_counters:
@@ -37,14 +33,40 @@ def clear_operational_halt(reset_counters: bool = False) -> None:
 
 
 def expire_stale_halt() -> None:
-    """If halt window passed, stop reporting halted (orders already allowed)."""
     if immunity._system_halted and immunity._halt_until > 0 and time.time() >= immunity._halt_until:
         immunity._system_halted = False
         immunity._halt_until = 0.0
 
 
+async def limits_listener(redis: aioredis.Redis):
+    """Reload risk limits from Redis on publish or periodic poll."""
+    pubsub = redis.pubsub()
+    await pubsub.subscribe(REDIS_CHANNEL)
+    log.info("Risk limits listener active (%s)", REDIS_CHANNEL)
+
+    async def poll():
+        while True:
+            await load_from_redis(redis)
+            await asyncio.sleep(5)
+
+    async def on_message():
+        async for msg in pubsub.listen():
+            if msg.get("type") != "message":
+                continue
+            await load_from_redis(redis)
+            lim = get_active_limits()
+            log.info(
+                "Risk limits reloaded — leverage=%s pos=%s%% open=%s",
+                lim.max_leverage,
+                round(lim.max_position_pct * 100, 2),
+                lim.max_open_positions,
+            )
+
+    await load_from_redis(redis)
+    await asyncio.gather(poll(), on_message())
+
+
 async def halt_control_listener(redis: aioredis.Redis):
-    """Dashboard resume/restart publishes ch:immunity:clear_halt to lift paper-trading halt."""
     pubsub = redis.pubsub()
     await pubsub.subscribe("ch:immunity:clear_halt", "ch:trading:restart")
     log.info("Immunity halt control listener active")
@@ -63,7 +85,6 @@ async def halt_control_listener(redis: aioredis.Redis):
 
 
 async def order_approval_loop(redis: aioredis.Redis):
-    """Listen for order requests on Redis list immunity:requests, respond with approval."""
     global _last_reset_day
     log.info("ImmunitySystem listening for order requests")
     while True:
@@ -77,17 +98,26 @@ async def order_approval_loop(redis: aioredis.Redis):
         if not item:
             continue
         try:
+            lim = get_active_limits()
             request = json.loads(item[1])
             portfolio_value = float(request.get("portfolio_value", 10000))
             daily_pnl = float(request.get("daily_pnl", 0))
             approved, reason = immunity.check_order(request, portfolio_value, daily_pnl)
             if approved:
                 immunity._daily_trades += 1
-                immunity._open_positions = min(immunity._open_positions + 1, MAX_OPEN_POSITIONS)
-            response = {"request_id": request.get("request_id"), "approved": approved, "reason": reason}
+                immunity._open_positions = min(
+                    immunity._open_positions + 1, lim.max_open_positions
+                )
+            response = {
+                "request_id": request.get("request_id"),
+                "approved": approved,
+                "reason": reason,
+            }
             response_key = f"immunity:response:{request.get('request_id', 'unknown')}"
             await redis.set(response_key, json.dumps(response), ex=30)
-            log.info(f"Order {'APPROVED' if approved else 'REJECTED'}: {request.get('symbol')} — {reason}")
+            log.info(
+                f"Order {'APPROVED' if approved else 'REJECTED'}: {request.get('symbol')} — {reason}"
+            )
         except Exception as e:
             log.error(f"Order approval error: {e}")
             if not breaker.is_open:
@@ -95,7 +125,6 @@ async def order_approval_loop(redis: aioredis.Redis):
 
 
 async def position_close_listener(redis: aioredis.Redis):
-    """Listen for closed trades to update open position count and daily pnl."""
     pubsub = redis.pubsub()
     await pubsub.subscribe("ch:trade_closed")
     async for msg in pubsub.listen():
@@ -111,23 +140,26 @@ async def position_close_listener(redis: aioredis.Redis):
 
 
 async def status_writer_loop(redis: aioredis.Redis):
-    """Write immunity status to Redis every 30s for dashboard monitoring."""
     while True:
         try:
             expire_stale_halt()
+            lim = get_active_limits()
             status = {
-                "max_position_pct": MAX_POSITION_PCT * 100,
-                "max_daily_loss_pct": MAX_DAILY_LOSS_PCT * 100,
-                "max_leverage": MAX_LEVERAGE,
-                "max_open_positions": MAX_OPEN_POSITIONS,
-                "min_confidence_pct": MIN_CONFIDENCE * 100,
-                "max_trades_per_day": MAX_TRADES_PER_DAY,
+                "max_position_pct": lim.max_position_pct * 100,
+                "max_daily_loss_pct": lim.max_daily_loss_pct * 100,
+                "max_leverage": lim.max_leverage,
+                "max_open_positions": lim.max_open_positions,
+                "min_confidence_pct": lim.min_immunity_confidence * 100,
+                "min_signal_confidence_pct": lim.min_signal_confidence * 100,
+                "max_trades_per_day": lim.max_trades_per_day,
                 "system_halted": immunity._system_halted,
                 "circuit_open": breaker.is_open,
                 "daily_trades": immunity._daily_trades,
                 "open_positions": immunity._open_positions,
                 "daily_loss_pct": round(immunity._daily_loss * 100, 3),
                 "updated_at": time.time(),
+                "limits_updated_at": lim.updated_at,
+                "limits_updated_by": lim.updated_by,
             }
             await redis.set("immunity:status", json.dumps(status), ex=120)
         except Exception as e:
@@ -136,16 +168,17 @@ async def status_writer_loop(redis: aioredis.Redis):
 
 
 async def main():
-    log.info("immunity_system starting — ABSOLUTE LIMITS ACTIVE")
+    log.info("immunity_system starting — dynamic risk limits from Redis/DB")
     redis = await aioredis.from_url(REDIS_URL)
-    # Create separate connection for pubsub
     redis_sub = await aioredis.from_url(REDIS_URL)
     redis_ctl = await aioredis.from_url(REDIS_URL)
+    redis_lim = await aioredis.from_url(REDIS_URL)
     await asyncio.gather(
         order_approval_loop(redis),
         status_writer_loop(redis),
         position_close_listener(redis_sub),
         halt_control_listener(redis_ctl),
+        limits_listener(redis_lim),
     )
 
 

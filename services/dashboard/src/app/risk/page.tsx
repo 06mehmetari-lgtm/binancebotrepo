@@ -1,5 +1,6 @@
 'use client'
 import { useEffect, useState } from 'react'
+import RiskLimitsEditor from '@/components/RiskLimitsEditor'
 
 interface RiskData {
   immunity_halted: boolean
@@ -17,7 +18,15 @@ interface RiskData {
   limits: {
     max_drawdown: number; max_daily_loss: number; max_position_pct: number
     min_confidence: number; max_trades_per_day: number; max_leverage: number; max_open_positions: number
+    min_immunity_confidence?: number
   }
+  limits_source?: string
+  limits_updated_at?: number | null
+  limits_updated_by?: string | null
+}
+
+function pctFrac(n: number, digits = 0) {
+  return `${(n * 100).toFixed(digits)}%`
 }
 
 interface Position {
@@ -121,9 +130,17 @@ export default function RiskPage() {
 
   useEffect(() => { fetchData(); const t = setInterval(fetchData, 5000); return () => clearInterval(t) }, [])
 
+  const lim = data.limits
+  const maxLev = lim?.max_leverage ?? 3
+  const maxPosPct = lim?.max_position_pct ?? 0.05
+  const maxDailyFrac = lim?.max_daily_loss ?? 0.02
+  const maxOpen = lim?.max_open_positions ?? 3
+  const minConf = lim?.min_confidence ?? 0.6
+  const maxTradesDay = lim?.max_trades_per_day ?? 50
+
   const clearImmunityHalt = async () => {
     if (!window.confirm(
-      'Bağışıklık kilidi kaldırılsın mı? Günlük zarar sayacı sıfırlanır; sabit limitler (%2 günlük zarar, %5 pozisyon vb.) geçerli kalır.'
+      `Bağışıklık kilidi kaldırılsın mı? Günlük zarar sayacı sıfırlanır; aktif limitler (${pctFrac(maxDailyFrac)} günlük zarar, ${pctFrac(maxPosPct)} pozisyon, ${maxLev}× kaldıraç) geçerli kalır.`
     )) return
     setClearBusy(true)
     setClearMsg('')
@@ -147,10 +164,12 @@ export default function RiskPage() {
   const dailyLoss =
     data.daily_loss_display_pct ??
     (data.daily_loss_pct ?? 0) * 100
-  const maxDailyLoss =
-    (data.max_daily_loss_pct ?? data.limits?.max_daily_loss ?? 0.02) * 100
+  const maxDailyLoss = (data.max_daily_loss_pct ?? maxDailyFrac) * 100
   const dailyTrades = data.daily_trades ?? 0
-  const maxTrades = data.limits?.max_trades_per_day ?? 50
+  const maxTrades = maxTradesDay
+  const limitsMeta = data.limits_updated_at
+    ? new Date(data.limits_updated_at * 1000).toLocaleString('tr-TR')
+    : ''
   const isHalted = data.immunity_halted ?? false
   const driftSummary = data.drift_summary ?? {}
   const totalDriftSamples = Object.values(driftSummary).reduce((a, b) => a + b, 0)
@@ -168,7 +187,11 @@ export default function RiskPage() {
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h1 className="text-white font-bold text-base">Risk & Immunity System</h1>
-          <p className="text-gray-500 text-xs mt-0.5">Hard limits enforced on every order — cannot be bypassed by any AI component</p>
+          <p className="text-gray-500 text-xs mt-0.5">
+            Dinamik limitler — Postgres + Redis; her emirde immunity kontrolü
+            {limitsMeta ? ` · güncelleme ${limitsMeta}` : ''}
+            {data.limits_source ? ` · kaynak: ${data.limits_source}` : ''}
+          </p>
         </div>
         <div className="flex items-center gap-3 shrink-0">
           {data.vix != null && (
@@ -191,7 +214,7 @@ export default function RiskPage() {
             <div>
               <p className="text-red-300 font-bold text-sm">BAĞIŞIKLIK SİSTEMİ DURDURULDU</p>
               <p className="text-red-200/90 text-xs mt-1 leading-relaxed">
-                Günlük zarar limiti (%2) veya acil durdurma sonrası koruma devrede — yeni emirler reddediliyor.
+                Günlük zarar limiti ({pctFrac(maxDailyFrac)}) veya acil durdurma sonrası koruma devrede — yeni emirler reddediliyor.
                 Şu an kayıtlı günlük zarar: <span className="font-mono font-bold">{dailyLoss.toFixed(2)}%</span>
                 {' '}(limit {maxDailyLoss.toFixed(0)}%).
                 Acil durdurma kullandıysanız aşağıdaki düğme ile kilidi kaldırın; sabit limitler değişmez.
@@ -212,6 +235,8 @@ export default function RiskPage() {
       {clearMsg && (
         <p className="text-xs text-orange-300 bg-orange-950/30 border border-orange-800/50 rounded-lg px-3 py-2">{clearMsg}</p>
       )}
+
+      <RiskLimitsEditor openCount={positions.length} />
 
       {/* Crisis Level */}
       <div className={`rounded-xl border p-4 ${CRISIS_BG[crisis] ?? CRISIS_BG[0]}`}>
@@ -261,7 +286,7 @@ export default function RiskPage() {
               <span className={totalUnrealized >= 0 ? 'text-green-400 font-bold' : 'text-red-400 font-bold'}>
                 {totalUnrealized >= 0 ? '+' : ''}${totalUnrealized.toFixed(2)}
               </span>
-              <span className="text-gray-600">{positions.length} / 3</span>
+              <span className="text-gray-600">{positions.length} / {maxOpen}</span>
             </div>
           </div>
           {positions.length === 0 ? (
@@ -336,8 +361,8 @@ export default function RiskPage() {
           <GaugeBar label="Daily Loss" value={dailyLoss} max={maxDailyLoss} color="bg-orange-500" danger={maxDailyLoss} />
           <GaugeBar label="Trades Today" value={dailyTrades} max={maxTrades} color="bg-blue-500" danger={maxTrades} />
           <div className="pt-2 border-t border-gray-800/60 text-xs text-gray-500">
-            Sayaçlar UTC gece yarısı sıfırlanır. %2 günlük zarar veya acil durum sonrası işlem askıya alınır —
-            Risk sayfasındaki &quot;Kilidi Kaldır&quot; ile paper modda devam edebilirsiniz.
+            Sayaçlar UTC gece yarısı sıfırlanır. {pctFrac(maxDailyFrac)} günlük zarar veya acil durum sonrası işlem askıya alınır —
+            &quot;Kilidi Kaldır&quot; ile paper modda devam edebilirsiniz.
           </div>
         </div>
 
@@ -374,22 +399,24 @@ export default function RiskPage() {
       {/* Hard Limits */}
       <div className="bg-gray-900 border border-gray-800 rounded-lg overflow-hidden">
         <div className="px-4 py-3 border-b border-gray-800">
-          <h2 className="text-orange-400 font-semibold text-sm uppercase tracking-wider">Absolute Hard Limits</h2>
+          <h2 className="text-orange-400 font-semibold text-sm uppercase tracking-wider">Aktif Risk Limitleri</h2>
         </div>
         <div className="p-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-          <LimitCard icon="📉" label="Max Drawdown (shadow)" value="10%" description="Shadow promotion gate — separate from daily immunity halt on this page" />
-          <LimitCard icon="🗓" label="Max Daily Loss" value="2%" description="No new trades once daily loss hits 2% of portfolio" />
-          <LimitCard icon="📊" label="Max Position Size" value="5%" description="No single trade can exceed 5% of total portfolio value" />
-          <LimitCard icon="🎯" label="Min Signal Confidence" value="60%" description="Signals below 60% confidence are suppressed to flat" />
-          <LimitCard icon="⚡" label="Max Trades / Day" value="50" description="Hard limit on daily trade count prevents overtrading" />
-          <LimitCard icon="🔒" label="Max Leverage" value="3×" description="Maximum leverage allowed by the immunity system" />
-          <LimitCard icon="🏦" label="Max Open Positions" value="3" description="No more than 3 simultaneous open positions" />
+          <LimitCard icon="📉" label="Max Drawdown (shadow)" value="10%" description="Shadow promotion gate — günlük immunity limitinden ayrı" />
+          <LimitCard icon="🗓" label="Max Daily Loss" value={pctFrac(maxDailyFrac)} description={`Günlük zarar ${pctFrac(maxDailyFrac)} olunca yeni emir yok`} />
+          <LimitCard icon="📊" label="Max Position Size" value={pctFrac(maxPosPct)} description={`Tek işlem portföyün ${pctFrac(maxPosPct)} üstüne çıkamaz`} />
+          <LimitCard icon="🎯" label="Min Signal Confidence" value={pctFrac(minConf)} description={`${pctFrac(minConf)} altı sinyaller flat`} />
+          <LimitCard icon="⚡" label="Max Trades / Day" value={String(maxTradesDay)} description="Günlük işlem üst sınırı" />
+          <LimitCard icon="🔒" label="Max Leverage" value={`${maxLev}×`} description="Immunity kaldıraç tavanı" />
+          <LimitCard icon="🏦" label="Max Open Positions" value={String(maxOpen)} description={`En fazla ${maxOpen} eşzamanlı pozisyon`} />
           <LimitCard icon="💧" label="Min Spread" value="< 0.5%" description="Refuses orders when spread exceeds 0.5% (low liquidity)" />
           <LimitCard icon="📡" label="Funding Threshold" value="±0.3%" description="Extreme funding rate triggers caution mode (L1 crisis)" />
         </div>
         <div className="px-4 py-3 border-t border-gray-800 bg-red-950/10">
           <p className="text-red-400/70 text-xs">
-            These limits are immutable — defined in <code className="text-red-300 font-mono">immunity.py</code> and cannot be changed at runtime by any AI component, NEAT genome, or RL agent.
+            Limitler <code className="text-red-300 font-mono">system_risk_limits</code> tablosundan okunur;
+            Kaydet ile Postgres ve Redis güncellenir. AI/NEAT/RL bu değerleri değiştiremez — yalnızca dashboard.
+            {data.limits_updated_by ? ` Son: ${data.limits_updated_by}.` : ''}
           </p>
         </div>
       </div>

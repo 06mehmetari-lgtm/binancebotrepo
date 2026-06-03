@@ -2,6 +2,11 @@ import { NextResponse } from 'next/server'
 export const dynamic = 'force-dynamic'
 import { createRedis } from '../_redis'
 import { discoverSymbols } from '@/lib/universe'
+import { closePostgresPool } from '@/lib/postgres'
+import {
+  limitsToApiShape,
+  resolveRiskLimits,
+} from '@/lib/risk-limits-service'
 
 function safeJson(raw: string | null | undefined): unknown {
   if (!raw) return null
@@ -18,6 +23,10 @@ function macroVixNumber(raw: unknown): number | null {
 }
 
 export async function GET() {
+  const { limits: configuredLimits, source: limitsSource } =
+    await resolveRiskLimits({ syncRedisIfMissing: true })
+  const apiLimits = limitsToApiShape(configuredLimits)
+
   const redis = createRedis()
   try {
     const symbols = await discoverSymbols(redis)
@@ -83,9 +92,10 @@ export async function GET() {
     const dailyTrades = typeof immunityStatus?.daily_trades === 'number'
       ? immunityStatus.daily_trades
       : 0
-    const maxDailyLossPctImmunity = typeof immunityStatus?.max_daily_loss_pct === 'number'
-      ? immunityStatus.max_daily_loss_pct / 100
-      : 0.02
+    const maxDailyLossPctImmunity =
+      typeof immunityStatus?.max_daily_loss_pct === 'number'
+        ? immunityStatus.max_daily_loss_pct / 100
+        : apiLimits.max_daily_loss
 
     return NextResponse.json({
       immunity_halted: Boolean(immunityStatus?.system_halted ?? immunityStatus?.halted ?? false),
@@ -111,15 +121,11 @@ export async function GET() {
           }
         : { approved: false, reason: 'shadow_system not reporting', best_shadow_id: null, ready_count: 0 },
       live_trading_requires: ['DRY_RUN=false', 'LIVE_TRADING_CONFIRMED=true', 'promotion.approved=true'],
-      limits: {
-        max_drawdown: 0.10,
-        max_daily_loss: 0.02,
-        max_position_pct: 0.05,
-        min_confidence: 0.60,
-        max_trades_per_day: 50,
-        max_leverage: 3.0,
-        max_open_positions: 3,
-      },
+      limits: apiLimits,
+      limits_config: configuredLimits,
+      limits_source: limitsSource,
+      limits_updated_at: configuredLimits.updated_at ?? null,
+      limits_updated_by: configuredLimits.updated_by ?? null,
       crisis_scale: {
         0: { label: 'Normal', multiplier: 1.0, color: 'green' },
         1: { label: 'Caution', multiplier: 0.65, color: 'yellow' },
@@ -132,5 +138,6 @@ export async function GET() {
     return NextResponse.json({ error: String(e) }, { status: 500 })
   } finally {
     redis.disconnect()
+    await closePostgresPool()
   }
 }

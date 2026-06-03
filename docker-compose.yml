@@ -27,6 +27,7 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./infrastructure/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
+      - ./infrastructure/postgres/migrations:/migrations:ro
     ports:
       - "5432:5432"
     networks:
@@ -304,7 +305,9 @@ services:
   # SIGNAL ENGINE
   # ═══════════════════════════════════════
   signal_engine:
-    build: ./services/signal_engine
+    build:
+      context: ./services
+      dockerfile: signal_engine/Dockerfile
     container_name: prometheus_signal
     restart: unless-stopped
     environment:
@@ -317,7 +320,9 @@ services:
       - prometheus_net
 
   immunity_system:
-    build: ./services/immunity_system
+    build:
+      context: ./services
+      dockerfile: immunity_system/Dockerfile
     container_name: prometheus_immunity
     restart: unless-stopped
     environment:
@@ -327,7 +332,9 @@ services:
       - prometheus_net
 
   oms:
-    build: ./services/oms
+    build:
+      context: ./services
+      dockerfile: oms/Dockerfile
     container_name: prometheus_oms
     restart: unless-stopped
     environment:
@@ -443,6 +450,7 @@ services:
       - REDIS_PASSWORD=${REDIS_PASSWORD}
       - REDIS_HOST=redis
       - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379
+      - POSTGRES_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/prometheus_trading
       - QDRANT_URL=http://qdrant:6333
       - OLLAMA_URL=http://ollama:11434
       - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3.1:8b}
@@ -451,6 +459,7 @@ services:
       - DRY_RUN=${DRY_RUN:-true}
     depends_on:
       - redis
+      - postgres
       - ollama
     networks:
       - prometheus_net

@@ -229,7 +229,12 @@ async def simulate_tick(redis: aioredis.Redis, symbol: str):
         return
 
     confidence = float(signal.get("confidence", 0.5))
-    size_usd = PORTFOLIO_VALUE * 0.05 * confidence
+    try:
+        from risk_limits import get_active_limits
+        max_pos_pct = get_active_limits().max_position_pct
+    except Exception:
+        max_pos_pct = 0.05
+    size_usd = PORTFOLIO_VALUE * max_pos_pct * confidence
     owner = await _shadow_owner(redis, symbol) if SHADOW_ONE_PER_SYMBOL else None
 
     for shadow_id in SHADOW_IDS:

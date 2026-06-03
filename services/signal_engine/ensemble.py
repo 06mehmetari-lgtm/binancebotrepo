@@ -13,7 +13,12 @@ Direction = Literal["long", "short", "flat"]
 W_AGENT = float(os.getenv("ENSEMBLE_WEIGHT_AGENT", "0.55"))
 W_NEAT = float(os.getenv("ENSEMBLE_WEIGHT_NEAT", "0.25"))
 W_RL = float(os.getenv("ENSEMBLE_WEIGHT_RL", "0.20"))
-MIN_CONFIDENCE = float(os.getenv("SIGNAL_MIN_CONFIDENCE", "0.60"))
+def get_min_confidence() -> float:
+    try:
+        from risk_limits import get_active_limits
+        return get_active_limits().min_signal_confidence
+    except Exception:
+        return float(os.getenv("SIGNAL_MIN_CONFIDENCE", "0.60"))
 
 
 def _vote_scores(direction: str, confidence: float) -> dict[str, float]:
@@ -78,7 +83,7 @@ def fuse_sources(
     if len(unique_dirs) > 1:
         confidence *= 0.75
 
-    if confidence < MIN_CONFIDENCE:
+    if confidence < get_min_confidence():
         direction = "flat"
 
     source = "ensemble:" + "+".join(weights_used) if weights_used else "signal_engine"

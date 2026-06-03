@@ -37,7 +37,12 @@ class SignalGenerator:
             best = max(votes, key=votes.__getitem__)
             total = sum(votes.values())
             confidence = votes[best] / total if total else 0.0
-            direction = best if confidence >= 0.60 else "flat"
+            try:
+                from risk_limits import get_active_limits
+                min_conf = get_active_limits().min_signal_confidence
+            except Exception:
+                min_conf = 0.60
+            direction = best if confidence >= min_conf else "flat"
             source = "agent_system"
 
         elif features:
@@ -90,10 +95,15 @@ class SignalGenerator:
                 long_score *= 0.6
                 short_score *= 0.6
 
-            if long_score >= 0.60 and long_score > short_score:
+            try:
+                from risk_limits import get_active_limits
+                min_conf = get_active_limits().min_signal_confidence
+            except Exception:
+                min_conf = 0.60
+            if long_score >= min_conf and long_score > short_score:
                 direction = "long"
                 confidence = min(0.95, long_score)
-            elif short_score >= 0.60 and short_score > long_score:
+            elif short_score >= min_conf and short_score > long_score:
                 direction = "short"
                 confidence = min(0.95, short_score)
             else:

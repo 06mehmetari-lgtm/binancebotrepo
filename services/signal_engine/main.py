@@ -166,8 +166,13 @@ async def generate_signal(redis: aioredis.Redis, symbol: str) -> dict | None:
         return None
 
     stats = _get_kelly_stats(symbol)
+    try:
+        from risk_limits import get_active_limits
+        max_frac = get_active_limits().max_position_pct
+    except Exception:
+        max_frac = 0.05
     kelly_fraction = kelly.calculate(
-        stats["win_rate"], stats["avg_win"], stats["avg_loss"], max_fraction=0.05
+        stats["win_rate"], stats["avg_win"], stats["avg_loss"], max_fraction=max_frac
     )
 
     signal = generator.generate(symbol, agent_verdicts, kelly_fraction, features)
@@ -394,7 +399,16 @@ async def main():
 
             await asyncio.sleep(5)
 
-    await asyncio.gather(signal_loop(), stats_listener(redis_sub))
+    async def limits_refresh_loop():
+        from risk_limits import REDIS_CHANNEL, load_from_redis
+        pubsub = redis_sub.pubsub()
+        await pubsub.subscribe(REDIS_CHANNEL)
+        await load_from_redis(redis)
+        while True:
+            await load_from_redis(redis)
+            await asyncio.sleep(5)
+
+    await asyncio.gather(signal_loop(), stats_listener(redis_sub), limits_refresh_loop())
 
 
 if __name__ == "__main__":
