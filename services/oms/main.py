@@ -336,7 +336,7 @@ async def process_signal(redis: aioredis.Redis, symbol: str):
         return
 
     confidence = float(signal.get("confidence", 0))
-    kelly      = float(signal.get("kelly_fraction", 0.01))
+    kelly      = max(float(signal.get("kelly_fraction", 0.01)), 0.01)  # min 1% floor
     size_usd   = min(
         PORTFOLIO_VALUE * kelly * confidence,
         PORTFOLIO_VALUE * MAX_POSITION_PCT,

@@ -36,9 +36,9 @@ STATS: dict[str, dict] = {}
 def _get_kelly_stats(symbol: str) -> dict:
     s = STATS.get(symbol, {})
     return {
-        "win_rate": s.get("win_rate", 0.55),
-        "avg_win": s.get("avg_win", 0.02),
-        "avg_loss": s.get("avg_loss", 0.01),
+        "win_rate": s.get("win_rate") or 0.55,
+        "avg_win":  s.get("avg_win")  or 0.02,   # 0.0 → default (no wins yet)
+        "avg_loss": s.get("avg_loss") or 0.01,
     }
 
 
@@ -110,6 +110,7 @@ async def generate_signal(redis: aioredis.Redis, symbol: str) -> dict | None:
     kelly_fraction = kelly.calculate(
         stats["win_rate"], stats["avg_win"], stats["avg_loss"], max_fraction=0.05
     )
+    kelly_fraction = max(kelly_fraction, 0.01)  # floor: min 1% even with no win history
 
     # ── ATR-based stop-loss / take-profit ──────────────────────────────────
     atr_pct = float(features.get("atr_pct", 1.0) or 1.0)
