@@ -277,6 +277,22 @@ services:
     networks:
       - prometheus_net
 
+  # Ev PC / farklı sunucuda çalıştırın (profile relay). VPS: LLM_RELAY_URL=https://tunnel...
+  llm_relay:
+    profiles: ["relay"]
+    build: ./services/llm_relay
+    container_name: prometheus_llm_relay
+    restart: unless-stopped
+    environment:
+      - LLM_RELAY_PORT=8099
+      - LLM_RELAY_SECRET=${LLM_RELAY_SECRET:-}
+      - RELAY_GROQ_UPSTREAM=https://api.groq.com/openai/v1
+      - RELAY_CEREBRAS_UPSTREAM=https://api.cerebras.ai/v1
+    ports:
+      - "8099:8099"
+    networks:
+      - prometheus_net
+
   agent_system:
     build:
       context: ./services

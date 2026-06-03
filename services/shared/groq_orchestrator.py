@@ -15,7 +15,13 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 logger = logging.getLogger(__name__)
 
-GROQ_BASE = "https://api.groq.com/openai/v1"
+def _groq_base() -> str:
+    try:
+        from llm_providers import groq_api_base
+
+        return groq_api_base()
+    except ImportError:
+        return os.getenv("GROQ_API_BASE", "https://api.groq.com/openai/v1").rstrip("/")
 
 # pool_id -> env prefix (first model = PREFIX, more = PREFIX_2, PREFIX_3, ...)
 MODEL_POOL_PREFIX: dict[str, str] = {
@@ -131,7 +137,7 @@ def groq_chat(
     if not api_key:
         raise RuntimeError("missing Groq API key")
     to = timeout if timeout is not None else float(os.getenv("AI_REQUEST_TIMEOUT", "45"))
-    url = f"{GROQ_BASE}/chat/completions"
+    url = f"{_groq_base()}/chat/completions"
     payload = json.dumps(
         {
             "model": model,
@@ -149,7 +155,16 @@ def groq_chat(
         },
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=to) as resp:
+    try:
+        from llm_providers import _urlopen
+    except ImportError:
+        _urlopen = urllib.request.urlopen  # type: ignore[assignment]
+
+    relay_secret = (os.getenv("LLM_RELAY_SECRET") or "").strip()
+    if relay_secret and (os.getenv("LLM_RELAY_URL") or "").strip():
+        req.add_header("X-Relay-Secret", relay_secret)
+
+    with _urlopen(req, timeout=to) as resp:
         body = json.loads(resp.read())
     return (body.get("choices") or [{}])[0].get("message", {}).get("content") or ""
 

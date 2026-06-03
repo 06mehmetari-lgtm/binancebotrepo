@@ -148,8 +148,15 @@ def probe_ollama() -> None:
 
 
 def main() -> None:
+    from llm_providers import cloud_bypass_configured, groq_api_base, cerebras_api_base  # noqa: E402
+
     print("LLM key probe — live API (not .env presence only)")
     print(f"LLM_PROVIDER_ORDER={os.getenv('LLM_PROVIDER_ORDER', '(default)')}")
+    print(f"cloud_bypass={cloud_bypass_configured()} groq_base={groq_api_base()}")
+    if os.getenv("LLM_RELAY_URL"):
+        print(f"LLM_RELAY_URL={os.getenv('LLM_RELAY_URL')}")
+    if os.getenv("HTTPS_PROXY") or os.getenv("ALL_PROXY"):
+        print("proxy=configured (masked)")
     probe_provider("groq")
     probe_provider("cerebras")
     probe_ollama()

@@ -135,18 +135,79 @@ def _is_ip_blocked(exc: BaseException) -> bool:
     return False
 
 
+def cloud_bypass_configured() -> bool:
+    """Proxy, SOCKS, or LLM relay → Groq/Cerebras can work from blocked VPS."""
+    if (os.getenv("HTTPS_PROXY") or os.getenv("HTTP_PROXY") or os.getenv("ALL_PROXY") or "").strip():
+        return True
+    if (os.getenv("LLM_RELAY_URL") or "").strip():
+        return True
+    if (os.getenv("GROQ_API_BASE") or os.getenv("CEREBRAS_API_BASE") or "").strip():
+        return True
+    return False
+
+
 def cloud_llm_disabled() -> bool:
     """VPS IP block (1010) or operator chose local-only LLM."""
+    if cloud_bypass_configured():
+        return False
     if _cloud_ip_blocked:
         return True
     v = (os.getenv("LLM_OLLAMA_ONLY", "") or os.getenv("LLM_CLOUD_BLOCKED", "")).strip().lower()
     return v in ("1", "true", "yes", "on")
 
 
+def groq_api_base() -> str:
+    relay = (os.getenv("LLM_RELAY_URL") or "").strip().rstrip("/")
+    if relay:
+        return f"{relay}/groq/v1"
+    return (os.getenv("GROQ_API_BASE") or "https://api.groq.com/openai/v1").strip().rstrip("/")
+
+
+def cerebras_api_base() -> str:
+    relay = (os.getenv("LLM_RELAY_URL") or "").strip().rstrip("/")
+    if relay:
+        return f"{relay}/cerebras/v1"
+    return (os.getenv("CEREBRAS_API_BASE") or "https://api.cerebras.ai/v1").strip().rstrip("/")
+
+
+def _provider_base_url(pid: str, default: str) -> str:
+    if pid == "groq":
+        return groq_api_base()
+    if pid == "cerebras":
+        return cerebras_api_base()
+    return default
+
+
 def _urlopen(req: urllib.request.Request, timeout: float):
-    proxy = (os.getenv("HTTPS_PROXY") or os.getenv("HTTP_PROXY") or "").strip()
+    proxy = (
+        os.getenv("HTTPS_PROXY")
+        or os.getenv("HTTP_PROXY")
+        or os.getenv("ALL_PROXY")
+        or ""
+    ).strip()
+    if proxy.lower().startswith("socks"):
+        try:
+            import socks  # type: ignore[import-untyped]
+            from urllib.parse import urlparse
+
+            p = urlparse(proxy)
+            host = p.hostname or "127.0.0.1"
+            port = p.port or 1080
+            scheme = (p.scheme or "socks5").lower()
+            kind = socks.SOCKS5 if "5" in scheme else socks.SOCKS4
+            socks.set_default_proxy(kind, host, port)
+            import socket
+
+            socket.socket = socks.socksocket  # type: ignore[misc, assignment]
+            return urllib.request.urlopen(req, timeout=timeout)
+        except ImportError:
+            logger.warning("SOCKS proxy set but PySocks missing — pip install PySocks")
+        except Exception as e:
+            logger.warning("SOCKS proxy failed: %s", e)
     if proxy:
-        opener = urllib.request.build_opener(urllib.request.ProxyHandler({"http": proxy, "https": proxy}))
+        opener = urllib.request.build_opener(
+            urllib.request.ProxyHandler({"http": proxy, "https": proxy})
+        )
         return opener.open(req, timeout=timeout)
     return urllib.request.urlopen(req, timeout=timeout)
 
@@ -288,9 +349,11 @@ def _try_openai_provider(
     temperature: float,
     model_override: str | None,
 ) -> tuple[str | None, str | None]:
-    prefix, base, model_env = _OPENAI_PROVIDERS[pid]
+    prefix, default_base, model_env = _OPENAI_PROVIDERS[pid]
+    base = _provider_base_url(pid, default_base)
     if pid == "zai":
         base = os.getenv("ZAI_BASE_URL", base)
+    relay_secret = (os.getenv("LLM_RELAY_SECRET") or "").strip()
     keys = collect_keys(prefix)
     if pid == "google":
         keys = collect_keys("GOOGLE_AI_API_KEY", "GEMINI_API_KEY") or keys
@@ -303,6 +366,9 @@ def _try_openai_provider(
             "HTTP-Referer": os.getenv("OPENROUTER_REFERER", "https://prometheus.local"),
             "X-Title": "Prometheus Trading",
         }
+    if relay_secret and (os.getenv("LLM_RELAY_URL") or "").strip():
+        extra = dict(extra or {})
+        extra["X-Relay-Secret"] = relay_secret
     for idx, key in enumerate(keys):
         label = pid if len(keys) == 1 else f"{pid}#{idx + 1}"
         try:
@@ -342,9 +408,10 @@ def chat_completion(
     """
     order = provider_order()
     ollama_first = bool(order) and order[0] == "ollama"
+    bypass = cloud_bypass_configured()
 
-    # VPS/datacenter IP block: never waste time on Groq swarm before Ollama
-    if ollama_first or cloud_llm_disabled():
+    # Blocked VPS without bypass: Ollama first
+    if (ollama_first or cloud_llm_disabled()) and not bypass:
         text, label = _try_ollama(prompt, max_tokens, temperature)
         if text:
             return text, label
@@ -373,7 +440,7 @@ def chat_completion(
 
     for pid in order:
         if pid == "ollama":
-            if ollama_first or cloud_llm_disabled():
+            if (ollama_first or cloud_llm_disabled()) and not bypass:
                 continue
             text, label = _try_ollama(prompt, max_tokens, temperature)
             if text:
