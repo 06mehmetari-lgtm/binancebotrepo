@@ -18,6 +18,7 @@ for p in ("/app", os.path.join(os.path.dirname(__file__), "..", "services")):
 from llm_providers import (  # noqa: E402
     _DEFAULT_MODELS,
     _OPENAI_PROVIDERS,
+    _is_ip_blocked,
     _is_rate_limited,
     _openai_chat,
     _ollama_chat,

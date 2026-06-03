@@ -4,11 +4,11 @@
 
 ```bash
 cd ~/prometheus
-git fetch origin
-git checkout origin/master -- scripts/setup-vps-llm-wait-mode.sh services/shared/llm_providers.py services/agent_system/debate_agent.py docker-compose.yml
-# .env içine: GOOGLE_AI_API_KEY=AIza...  (https://aistudio.google.com/apikey)
-bash scripts/setup-vps-llm-wait-mode.sh
+# Tek script — Python traceback'i terminale yapistirmayin!
+bash scripts/vps-llm-deploy.sh
 ```
+
+(GOOGLE anahtari: https://aistudio.google.com/apikey → `.env` içine `GOOGLE_AI_API_KEY=...`)
 
 - **Gemini** önce (limit → bekler, kota açılınca devam)
 - **Ollama** yedek

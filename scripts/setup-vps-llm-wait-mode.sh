@@ -59,15 +59,9 @@ docker compose up -d --force-recreate agent_system learning_engine
 
 sleep 5
 echo ""
-echo "Test (agent container):"
-docker compose exec -T agent_system python3 -c "
-import sys; sys.path.insert(0,'/app')
-from llm_providers import vps_llm_mode, provider_order, chat_completion
-print('VPS mode:', vps_llm_mode())
-print('order:', provider_order())
-t,l = chat_completion('Reply one word: OK', max_tokens=12, temperature=0)
-print('LLM:', l or 'none', (t or '')[:50] if t else 'FAIL→ rule agents still run')
-" 2>&1 || true
+echo "Test (probe script):"
+docker cp scripts/probe-llm-keys.py prometheus_agents:/tmp/probe_llm_keys.py 2>/dev/null || true
+docker compose exec -T agent_system python3 /tmp/probe_llm_keys.py 2>&1 | tail -25 || true
 
 echo ""
 echo "════════════════════════════════════════"
