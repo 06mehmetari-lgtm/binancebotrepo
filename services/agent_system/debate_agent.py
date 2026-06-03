@@ -1,7 +1,7 @@
 """
 Debate Agent — orchestrates 9 agents and synthesizes a final verdict.
 Primary voting is rule-based (fast, no API cost per tick).
-LLM synthesis priority: Groq (70B, cloud) → Ollama (local fallback) → rule-based only.
+LLM synthesis: multi-key Groq rotation → LLM_PROVIDER_ORDER chain → Ollama.
 """
 
 import asyncio
@@ -9,11 +9,12 @@ import json
 import logging
 import os
 import urllib.request
-import urllib.error
 from dataclasses import dataclass
 
+from llm_providers import chat_completion
+
 logger = logging.getLogger(__name__)
-GROQ_MODEL = "llama-3.1-70b-versatile"
+GROQ_MODEL = os.getenv("GROQ_DEBATE_MODEL") or os.getenv("GROQ_LEARN_MODEL", "llama-3.1-70b-versatile")
 
 
 @dataclass
@@ -46,19 +47,7 @@ class DebateAgent:
     }
 
     def __init__(self):
-        self._client = None
         self.weights = dict(self.DEFAULT_WEIGHTS)
-
-    def _get_client(self):
-        if self._client is None:
-            api_key = os.getenv("GROQ_API_KEY", "")
-            if api_key:
-                try:
-                    from groq import Groq
-                    self._client = Groq(api_key=api_key)
-                except ImportError:
-                    logger.warning("groq package not installed")
-        return self._client
 
     def _ollama_url(self) -> str | None:
         return os.getenv("OLLAMA_URL", "http://ollama:11434") or None
@@ -95,45 +84,38 @@ class DebateAgent:
 
         # LLM synthesis — only for high-confidence non-flat signals
         if result.final_signal != "flat" and result.final_confidence > 0.65:
-            client = self._get_client()
-            if client:
-                try:
-                    result = await asyncio.get_event_loop().run_in_executor(
-                        None, self._llm_synthesize, client, symbol, features, context, result
-                    )
-                except Exception as e:
-                    logger.debug(f"Groq synthesis skipped for {symbol}: {e}")
-                    # Groq failed — try Ollama fallback
-                    ollama = self._ollama_url()
-                    if ollama:
-                        try:
-                            result = await asyncio.get_event_loop().run_in_executor(
-                                None, self._ollama_synthesize, ollama, symbol, features, context, result
-                            )
-                        except Exception as e2:
-                            logger.debug(f"Ollama synthesis skipped for {symbol}: {e2}")
-            else:
-                # No Groq key — try Ollama directly
-                ollama = self._ollama_url()
-                if ollama:
-                    try:
-                        result = await asyncio.get_event_loop().run_in_executor(
-                            None, self._ollama_synthesize, ollama, symbol, features, context, result
-                        )
-                    except Exception as e:
-                        logger.debug(f"Ollama synthesis skipped for {symbol}: {e}")
+            try:
+                result = await asyncio.get_event_loop().run_in_executor(
+                    None, self._llm_synthesize, symbol, features, context, result
+                )
+            except Exception as e:
+                logger.debug(f"LLM synthesis skipped for {symbol}: {e}")
 
         return result
 
-    def _llm_synthesize(self, client, symbol: str, features: dict,
+    def _llm_synthesize(self, symbol: str, features: dict,
                         context: dict, base: DebateResult) -> DebateResult:
+        prompt = self._synthesis_prompt(symbol, features, context, base)
+        raw, provider = chat_completion(
+            prompt,
+            max_tokens=120,
+            temperature=0.1,
+            model_override=GROQ_MODEL,
+        )
+        if not raw:
+            ollama = self._ollama_url()
+            if ollama:
+                return self._ollama_synthesize(ollama, symbol, features, context, base)
+            return base
+        return self._parse_synthesis_response(raw, base, provider or "llm")
+
+    def _synthesis_prompt(self, symbol: str, features: dict, context: dict, base: DebateResult) -> str:
         rsi = round(float(features.get("rsi_14", 50)), 1)
         macd = round(float(features.get("macd_hist", 0)), 4)
         regime = context.get("regime", "unknown")
         crisis = context.get("crisis_level", 0)
         fg = context.get("fear_greed", 50)
-
-        prompt = (
+        return (
             f"Crypto trading signal for {symbol}. Rule-based agents voted: {base.final_signal.upper()} "
             f"with {base.final_confidence:.0%} confidence ({base.consensus_strength:.0%} consensus).\n"
             f"Key data: RSI={rsi}, MACD_hist={macd}, regime={regime}, "
@@ -143,47 +125,28 @@ class DebateAgent:
             f'{{\"signal\":\"long|short|flat\",\"confidence\":0.0-1.0,\"reasoning\":\"one sentence\"}}'
         )
 
-        resp = client.chat.completions.create(
-            model=GROQ_MODEL,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.1,
-            max_tokens=100,
-        )
-        raw = resp.choices[0].message.content.strip()
-        data = json.loads(raw)
+    def _parse_synthesis_response(self, raw: str, base: DebateResult, provider: str) -> DebateResult:
+        text = raw.strip()
+        if text.startswith("```"):
+            text = text.split("```")[1].lstrip("json").strip()
+        data = json.loads(text)
         signal = data.get("signal", base.final_signal)
         confidence = float(data.get("confidence", base.final_confidence))
         reasoning = data.get("reasoning", base.majority_reasoning)
-
         if signal not in ("long", "short", "flat"):
             signal = base.final_signal
-
         return DebateResult(
             final_signal=signal,
             final_confidence=confidence,
             consensus_strength=base.consensus_strength,
             all_votes=base.all_votes,
-            majority_reasoning=f"[Groq] {reasoning}",
+            majority_reasoning=f"[{provider}] {reasoning}",
         )
 
     def _ollama_synthesize(self, ollama_url: str, symbol: str, features: dict,
                            context: dict, base: DebateResult) -> DebateResult:
         model = os.getenv("OLLAMA_MODEL", "llama3.1:8b")
-        rsi = round(float(features.get("rsi_14", 50)), 1)
-        macd = round(float(features.get("macd_hist", 0)), 4)
-        regime = context.get("regime", "unknown")
-        crisis = context.get("crisis_level", 0)
-        fg = context.get("fear_greed", 50)
-
-        prompt = (
-            f"Crypto trading signal for {symbol}. Rule-based agents voted: {base.final_signal.upper()} "
-            f"with {base.final_confidence:.0%} confidence ({base.consensus_strength:.0%} consensus).\n"
-            f"Key data: RSI={rsi}, MACD_hist={macd}, regime={regime}, "
-            f"crisis_level={crisis}, fear_greed={fg}, "
-            f"agent_reasoning='{base.majority_reasoning}'\n"
-            f"Respond with JSON only: "
-            f'{{\"signal\":\"long|short|flat\",\"confidence\":0.0-1.0,\"reasoning\":\"one sentence\"}}'
-        )
+        prompt = self._synthesis_prompt(symbol, features, context, base)
 
         payload = json.dumps({
             "model": model,
@@ -202,24 +165,7 @@ class DebateAgent:
             result = json.loads(resp.read())
 
         raw = result["message"]["content"].strip()
-        # Strip markdown code fences if present
-        if raw.startswith("```"):
-            raw = raw.split("```")[1].lstrip("json").strip()
-        data = json.loads(raw)
-        signal = data.get("signal", base.final_signal)
-        confidence = float(data.get("confidence", base.final_confidence))
-        reasoning = data.get("reasoning", base.majority_reasoning)
-
-        if signal not in ("long", "short", "flat"):
-            signal = base.final_signal
-
-        return DebateResult(
-            final_signal=signal,
-            final_confidence=confidence,
-            consensus_strength=base.consensus_strength,
-            all_votes=base.all_votes,
-            majority_reasoning=f"[Ollama/{model}] {reasoning}",
-        )
+        return self._parse_synthesis_response(raw, base, f"ollama/{model}")
 
     def _aggregate(self, votes: list[AgentVote]) -> DebateResult:
         scores = {"long": 0.0, "short": 0.0, "flat": 0.0}

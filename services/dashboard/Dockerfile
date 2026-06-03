@@ -1,7 +1,10 @@
 FROM node:20-alpine AS builder
 WORKDIR /app
-COPY package.json package-lock.json* ./
-RUN npm install
+# Low-RAM VPS: avoid OOM during next build
+ENV NODE_OPTIONS=--max-old-space-size=4096
+ENV NEXT_TELEMETRY_DISABLED=1
+COPY package.json package-lock.json ./
+RUN npm ci
 COPY . .
 RUN npm run build
 

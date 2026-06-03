@@ -173,7 +173,9 @@ services:
       - prometheus_net
 
   learning_engine:
-    build: ./services/learning_engine
+    build:
+      context: ./services
+      dockerfile: learning_engine/Dockerfile
     container_name: prometheus_learning
     restart: unless-stopped
     env_file:
@@ -250,7 +252,9 @@ services:
       - prometheus_net
 
   agent_system:
-    build: ./services/agent_system
+    build:
+      context: ./services
+      dockerfile: agent_system/Dockerfile
     container_name: prometheus_agents
     restart: unless-stopped
     env_file:
@@ -411,6 +415,8 @@ services:
     build: ./services/dashboard
     container_name: prometheus_dashboard
     restart: unless-stopped
+    env_file:
+      - .env
     ports:
       - "3000:3000"
     environment:
@@ -419,8 +425,9 @@ services:
       - REDIS_HOST=redis
       - QDRANT_URL=http://qdrant:6333
       - OLLAMA_URL=http://ollama:11434
-      - GROQ_API_KEY=${GROQ_API_KEY}
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3.1:8b}
       - GROQ_LEARN_MODEL=${GROQ_LEARN_MODEL:-llama-3.1-70b-versatile}
+      - LLM_KEY_SLOTS=${LLM_KEY_SLOTS:-32}
       - DRY_RUN=${DRY_RUN:-true}
     depends_on:
       - redis

@@ -1,31 +1,16 @@
-"""Groq / Ollama — coin-specific learning narrative (not generic templates)."""
+"""Multi-provider LLM — coin-specific learning narrative."""
 
 from __future__ import annotations
 
 import json
 import logging
 import os
-import urllib.request
+
+from llm_providers import chat_completion
 
 logger = logging.getLogger(__name__)
 
 GROQ_MODEL = os.getenv("GROQ_LEARN_MODEL", "llama-3.1-70b-versatile")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.1:8b")
-
-
-def _get_groq():
-    key = os.getenv("GROQ_API_KEY", "")
-    if not key:
-        return None
-    try:
-        from groq import Groq
-        return Groq(api_key=key)
-    except ImportError:
-        return None
-
-
-def _ollama_url() -> str | None:
-    return os.getenv("OLLAMA_URL", "").strip() or None
 
 
 def _parse_json_response(raw: str) -> dict | None:
@@ -67,44 +52,16 @@ def synthesize_coin_insight(symbol: str, profile: dict) -> dict | None:
         '"avoid_hint":"tek satır kaçınma kuralı"}'
     )
 
-    client = _get_groq()
-    if client:
-        try:
-            resp = client.chat.completions.create(
-                model=GROQ_MODEL,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.35,
-                max_tokens=280,
-            )
-            data = _parse_json_response(resp.choices[0].message.content or "")
-            if data and data.get("ai_insight"):
-                data["llm_provider"] = "groq"
-                return data
-        except Exception as e:
-            logger.debug(f"Groq learn {symbol}: {e}")
-
-    ollama = _ollama_url()
-    if ollama:
-        try:
-            payload = json.dumps({
-                "model": OLLAMA_MODEL,
-                "messages": [{"role": "user", "content": prompt}],
-                "stream": False,
-                "options": {"temperature": 0.35, "num_predict": 320},
-            }).encode()
-            req = urllib.request.Request(
-                f"{ollama.rstrip('/')}/api/chat",
-                data=payload,
-                headers={"Content-Type": "application/json"},
-                method="POST",
-            )
-            with urllib.request.urlopen(req, timeout=45) as resp:
-                body = json.loads(resp.read())
-            data = _parse_json_response(body.get("message", {}).get("content", ""))
-            if data and data.get("ai_insight"):
-                data["llm_provider"] = "ollama"
-                return data
-        except Exception as e:
-            logger.debug(f"Ollama learn {symbol}: {e}")
-
+    raw, provider = chat_completion(
+        prompt,
+        max_tokens=320,
+        temperature=0.35,
+        model_override=GROQ_MODEL,
+    )
+    if not raw:
+        return None
+    data = _parse_json_response(raw)
+    if data and data.get("ai_insight"):
+        data["llm_provider"] = provider or "llm"
+        return data
     return None

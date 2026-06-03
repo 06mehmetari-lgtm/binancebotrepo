@@ -1,4 +1,7 @@
 # Gizli anahtarlar — ASLA commit'e girmesin
+.env
+.env.local
+.env.*.local
 
 # Python
 __pycache__/

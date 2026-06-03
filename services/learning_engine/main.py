@@ -268,7 +268,11 @@ async def global_sync_loop(engine: LearningEngine, redis: aioredis.Redis):
 
 
 async def main():
-    groq = bool(os.getenv("GROQ_API_KEY", ""))
+    try:
+        from llm_providers import any_cloud_llm_configured
+        groq = any_cloud_llm_configured()
+    except ImportError:
+        groq = bool(os.getenv("GROQ_API_KEY", ""))
     ollama = os.getenv("OLLAMA_URL", "")
     log.info(
         f"learning_engine starting — Groq={'on' if groq else 'off'} "

@@ -4,6 +4,7 @@ import { createRedis } from '../_redis'
 import { discoverSymbols, scanKeys } from '@/lib/universe'
 import { fetchOpenPositions } from '@/lib/positions'
 import { buildStrategyDocument, CURRICULUM } from '@/lib/learning-hub'
+import { anyLlmConfigured, getLlmProviderStatus } from '@/lib/llm-providers'
 
 const QDRANT_URL = process.env.QDRANT_URL || 'http://qdrant:6333'
 const OLLAMA_URL = process.env.OLLAMA_URL || 'http://ollama:11434'
@@ -102,7 +103,9 @@ export async function GET(req: Request) {
     const shadowLb: ShadowEntry[] = Array.isArray(shadowParsed)
       ? (shadowParsed as ShadowEntry[])
       : []
-    const firstShadow = shadowLb[0]
+    const firstShadow: ShadowEntry | undefined = shadowLb.length > 0 ? shadowLb[0] : undefined
+    const firstShadowTrades = Number(firstShadow?.trades ?? 0)
+    const firstShadowReady = Boolean(firstShadow?.promotion_ready)
     const immunity = safeJson(immunityRaw) as Record<string, unknown> | null
 
     const profileKeys = await scanKeys(redis, 'learn:profile:*')
@@ -174,7 +177,9 @@ export async function GET(req: Request) {
     })
 
     const dryRun = process.env.DRY_RUN !== 'false'
-    const groqConfigured = Boolean(process.env.GROQ_API_KEY?.trim())
+    const llmProviders = getLlmProviderStatus()
+    const groqConfigured = llmProviders.find(p => p.id === 'groq')?.configured ?? false
+    const llmAny = anyLlmConfigured()
     const strategyDoc = buildStrategyDocument({
       symbols_tracked: symbols.length,
       profiles_count: profileKeys.length,
@@ -234,21 +239,28 @@ export async function GET(req: Request) {
           {
             step: 1,
             text: 'Shadow SHADOW_A kriterleri sağlasın (100+ işlem)',
-            done: (firstShadow?.trades ?? 0) >= 100,
+            done: firstShadowTrades >= 100,
           },
           {
             step: 2,
             text: 'Sharpe ≥ 1.5 ve WR ≥ 52%',
-            done: Boolean(firstShadow?.promotion_ready),
+            done: firstShadowReady,
           },
           { step: 3, text: 'system:promotion:status approved=true', done: Boolean(promotion.approved) },
           { step: 4, text: '.env DRY_RUN=false + LIVE_TRADING_CONFIRMED=true', done: false },
         ],
       },
       llm: {
-        groq: { configured: groqConfigured, model: process.env.GROQ_LEARN_MODEL ?? 'llama-3.1-70b-versatile' },
+        any_configured: llmAny,
+        providers: llmProviders,
+        groq: {
+          configured: groqConfigured,
+          key_count: llmProviders.find(p => p.id === 'groq')?.key_count ?? 0,
+          model: process.env.GROQ_LEARN_MODEL ?? 'llama-3.1-70b-versatile',
+        },
         ollama,
-        agent_model: 'Groq/Ollama + kural ajanları (debate)',
+        provider_order: (process.env.LLM_PROVIDER_ORDER ?? '').split(',').map(s => s.trim()).filter(Boolean),
+        agent_model: 'Çoklu LLM zinciri + kural ajanları (debate)',
         learn_llm_every_n: Number(process.env.LEARNING_LLM_EVERY_N ?? 90),
       },
       pipeline: {

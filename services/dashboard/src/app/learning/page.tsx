@@ -39,8 +39,18 @@ type HubData = {
     live_steps: Array<{ step: number; text: string; done: boolean }>
   }
   llm: {
-    groq: { configured: boolean; model: string }
+    any_configured?: boolean
+    providers?: Array<{
+      id: string
+      name: string
+      env: string
+      configured: boolean
+      key_count: number
+      tier_note: string
+    }>
+    groq: { configured: boolean; model: string; key_count?: number }
     ollama: { ok: boolean; models: string[]; error?: string }
+    provider_order?: string[]
     learn_llm_every_n?: number
   }
   pipeline: {
@@ -484,26 +494,58 @@ export default function LearningPage() {
       )}
 
       {tab === 'llm' && (
-        <section className="grid md:grid-cols-2 gap-4">
-          <div className="bg-gray-900 border border-gray-800 rounded-xl p-5 space-y-3">
-            <h2 className="text-yellow-400 font-bold">Groq</h2>
-            <p className={d.llm.groq.configured ? 'text-green-400' : 'text-red-400'}>
-              {d.llm.groq.configured ? '✓ API key yapılandırılmış' : '✗ GROQ_API_KEY eksik'}
+        <section className="space-y-4">
+          <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
+            <h2 className="text-white font-bold mb-2">LLM durumu</h2>
+            <p className={d.llm.any_configured ? 'text-green-400 text-sm' : 'text-red-400 text-sm'}>
+              {d.llm.any_configured
+                ? `✓ En az bir sağlayıcı aktif (Groq anahtar: ${d.llm.groq.key_count ?? 0})`
+                : '✗ Hiç LLM anahtarı yok — .env dosyasına anahtar ekleyin'}
             </p>
-            <p className="text-gray-500 text-xs font-mono">Model: {d.llm.groq.model}</p>
+            <p className="text-gray-500 text-xs mt-2 font-mono">
+              Model: {d.llm.groq.model} · Sıra:{' '}
+              {(d.llm.provider_order?.length ? d.llm.provider_order.join(' → ') : 'varsayılan zincir')}
+            </p>
           </div>
-          <div className="bg-gray-900 border border-gray-800 rounded-xl p-5 space-y-3">
-            <h2 className="text-cyan-400 font-bold">Ollama</h2>
-            <p className={d.llm.ollama.ok ? 'text-green-400' : 'text-red-400'}>
-              {d.llm.ollama.ok ? '✓ Çalışıyor' : '✗ Kapalı'}
-            </p>
-            <p className="text-gray-500 text-xs">{d.llm.ollama.models.length} model yüklü</p>
+          <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
+            <h2 className="text-orange-400 font-bold mb-4">Eksik / yapılandırılmış anahtarlar</h2>
+            <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
+              {(d.llm.providers ?? []).map(p => (
+                <div
+                  key={p.id}
+                  className={`rounded-lg border p-3 ${
+                    p.configured ? 'border-green-800/50 bg-green-950/20' : 'border-red-900/40 bg-red-950/10'
+                  }`}
+                >
+                  <div className="flex justify-between items-center">
+                    <span className="text-white font-medium text-sm">{p.name}</span>
+                    <span className={p.configured ? 'text-green-400' : 'text-red-400'}>
+                      {p.configured ? '✓' : '✕'}
+                    </span>
+                  </div>
+                  <p className="text-gray-500 text-xs mt-1">{p.tier_note}</p>
+                  {p.key_count > 1 && (
+                    <p className="text-blue-400 text-xs mt-1">{p.key_count} anahtar (rotasyon)</p>
+                  )}
+                  <p className="text-gray-600 text-[10px] font-mono mt-1 truncate">{p.env}</p>
+                </div>
+              ))}
+            </div>
           </div>
-          <div className="md:col-span-2 bg-gray-900 border border-gray-800 rounded-xl p-5 text-sm text-gray-400">
-            <p>
-              Ajan debati: Bull/Bear/Neutral + 6 analiz ajanı → debate_agent JSON. Öğrenme: her{' '}
-              {d.llm.learn_llm_every_n ?? 90} tick&apos;te LLM sentez (açık pozisyonlarda daha sık).
-            </p>
+          <div className="grid md:grid-cols-2 gap-4">
+            <div className="bg-gray-900 border border-gray-800 rounded-xl p-5 space-y-3">
+              <h2 className="text-cyan-400 font-bold">Ollama</h2>
+              <p className={d.llm.ollama.ok ? 'text-green-400' : 'text-red-400'}>
+                {d.llm.ollama.ok ? '✓ Çalışıyor' : '✗ Kapalı'}
+              </p>
+              <p className="text-gray-500 text-xs">{d.llm.ollama.models.length} model yüklü</p>
+            </div>
+            <div className="bg-gray-900 border border-gray-800 rounded-xl p-5 text-sm text-gray-400">
+              <p>
+                Debate + öğrenme: rate-limit olunca sıradaki anahtar/sağlayıcıya geçer (GROQ_API_KEY_1…
+                {32}). Öğrenme LLM: her {d.llm.learn_llm_every_n ?? 90} tick.
+              </p>
+            </div>
           </div>
         </section>
       )}
