@@ -169,7 +169,11 @@ def _ollama_chat(prompt: str, max_tokens: int, temperature: float) -> str:
         headers={"Content-Type": "application/json"},
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=90) as resp:
+    try:
+        timeout = float(os.getenv("OLLAMA_TIMEOUT", "180"))
+    except ValueError:
+        timeout = 180.0
+    with urllib.request.urlopen(req, timeout=max(30.0, timeout)) as resp:
         body = json.loads(resp.read())
     return body.get("message", {}).get("content") or ""
 

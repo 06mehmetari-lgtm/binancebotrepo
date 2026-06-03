@@ -39,8 +39,8 @@ docker compose build agent_system learning_engine
 docker compose up -d --force-recreate agent_system learning_engine
 
 echo ""
+echo "If probe shows error code 1010 on Groq/Cerebras → Cloudflare IP block (keys OK)."
+echo "  bash scripts/fix-ollama-on-server.sh"
+echo ""
 echo "Re-run probe:"
 echo "  bash scripts/check-llm-env.sh"
-echo ""
-echo "If Groq still 403 with 'Access denied' / network: datacenter IP block."
-echo "  Set: LLM_PROVIDER_ORDER=ollama,groq,cerebras,...  (Ollama önce)"

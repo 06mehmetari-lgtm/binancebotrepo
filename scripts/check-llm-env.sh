@@ -168,8 +168,11 @@ if docker inspect prometheus_agents >/dev/null 2>&1 && [[ -f scripts/probe-llm-k
     elif echo "$probe_out" | grep -qi 'access denied\|network settings'; then
       fail "probe: Groq 403 — VPS/datacenter IP engeli olabilir (anahtarlar doğru olsa bile)"
       warn "Çözüm: LLM_PROVIDER_ORDER=ollama,groq,... veya farklı sunucu bölgesi"
+    elif echo "$probe_out" | grep -qE 'error code: 1010|code: 1010'; then
+      fail "probe: Cloudflare 1010 — VPS IP engeli (Groq/Cerebras bu sunucudan çalışmaz)"
+      warn "Çözüm: bash scripts/fix-ollama-on-server.sh"
     elif echo "$probe_out" | grep -qE '^\s+FAIL.*403'; then
-      fail "probe: tüm anahtarlar 403 — bash scripts/fix-llm-models-on-server.sh sonra tekrar deneyin"
+      fail "probe: tüm anahtarlar 403 — model fix veya IP engeli; fix-ollama-on-server.sh"
     else
       warn "probe bitti; OK satırı yok — fix-llm-models-on-server.sh çalıştırın"
     fi

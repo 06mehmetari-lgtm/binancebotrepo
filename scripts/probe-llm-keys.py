@@ -116,18 +116,35 @@ def probe_provider(pid: str) -> None:
 
 
 def probe_ollama() -> None:
-    url = (os.getenv("OLLAMA_URL", "") or "").strip()
+    import json
+    import urllib.request
+
+    url = (os.getenv("OLLAMA_URL", "") or "").strip().rstrip("/")
+    model = os.getenv("OLLAMA_MODEL", "llama3.1:8b")
     print(f"\n{'=' * 60}")
-    print(f"OLLAMA — url={url or '(not set)'}")
+    print(f"OLLAMA — url={url or '(not set)'} model={model}")
     print(f"{'=' * 60}")
     if not url:
         print("  SKIP")
         return
     try:
-        text = _ollama_chat("Reply with exactly one word: OK", 16, 0)
-        print(f"  OK   model={os.getenv('OLLAMA_MODEL', 'llama3.1:8b')}  response={(text or '')[:60]!r}")
+        with urllib.request.urlopen(f"{url}/api/tags", timeout=15) as resp:
+            tags = json.loads(resp.read())
+        names = [m.get("name", "") for m in tags.get("models") or []]
+        base = model.split(":")[0]
+        if not any(base in n for n in names):
+            print(f"  ! model not pulled — run: docker compose exec ollama ollama pull {model}")
     except Exception as e:
-        print(f"  FAIL {e}")
+        print(f"  ! /api/tags: {e}")
+    try:
+        text = _ollama_chat("Reply with exactly one word: OK", 16, 0)
+        print(f"  OK   response={(text or '')[:60]!r}")
+    except Exception as e:
+        err = str(e)
+        if "timed out" in err.lower():
+            print(f"  FAIL timeout — CPU'da 8b çok yavaş; .env: OLLAMA_MODEL=llama3.2:3b + fix-ollama-on-server.sh")
+        else:
+            print(f"  FAIL {e}")
 
 
 def main() -> None:

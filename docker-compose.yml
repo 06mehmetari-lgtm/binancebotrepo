@@ -193,9 +193,10 @@ services:
       - LEARNING_OPEN_POSITION_SEC=${LEARNING_OPEN_POSITION_SEC:-0.5}
       - GROQ_LEARN_MODEL=${GROQ_LEARN_MODEL:-llama-3.3-70b-versatile}
       - OLLAMA_URL=http://ollama:11434
-      - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3.1:8b}
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3.2:3b}
+      - OLLAMA_TIMEOUT=${OLLAMA_TIMEOUT:-240}
       - LLM_KEY_SLOTS=${LLM_KEY_SLOTS:-32}
-      - LLM_PROVIDER_ORDER=${LLM_PROVIDER_ORDER:-groq,cerebras,sambanova,openrouter,ollama}
+      - LLM_PROVIDER_ORDER=${LLM_PROVIDER_ORDER:-ollama,groq,cerebras,sambanova,openrouter}
       - GROQ_LEARNING_MODELS=${GROQ_LEARNING_MODELS:-}
       - GROQ_FALLBACK_MODEL=${GROQ_FALLBACK_MODEL:-}
       - AI_ENABLE_SWARM=${AI_ENABLE_SWARM:-true}
@@ -270,7 +271,8 @@ services:
       - POSTGRES_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/prometheus_trading
       - QDRANT_URL=http://qdrant:6333
       - OLLAMA_URL=http://ollama:11434
-      - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3.1:8b}
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3.2:3b}
+      - OLLAMA_TIMEOUT=${OLLAMA_TIMEOUT:-240}
       - AGENT_BATCH_SIZE=${AGENT_BATCH_SIZE:-120}
       - AGENT_CONCURRENCY=${AGENT_CONCURRENCY:-40}
       - AGENT_CYCLE_SEC=${AGENT_CYCLE_SEC:-3}
@@ -281,7 +283,7 @@ services:
       - GUARD_DEBATE_CONCURRENCY=${GUARD_DEBATE_CONCURRENCY:-2}
       # API anahtarları yalnızca env_file: .env (boş ${VAR} env_file'i ezmesin diye burada yok)
       - LLM_KEY_SLOTS=${LLM_KEY_SLOTS:-32}
-      - LLM_PROVIDER_ORDER=${LLM_PROVIDER_ORDER:-groq,cerebras,sambanova,openrouter,ollama}
+      - LLM_PROVIDER_ORDER=${LLM_PROVIDER_ORDER:-ollama,groq,cerebras,sambanova,openrouter}
       - GROQ_DEBATE_MODEL=${GROQ_DEBATE_MODEL:-llama-3.3-70b-versatile}
       - GROQ_LEARN_MODEL=${GROQ_LEARN_MODEL:-llama-3.3-70b-versatile}
       - GROQ_FAST_MODELS=${GROQ_FAST_MODELS:-}
@@ -455,7 +457,8 @@ services:
       - POSTGRES_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/prometheus_trading
       - QDRANT_URL=http://qdrant:6333
       - OLLAMA_URL=http://ollama:11434
-      - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3.1:8b}
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3.2:3b}
+      - OLLAMA_TIMEOUT=${OLLAMA_TIMEOUT:-240}
       - GROQ_LEARN_MODEL=${GROQ_LEARN_MODEL:-llama-3.3-70b-versatile}
       - LLM_KEY_SLOTS=${LLM_KEY_SLOTS:-32}
       - DRY_RUN=${DRY_RUN:-true}
