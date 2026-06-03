@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 import urllib.error
 import urllib.request
 
@@ -89,9 +90,30 @@ def collect_keys(prefix: str, alt_primary: str | None = None) -> list[str]:
     return out
 
 
+def vps_llm_mode() -> bool:
+    """PC kapalı VPS: sadece Google Gemini + Ollama (Groq/Cerebras 1010 atlanır)."""
+    return (os.getenv("LLM_VPS_MODE", "") or "").strip().lower() in ("1", "true", "yes", "on")
+
+
 def provider_order() -> list[str]:
+    if vps_llm_mode():
+        out = ["google", "ollama"]
+        if collect_keys("GOOGLE_AI_API_KEY", "GEMINI_API_KEY"):
+            return out
+        return ["ollama"]
     raw = os.getenv("LLM_PROVIDER_ORDER", DEFAULT_ORDER)
     return [p.strip().lower() for p in raw.split(",") if p.strip()]
+
+
+def _quota_wait(provider: str) -> None:
+    try:
+        sec = float(os.getenv("LLM_QUOTA_WAIT_SEC", "0"))
+    except ValueError:
+        sec = 0.0
+    if sec > 0:
+        wait = min(sec, 120.0)
+        logger.info("%s kota/limit — %.0fs bekleniyor, sonra Ollama/yedek", provider, wait)
+        time.sleep(wait)
 
 
 def resolve_model(provider_id: str, model: str) -> str:
@@ -445,6 +467,7 @@ def _try_openai_provider(
                     return text, label
             except Exception as e:
                 if _is_rate_limited(e):
+                    _quota_wait(pid)
                     continue
                 if _is_ip_blocked(e):
                     try:
@@ -484,7 +507,7 @@ def chat_completion(
         if text:
             return text, label
 
-    if not cloud_llm_disabled() and model_pool and collect_keys("GROQ_API_KEY"):
+    if not vps_llm_mode() and not cloud_llm_disabled() and model_pool and collect_keys("GROQ_API_KEY"):
         try:
             import groq_orchestrator as groq
 

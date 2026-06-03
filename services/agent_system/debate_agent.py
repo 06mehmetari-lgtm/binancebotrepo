@@ -11,7 +11,7 @@ import os
 import urllib.request
 from dataclasses import dataclass
 
-from llm_providers import chat_completion, cloud_llm_disabled
+from llm_providers import chat_completion, cloud_llm_disabled, vps_llm_mode
 
 logger = logging.getLogger(__name__)
 GROQ_MODEL = os.getenv("GROQ_DEBATE_MODEL") or os.getenv("GROQ_LEARN_MODEL", "llama-3.3-70b-versatile")
@@ -96,7 +96,7 @@ class DebateAgent:
     def _llm_synthesize(self, symbol: str, features: dict,
                         context: dict, base: DebateResult) -> DebateResult:
         prompt = self._synthesis_prompt(symbol, features, context, base)
-        local_only = cloud_llm_disabled()
+        local_only = vps_llm_mode() or cloud_llm_disabled()
         raw, provider = chat_completion(
             prompt,
             max_tokens=120,

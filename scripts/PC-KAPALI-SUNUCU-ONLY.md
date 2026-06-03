@@ -1,5 +1,22 @@
 # PC kapalı — sadece VPS (7/24)
 
+## Tek komut (önerilen)
+
+```bash
+cd ~/prometheus
+git fetch origin
+git checkout origin/master -- scripts/setup-vps-llm-wait-mode.sh services/shared/llm_providers.py services/agent_system/debate_agent.py docker-compose.yml
+# .env içine: GOOGLE_AI_API_KEY=AIza...  (https://aistudio.google.com/apikey)
+bash scripts/setup-vps-llm-wait-mode.sh
+```
+
+- **Gemini** önce (limit → bekler, kota açılınca devam)
+- **Ollama** yedek
+- **Groq/Cerebras** atlanır (1010)
+- **PC gerekmez**
+
+---
+
 ## Kısa cevap
 
 | Yöntem | PC kapalıyken çalışır mı? |
