@@ -266,8 +266,8 @@ services:
     environment:
       - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379
       - POSTGRES_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/prometheus_trading
-      - MAX_OPEN_POSITIONS=20
-      - MAX_SAME_DIRECTION=6
+      - MAX_OPEN_POSITIONS=5
+      - MAX_SAME_DIRECTION=2
     depends_on:
       - redis
       - feature_engine
@@ -281,12 +281,12 @@ services:
     environment:
       - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379
       - POSTGRES_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/prometheus_trading
-      - MAX_OPEN_POSITIONS=20
+      - MAX_OPEN_POSITIONS=5
       - MAX_TRADES_PER_DAY=500
       - MAX_POSITION_PCT=0.20
-      - MAX_DAILY_LOSS_PCT=0.50
-      - MAX_LEVERAGE=10.0
-      - MIN_CONFIDENCE=0.45
+      - MAX_DAILY_LOSS_PCT=5.0
+      - MAX_LEVERAGE=3.0
+      - MIN_CONFIDENCE=0.52
     networks:
       - prometheus_net
 
