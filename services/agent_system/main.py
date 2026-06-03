@@ -251,15 +251,15 @@ async def pubsub_listener(redis_cmd: aioredis.Redis):
             pass
 
 
-_debate_sem: asyncio.Semaphore | None = None
+_debate_semaphore: asyncio.Semaphore | None = None
 
 
 def _debate_sem() -> asyncio.Semaphore:
-    global _debate_sem
-    if _debate_sem is None:
+    global _debate_semaphore
+    if _debate_semaphore is None:
         n = int(os.getenv("AGENT_CONCURRENCY", "20"))
-        _debate_sem = asyncio.Semaphore(max(1, n))
-    return _debate_sem
+        _debate_semaphore = asyncio.Semaphore(max(1, n))
+    return _debate_semaphore
 
 
 async def debate_loop(redis: aioredis.Redis):
