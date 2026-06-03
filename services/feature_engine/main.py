@@ -183,8 +183,14 @@ async def update_ohlcv(redis: aioredis.Redis, symbol: str):
             OHLCV_HISTORY[symbol] = history[-500:]
 
 
+async def heartbeat(redis: aioredis.Redis) -> None:
+    """Dashboard /system checks this key; must refresh more often than 90s cycle time."""
+    await redis.set("system:heartbeat:feature_engine", str(time.time()), ex=120)
+
+
 async def main():
     redis = await aioredis.from_url(REDIS_URL)
+    await heartbeat(redis)
 
     # Wait for data_ingestion to populate Redis keys (retry up to 2 minutes)
     active_symbols: list[str] = []
@@ -203,6 +209,7 @@ async def main():
 
     log.info("Bootstrapping klines from Binance REST API...")
     await bootstrap_klines(active_symbols)
+    await heartbeat(redis)
 
     active_set: set[str] = set(active_symbols)
     last_refresh = time.time()
@@ -222,6 +229,7 @@ async def main():
             log.error(f"Feature error [{symbol}]: {e}")
 
     while True:
+        await heartbeat(redis)
         if time.time() - last_refresh > SYMBOL_REFRESH_INTERVAL:
             new_symbols = await discover_symbols_from_redis(redis)
             if new_symbols:
@@ -235,8 +243,8 @@ async def main():
         symbols_list = list(active_set)
         for i in range(0, len(symbols_list), BATCH):
             await asyncio.gather(*[_process(s) for s in symbols_list[i:i + BATCH]])
+            await heartbeat(redis)
 
-        await redis.set("system:heartbeat:feature_engine", str(time.time()), ex=120)
         await asyncio.sleep(1)
 
 

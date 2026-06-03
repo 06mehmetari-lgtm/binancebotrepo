@@ -70,6 +70,16 @@ export async function GET() {
       if (s.name === 'data_ingestion' && raw) {
         const ws = safeJson(raw) as { status?: string } | null
         alive = ws?.status === 'CONNECTED'
+      } else if (s.name === 'feature_engine' && featCount > 20) {
+        // Nabız döngü sonunda yazılıyordu; çok sembolde >90s gecikme olabiliyor
+        if (raw) {
+          const ts = parseFloat(raw)
+          age_sec = Math.round(now - ts)
+          alive = now - ts < 300
+        } else {
+          alive = true
+          age_sec = null
+        }
       } else if (s.key?.includes('heartbeat') && raw) {
         const ts = parseFloat(raw)
         age_sec = Math.round(now - ts)
