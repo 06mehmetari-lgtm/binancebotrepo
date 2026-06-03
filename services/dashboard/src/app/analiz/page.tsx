@@ -1,7 +1,8 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import Link from 'next/link'
+import { useStreamInvalidate } from '@/hooks/useStream'
 
 type Row = {
   symbol: string
@@ -25,19 +26,28 @@ export default function AnalizPage() {
   const [shortOp, setShortOp] = useState<Row[]>([])
   const [minSqs, setMinSqs] = useState(55)
 
-  useEffect(() => {
-    const load = () =>
-      fetch(`/api/analiz?limit=80&min_sqs=${minSqs}`)
-        .then(r => r.json())
-        .then(d => {
-          setTop(d.top ?? [])
-          setLongOp(d.long_opportunities ?? [])
-          setShortOp(d.short_opportunities ?? [])
-        })
-    load()
-    const t = setInterval(load, 4000)
-    return () => clearInterval(t)
+  const load = useCallback(() => {
+    fetch(`/api/analiz?limit=80&min_sqs=${minSqs}`)
+      .then(r => r.json())
+      .then(d => {
+        setTop(d.top ?? [])
+        setLongOp(d.long_opportunities ?? [])
+        setShortOp(d.short_opportunities ?? [])
+      })
+      .catch(() => {})
   }, [minSqs])
+
+  useEffect(() => {
+    load()
+    const t = setInterval(load, 60000)
+    return () => clearInterval(t)
+  }, [load])
+
+  useStreamInvalidate({
+    hints: ['signal', 'features', 'agents'],
+    debounceMs: 800,
+    onEvent: () => load(),
+  })
 
   const Table = ({ rows, title }: { rows: Row[]; title: string }) => (
     <section className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">

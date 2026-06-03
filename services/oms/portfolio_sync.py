@@ -88,6 +88,7 @@ async def publish_portfolio_state(redis: aioredis.Redis) -> dict:
         "positions": positions,
     }
     await redis.set(PORTFOLIO_KEY, json.dumps(state), ex=120)
+    await redis.publish("ch:portfolio:update", json.dumps({"ts": state["updated_at"]}))
     return state
 
 

@@ -85,6 +85,7 @@ export async function POST(req: Request) {
         consensus_reasoning: `Manuel emir — kullanıcı ${direction.toUpperCase()} yönü tetikledi`,
       }
       await redis.set(`signal:latest:${symbol}`, JSON.stringify(payload), 'EX', 600)
+      await redis.publish(`ch:signal:${symbol}`, symbol)
       await redis.lpush(
         'activity:feed',
         JSON.stringify({

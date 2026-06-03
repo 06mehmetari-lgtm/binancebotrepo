@@ -1,13 +1,11 @@
-import { NextResponse } from 'next/server'
 export const dynamic = 'force-dynamic'
-import { createRedis } from '../_redis'
 import { discoverSymbols } from '@/lib/universe'
+import { withRedisCache } from '@/lib/api-handler'
 
 export async function GET() {
-  const redis = createRedis()
-  try {
+  return withRedisCache('api:cache:signals:v1', 5, async redis => {
     const symbols = await discoverSymbols(redis)
-    if (symbols.length === 0) return NextResponse.json([])
+    if (symbols.length === 0) return []
 
     const snapRaw = await redis.get('snapshot:universe:v1')
 
@@ -47,10 +45,6 @@ export async function GET() {
       }
     }
 
-    return NextResponse.json(signals)
-  } catch (e) {
-    return NextResponse.json([], { status: 500 })
-  } finally {
-    redis.disconnect()
-  }
+    return signals
+  })
 }

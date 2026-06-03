@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import { HEARTBEAT_STALE_SEC, isStale } from '@/lib/stale'
 
 type SysData = {
   score: number
@@ -72,14 +73,17 @@ export default function SystemPage() {
       <section className="bg-gray-900 border border-gray-800 rounded-xl p-5">
         <h2 className="text-green-400 font-semibold text-sm mb-3">Servisler</h2>
         <div className="grid sm:grid-cols-2 gap-2">
-          {data.services.map(s => (
-            <div key={s.name} className="flex justify-between text-sm py-1 border-b border-gray-800/50">
-              <span className="text-gray-400">{s.name}</span>
-              <span className={s.alive ? 'text-green-400' : 'text-red-400'}>
-                {s.alive ? `OK ${s.age_sec ?? ''}s` : 'DOWN'}
-              </span>
-            </div>
-          ))}
+          {data.services.map(s => {
+            const stale = s.alive && isStale(s.age_sec, HEARTBEAT_STALE_SEC)
+            return (
+              <div key={s.name} className="flex justify-between text-sm py-1 border-b border-gray-800/50">
+                <span className="text-gray-400">{s.name}</span>
+                <span className={!s.alive ? 'text-red-400' : stale ? 'text-yellow-400' : 'text-green-400'}>
+                  {!s.alive ? 'DOWN' : stale ? `STALE ${s.age_sec ?? '?'}s` : `OK ${s.age_sec ?? ''}s`}
+                </span>
+              </div>
+            )
+          })}
         </div>
       </section>
 

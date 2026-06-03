@@ -196,15 +196,22 @@ services:
       - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3.2:3b}
       - OLLAMA_TIMEOUT=${OLLAMA_TIMEOUT:-240}
       - LLM_KEY_SLOTS=${LLM_KEY_SLOTS:-32}
-      - LLM_PROVIDER_ORDER=${LLM_PROVIDER_ORDER:-ollama,groq,cerebras,sambanova,openrouter}
+      - LLM_PROVIDER_ORDER=${LLM_PROVIDER_ORDER:-ollama}
+      - LLM_OLLAMA_ONLY=${LLM_OLLAMA_ONLY:-true}
+      - LLM_CLOUD_BLOCKED=${LLM_CLOUD_BLOCKED:-true}
       - GROQ_LEARNING_MODELS=${GROQ_LEARNING_MODELS:-}
       - GROQ_FALLBACK_MODEL=${GROQ_FALLBACK_MODEL:-}
-      - AI_ENABLE_SWARM=${AI_ENABLE_SWARM:-true}
+      - AI_ENABLE_SWARM=${AI_ENABLE_SWARM:-false}
+      - LEARNING_CONCURRENCY=${LEARNING_CONCURRENCY:-4}
     depends_on:
-      - redis
-      - feature_engine
-      - context_engine
-      - ollama
+      ollama:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      feature_engine:
+        condition: service_started
+      context_engine:
+        condition: service_started
     networks:
       - prometheus_net
 
@@ -251,10 +258,22 @@ services:
     image: ollama/ollama:latest
     container_name: prometheus_ollama
     restart: unless-stopped
+    environment:
+      - OLLAMA_KEEP_ALIVE=24h
     volumes:
       - ollama_data:/root/.ollama
     ports:
       - "11434:11434"
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 15s
+      retries: 5
+      start_period: 90s
+    deploy:
+      resources:
+        limits:
+          memory: 10G
     networks:
       - prometheus_net
 
@@ -274,7 +293,9 @@ services:
       - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3.2:3b}
       - OLLAMA_TIMEOUT=${OLLAMA_TIMEOUT:-240}
       - AGENT_BATCH_SIZE=${AGENT_BATCH_SIZE:-120}
-      - AGENT_CONCURRENCY=${AGENT_CONCURRENCY:-40}
+      - AGENT_CONCURRENCY=${AGENT_CONCURRENCY:-8}
+      - LLM_OLLAMA_ONLY=${LLM_OLLAMA_ONLY:-true}
+      - LLM_CLOUD_BLOCKED=${LLM_CLOUD_BLOCKED:-true}
       - AGENT_CYCLE_SEC=${AGENT_CYCLE_SEC:-3}
       - POSITION_GUARD_SEC=${POSITION_GUARD_SEC:-1.0}
       - GUARD_MAX_LOSS_PCT=${GUARD_MAX_LOSS_PCT:-1.5}
@@ -283,7 +304,7 @@ services:
       - GUARD_DEBATE_CONCURRENCY=${GUARD_DEBATE_CONCURRENCY:-2}
       # API anahtarları yalnızca env_file: .env (boş ${VAR} env_file'i ezmesin diye burada yok)
       - LLM_KEY_SLOTS=${LLM_KEY_SLOTS:-32}
-      - LLM_PROVIDER_ORDER=${LLM_PROVIDER_ORDER:-ollama,groq,cerebras,sambanova,openrouter}
+      - LLM_PROVIDER_ORDER=${LLM_PROVIDER_ORDER:-ollama}
       - GROQ_DEBATE_MODEL=${GROQ_DEBATE_MODEL:-llama-3.3-70b-versatile}
       - GROQ_LEARN_MODEL=${GROQ_LEARN_MODEL:-llama-3.3-70b-versatile}
       - GROQ_FAST_MODELS=${GROQ_FAST_MODELS:-}
@@ -291,15 +312,19 @@ services:
       - GROQ_LEARNING_MODELS=${GROQ_LEARNING_MODELS:-}
       - GROQ_FINAL_MODEL=${GROQ_FINAL_MODEL:-}
       - GROQ_FALLBACK_MODEL=${GROQ_FALLBACK_MODEL:-}
-      - AI_ENABLE_SWARM=${AI_ENABLE_SWARM:-true}
+      - AI_ENABLE_SWARM=${AI_ENABLE_SWARM:-false}
       - AI_MINIMUM_MODEL_VOTE=${AI_MINIMUM_MODEL_VOTE:-3}
       - AI_REQUIRED_CONFIDENCE=${AI_REQUIRED_CONFIDENCE:-0.72}
       - AI_MAX_PARALLEL_REQUEST=${AI_MAX_PARALLEL_REQUEST:-12}
     depends_on:
-      - redis
-      - postgres
-      - qdrant
-      - ollama
+      ollama:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      postgres:
+        condition: service_started
+      qdrant:
+        condition: service_started
     networks:
       - prometheus_net
 

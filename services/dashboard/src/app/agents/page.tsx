@@ -1,5 +1,6 @@
 'use client'
-import { useEffect, useState } from 'react'
+import { useEffect, useState, Suspense } from 'react'
+import { useSearchParams } from 'next/navigation'
 
 interface Vote { agent: string; signal: string; confidence: number; reasoning?: string }
 interface Verdict {
@@ -143,6 +144,22 @@ function KellyBreakdown({ verdict, genome }: { verdict: Verdict; genome: Genome 
   )
 }
 
+function consensusBadge(votes: Vote[]): { label: string; className: string } {
+  const n = votes.length
+  if (n === 0) return { label: '—', className: 'text-gray-500' }
+  const long = votes.filter(v => v.signal === 'long').length
+  const short = votes.filter(v => v.signal === 'short').length
+  const flat = votes.filter(v => v.signal === 'flat').length
+  const top = Math.max(long, short, flat)
+  if (top >= Math.ceil(n * 0.85)) {
+    return { label: 'Konsensüs', className: 'text-green-400 bg-green-950/50 border-green-700/50' }
+  }
+  if (long > 0 && short > 0 && Math.abs(long - short) <= 2) {
+    return { label: 'Tartışmalı', className: 'text-yellow-400 bg-yellow-950/50 border-yellow-700/50' }
+  }
+  return { label: 'Karışık', className: 'text-gray-400 bg-gray-800 border-gray-700' }
+}
+
 function ConsensusWheel({ votes }: { votes: Vote[] }) {
   if (!votes.length) return null
   const total = votes.length
@@ -183,7 +200,8 @@ function ConsensusWheel({ votes }: { votes: Vote[] }) {
   )
 }
 
-export default function AgentsPage() {
+function AgentsContent() {
+  const searchParams = useSearchParams()
   const [symbols, setSymbols] = useState<string[]>([])
   const [signals, setSignals] = useState<Record<string, { direction: string; confidence: number }>>({})
   const [symbol, setSymbol] = useState('BTCUSDT')
@@ -204,7 +222,12 @@ export default function AgentsPage() {
       }
     }).catch(() => {})
     fetch('/api/symbols').then(r => r.json()).then(d => {
-      if (Array.isArray(d) && d.length > 0) { setSymbols(d); setSymbol(d[0]) }
+      if (Array.isArray(d) && d.length > 0) {
+        setSymbols(d)
+        const fromUrl = searchParams.get('symbol')?.toUpperCase()
+        if (fromUrl && d.includes(fromUrl)) setSymbol(fromUrl)
+        else setSymbol(d[0])
+      }
     }).catch(() => setSymbols(['BTCUSDT', 'ETHUSDT', 'BNBUSDT']))
     // Fetch live signals to show direction badges
     fetch('/api/signals').then(r => r.json()).then((d: unknown) => {
@@ -229,6 +252,7 @@ export default function AgentsPage() {
   }, [symbol])
 
   const votes = data.votes ?? []
+  const badge = consensusBadge(votes.filter(v => v.agent !== 'debate_agent'))
   const verdict = data.verdict
   const genome = data.genome ?? null
   const learnProfile = data.learn_profile
@@ -352,8 +376,15 @@ export default function AgentsPage() {
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
           <div className="lg:col-span-2 space-y-4">
             <div className="bg-gray-900 rounded-lg border border-gray-800 overflow-hidden">
-              <div className="px-4 py-3 border-b border-gray-800 flex items-center justify-between">
-                <h2 className="text-purple-400 font-semibold text-sm uppercase tracking-wider">Agent Votes</h2>
+              <div className="px-4 py-3 border-b border-gray-800 flex items-center justify-between flex-wrap gap-2">
+                <div className="flex items-center gap-2">
+                  <h2 className="text-purple-400 font-semibold text-sm uppercase tracking-wider">Debate Transcript</h2>
+                  {votes.length > 0 && (
+                    <span className={`text-[10px] px-2 py-0.5 rounded border font-bold ${badge.className}`}>
+                      {badge.label}
+                    </span>
+                  )}
+                </div>
                 <div className="flex gap-3 text-xs">
                   <span className="text-green-400">▲ {votes.filter(v => v.signal === 'long').length} long</span>
                   <span className="text-red-400">▼ {votes.filter(v => v.signal === 'short').length} short</span>
@@ -514,5 +545,13 @@ export default function AgentsPage() {
         </div>
       )}
     </div>
+  )
+}
+
+export default function AgentsPage() {
+  return (
+    <Suspense fallback={<p className="text-gray-500 text-center mt-10">Loading agents…</p>}>
+      <AgentsContent />
+    </Suspense>
   )
 }

@@ -176,6 +176,13 @@ def chat_pool(
     """
     if not groq_keys():
         return None, None
+    try:
+        from llm_providers import cloud_llm_disabled
+
+        if cloud_llm_disabled():
+            return None, None
+    except ImportError:
+        pass
 
     max_retry = max(1, int(os.getenv("AI_MAX_RETRY", "5")))
     pools_to_try = [pool]
@@ -235,6 +242,14 @@ def swarm_consensus(
     Parallel Groq calls across models in pool; majority vote on signal JSON.
     Requires AI_MINIMUM_MODEL_VOTE successful parses.
     """
+    try:
+        from llm_providers import cloud_llm_disabled
+
+        if cloud_llm_disabled():
+            return None, None
+    except ImportError:
+        pass
+
     if not _bool_env("AI_ENABLE_SWARM", True):
         return chat_pool(pool, prompt, max_tokens=max_tokens, temperature=temperature)
 

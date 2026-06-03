@@ -1,7 +1,6 @@
-import { NextResponse } from 'next/server'
 export const dynamic = 'force-dynamic'
-import { createRedis } from '../_redis'
 import { discoverSymbols } from '@/lib/universe'
+import { withRedisCache } from '@/lib/api-handler'
 
 function safeJson(raw: string | null): Record<string, unknown> | null {
   if (!raw) return null
@@ -13,10 +12,9 @@ function safeJson(raw: string | null): Record<string, unknown> | null {
 }
 
 export async function GET() {
-  const redis = createRedis()
-  try {
+  return withRedisCache('api:cache:markets:v1', 5, async redis => {
     const symbols = await discoverSymbols(redis)
-    if (symbols.length === 0) return NextResponse.json([])
+    if (symbols.length === 0) return []
 
     // Fetch all feature and signal values in parallel using a pipeline
     const pipeline = redis.pipeline()
@@ -54,10 +52,6 @@ export async function GET() {
       return bv - av
     })
 
-    return NextResponse.json(markets)
-  } catch (e) {
-    return NextResponse.json([], { status: 500 })
-  } finally {
-    redis.disconnect()
-  }
+    return markets
+  })
 }

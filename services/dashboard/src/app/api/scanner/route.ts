@@ -1,8 +1,7 @@
-import { NextResponse } from 'next/server'
 export const dynamic = 'force-dynamic'
-import { createRedis } from '../_redis'
 import { discoverSymbols } from '@/lib/universe'
 import { computeSQS } from '@/lib/sqs'
+import { withRedisCache } from '@/lib/api-handler'
 
 function safe(raw: string | null): Record<string, unknown> | null {
   if (!raw) return null
@@ -10,8 +9,7 @@ function safe(raw: string | null): Record<string, unknown> | null {
 }
 
 export async function GET() {
-  const redis = createRedis()
-  try {
+  return withRedisCache('api:cache:scanner:v1', 5, async redis => {
     const [symbols, wsRaw, btRaw, shadowRaw] = await Promise.all([
       discoverSymbols(redis),
       redis.get('ws:status'),
@@ -20,7 +18,7 @@ export async function GET() {
     ])
 
     if (symbols.length === 0) {
-      return NextResponse.json({ coins: [], total: 0, long_count: 0, short_count: 0, flat_count: 0, ws_status: null })
+      return { coins: [], total: 0, long_count: 0, short_count: 0, flat_count: 0, ws_status: null }
     }
 
     const pipeline = redis.pipeline()
@@ -88,7 +86,7 @@ export async function GET() {
       return (b.sqs as number) - (a.sqs as number)
     })
 
-    return NextResponse.json({
+    return {
       coins,
       total: coins.length,
       long_count: coins.filter(c => c.direction === 'long').length,
@@ -96,10 +94,6 @@ export async function GET() {
       flat_count: coins.filter(c => c.direction === 'flat').length,
       ws_status: safe(wsRaw),
       server_time: Date.now(),
-    })
-  } catch (e) {
-    return NextResponse.json({ error: String(e) }, { status: 500 })
-  } finally {
-    redis.disconnect()
-  }
+    }
+  })
 }

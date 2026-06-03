@@ -11,7 +11,7 @@ import os
 import urllib.request
 from dataclasses import dataclass
 
-from llm_providers import chat_completion
+from llm_providers import chat_completion, cloud_llm_disabled
 
 logger = logging.getLogger(__name__)
 GROQ_MODEL = os.getenv("GROQ_DEBATE_MODEL") or os.getenv("GROQ_LEARN_MODEL", "llama-3.3-70b-versatile")
@@ -96,12 +96,13 @@ class DebateAgent:
     def _llm_synthesize(self, symbol: str, features: dict,
                         context: dict, base: DebateResult) -> DebateResult:
         prompt = self._synthesis_prompt(symbol, features, context, base)
+        local_only = cloud_llm_disabled()
         raw, provider = chat_completion(
             prompt,
             max_tokens=120,
             temperature=0.1,
-            model_pool="final",
-            use_swarm=True,
+            model_pool=None if local_only else "final",
+            use_swarm=not local_only,
         )
         if not raw:
             ollama = self._ollama_url()
@@ -146,7 +147,7 @@ class DebateAgent:
 
     def _ollama_synthesize(self, ollama_url: str, symbol: str, features: dict,
                            context: dict, base: DebateResult) -> DebateResult:
-        model = os.getenv("OLLAMA_MODEL", "llama3.1:8b")
+        model = os.getenv("OLLAMA_MODEL", "llama3.2:3b")
         prompt = self._synthesis_prompt(symbol, features, context, base)
 
         payload = json.dumps({
@@ -162,7 +163,11 @@ class DebateAgent:
             headers={"Content-Type": "application/json"},
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        try:
+            timeout = float(os.getenv("OLLAMA_TIMEOUT", "240"))
+        except ValueError:
+            timeout = 240.0
+        with urllib.request.urlopen(req, timeout=max(60.0, timeout)) as resp:
             result = json.loads(resp.read())
 
         raw = result["message"]["content"].strip()

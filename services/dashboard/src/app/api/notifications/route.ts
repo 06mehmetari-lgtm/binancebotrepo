@@ -10,6 +10,8 @@ export interface Notification {
   level: 'info' | 'success' | 'warning' | 'critical'
   ts: number
   symbol?: string
+  direction?: string
+  confidence?: number
 }
 
 function formatEvent(raw: string): Notification | null {
@@ -19,16 +21,27 @@ function formatEvent(raw: string): Notification | null {
     const id = `${ts}-${e.type}-${e.symbol ?? ''}`
 
     switch (e.type) {
-      case 'signal': {
+      case 'signal':
+      case 'manual_signal': {
         if (!e.symbol || e.direction === 'flat') return null
-        const conf = Math.round((e.confidence ?? 0) * 100)
+        const confRaw = Number(e.confidence ?? 0)
+        const conf = confRaw <= 1 ? confRaw : confRaw / 100
         return {
-          id, type: 'signal', ts, symbol: e.symbol,
+          id, type: e.type, ts, symbol: e.symbol,
+          direction: e.direction,
+          confidence: conf,
           title: `${e.direction === 'long' ? '▲ LONG' : '▼ SHORT'} Signal — ${e.symbol}`,
-          body: `Confidence ${conf}% · ${e.regime ?? ''} regime · source: ${e.source ?? 'signal_engine'}`,
-          level: conf >= 80 ? 'success' : conf >= 70 ? 'info' : 'warning',
+          body: `Confidence ${Math.round(conf * 100)}% · ${e.regime ?? ''} regime · source: ${e.source ?? 'signal_engine'}`,
+          level: conf >= 0.8 ? 'success' : conf >= 0.7 ? 'info' : 'warning',
         }
       }
+      case 'autopsy':
+        return {
+          id, type: 'autopsy', ts, symbol: e.symbol,
+          title: e.title ?? `Autopsy — ${e.symbol ?? '?'}`,
+          body: e.body ?? '',
+          level: (e.level as Notification['level']) ?? 'warning',
+        }
       case 'rsi_alert':
         return {
           id, type: 'rsi_alert', ts, symbol: e.symbol,

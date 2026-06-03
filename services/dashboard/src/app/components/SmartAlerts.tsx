@@ -1,5 +1,7 @@
 'use client'
 import { useEffect, useRef, useState, useCallback } from 'react'
+import { useStreamInvalidate } from '@/hooks/useStream'
+import type { StreamEvent } from '@/lib/stream-events'
 
 interface Alert {
   id: string
@@ -43,48 +45,96 @@ export default function SmartAlerts() {
     } catch { /* denied or unsupported */ }
   }, [])
 
-  const pollSignals = useCallback(async () => {
+  const pushHighConf = useCallback(
+    (n: {
+      symbol: string
+      direction: string
+      confidence: number
+      body?: string
+      ts?: number
+    }) => {
+      if (n.confidence < 0.8 || n.direction === 'flat') return
+      const id = `${n.symbol}-${Math.floor(n.ts ?? Date.now() / 1000)}`
+      if (seenIds.current.has(id)) return
+      seenIds.current.add(id)
+
+      const alert: Alert = {
+        id,
+        symbol: n.symbol,
+        direction: n.direction,
+        confidence: n.confidence,
+        body: n.body ?? '',
+        ts: n.ts ?? Date.now() / 1000,
+      }
+
+      setAlerts(prev => [alert, ...prev].slice(0, 5))
+      fireNativeNotif(alert)
+      setTimeout(() => {
+        setAlerts(prev => prev.filter(a => a.id !== id))
+      }, 8000)
+    },
+    [fireNativeNotif]
+  )
+
+  const hydrateFromCoin = useCallback(
+    async (symbol: string) => {
+      try {
+        const coin = await fetch(`/api/coin/${symbol}`).then(r => r.json())
+        const sig = coin?.signal
+        if (!sig?.direction || sig.direction === 'flat') return
+        pushHighConf({
+          symbol,
+          direction: sig.direction,
+          confidence: sig.confidence ?? 0,
+          body: sig.consensus_reasoning?.slice(0, 80) ?? '',
+        })
+      } catch {
+        /* ignore */
+      }
+    },
+    [pushHighConf]
+  )
+
+  const pollNotifications = useCallback(async () => {
     try {
       const data = await fetch('/api/notifications').then(r => r.json())
       if (!Array.isArray(data)) return
-
-      const highConf = data.filter(
-        (n: { confidence?: number; symbol?: string; direction?: string; level?: string }) =>
-          n.confidence != null && n.confidence >= 0.80 &&
-          n.symbol && n.direction && n.direction !== 'flat'
-      )
-
-      for (const n of highConf) {
-        const id = `${n.symbol}-${n.ts ?? Date.now()}`
-        if (seenIds.current.has(id)) continue
-        seenIds.current.add(id)
-
-        const alert: Alert = {
-          id,
-          symbol: n.symbol,
-          direction: n.direction,
-          confidence: n.confidence,
-          body: n.body ?? '',
-          ts: n.ts ?? Date.now() / 1000,
+      for (const n of data) {
+        if (
+          n.confidence != null &&
+          n.confidence >= 0.8 &&
+          n.symbol &&
+          n.direction &&
+          n.direction !== 'flat'
+        ) {
+          pushHighConf({
+            symbol: n.symbol,
+            direction: n.direction,
+            confidence: n.confidence,
+            body: n.body ?? '',
+            ts: n.ts,
+          })
         }
-
-        setAlerts(prev => [alert, ...prev].slice(0, 5))
-        fireNativeNotif(alert)
-
-        // Auto-dismiss after 8s
-        setTimeout(() => {
-          setAlerts(prev => prev.filter(a => a.id !== id))
-        }, 8000)
       }
-    } catch { /* ignore */ }
-  }, [fireNativeNotif])
+    } catch {
+      /* ignore */
+    }
+  }, [pushHighConf])
+
+  useStreamInvalidate({
+    hints: ['signal'],
+    debounceMs: 500,
+    onEvent: (ev: StreamEvent) => {
+      if (ev.symbol) void hydrateFromCoin(ev.symbol)
+    },
+  })
 
   useEffect(() => {
     requestPermission()
-    pollSignals()
-    const t = setInterval(pollSignals, 30000)
+    pollNotifications()
+    const t = setInterval(pollNotifications, 120000)
     return () => clearInterval(t)
-  }, [pollSignals, requestPermission])
+  }, [pollNotifications, requestPermission])
 
   if (alerts.length === 0) return null
 

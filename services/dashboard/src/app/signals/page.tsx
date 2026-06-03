@@ -1,5 +1,6 @@
 'use client'
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
+import { useStreamInvalidate } from '@/hooks/useStream'
 
 interface Signal {
   symbol: string; direction: string; confidence: number; kelly_fraction: number
@@ -116,16 +117,26 @@ export default function SignalsPage() {
   const [showFlat, setShowFlat] = useState(false)
   const [page, setPage] = useState(0)
 
-  const fetchData = async () => {
+  const fetchData = useCallback(async () => {
     try {
       const data = await fetch('/api/signals').then(r => r.json())
       const arr = (Array.isArray(data) ? data : []) as Signal[]
       setAllSignals(arr.sort((a, b) => b.confidence - a.confidence))
       setLastUpdate(new Date().toLocaleTimeString())
     } catch { } finally { setLoading(false) }
-  }
+  }, [])
 
-  useEffect(() => { fetchData(); const t = setInterval(fetchData, 5000); return () => clearInterval(t) }, [])
+  useEffect(() => {
+    fetchData()
+    const t = setInterval(fetchData, 60000)
+    return () => clearInterval(t)
+  }, [fetchData])
+
+  useStreamInvalidate({
+    hints: ['signal', 'agents'],
+    debounceMs: 500,
+    onEvent: () => { void fetchData() },
+  })
 
   const active = allSignals.filter(s => s.direction !== 'flat')
   const flat = allSignals.filter(s => s.direction === 'flat')

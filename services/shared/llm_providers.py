@@ -14,9 +14,11 @@ import urllib.request
 logger = logging.getLogger(__name__)
 
 DEFAULT_ORDER = (
-    "groq,cerebras,sambanova,openrouter,mistral,together,fireworks,"
-    "cohere,deepseek,huggingface,google,perplexity,zai,anthropic,ollama"
+    "ollama,groq,cerebras,sambanova,openrouter,mistral,together,fireworks,"
+    "cohere,deepseek,huggingface,google,perplexity,zai,anthropic"
 )
+
+_cloud_ip_blocked: bool = False
 
 _OPENAI_PROVIDERS: dict[str, tuple[str, str, str]] = {
     # id -> (key_prefix, base_url, model_env)
@@ -119,6 +121,36 @@ def _is_rate_limited(exc: BaseException) -> bool:
     return any(x in msg for x in ("429", "rate", "quota", "limit", "too many"))
 
 
+def _is_ip_blocked(exc: BaseException) -> bool:
+    global _cloud_ip_blocked
+    if isinstance(exc, urllib.error.HTTPError) and exc.code in (403, 502):
+        msg = http_error_detail(exc).lower()
+        if any(x in msg for x in ("1010", "access denied", "network settings", "cloudflare")):
+            _cloud_ip_blocked = True
+            return True
+    s = str(exc).lower()
+    if "error code: 1010" in s or "access denied" in s:
+        _cloud_ip_blocked = True
+        return True
+    return False
+
+
+def cloud_llm_disabled() -> bool:
+    """VPS IP block (1010) or operator chose local-only LLM."""
+    if _cloud_ip_blocked:
+        return True
+    v = (os.getenv("LLM_OLLAMA_ONLY", "") or os.getenv("LLM_CLOUD_BLOCKED", "")).strip().lower()
+    return v in ("1", "true", "yes", "on")
+
+
+def _urlopen(req: urllib.request.Request, timeout: float):
+    proxy = (os.getenv("HTTPS_PROXY") or os.getenv("HTTP_PROXY") or "").strip()
+    if proxy:
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({"http": proxy, "https": proxy}))
+        return opener.open(req, timeout=timeout)
+    return urllib.request.urlopen(req, timeout=timeout)
+
+
 def _openai_chat(
     *,
     base_url: str,
@@ -145,16 +177,21 @@ def _openai_chat(
     if extra_headers:
         headers.update(extra_headers)
     req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
-    with urllib.request.urlopen(req, timeout=60) as resp:
-        body = json.loads(resp.read())
-    return (body.get("choices") or [{}])[0].get("message", {}).get("content") or ""
+    try:
+        with _urlopen(req, timeout=60) as resp:
+            body = json.loads(resp.read())
+        return (body.get("choices") or [{}])[0].get("message", {}).get("content") or ""
+    except Exception as e:
+        if _is_ip_blocked(e):
+            logger.warning("cloud LLM IP blocked (403/1010) — use Ollama or HTTPS_PROXY")
+        raise
 
 
 def _ollama_chat(prompt: str, max_tokens: int, temperature: float) -> str:
     base = (os.getenv("OLLAMA_URL", "") or "").strip().rstrip("/")
     if not base:
         raise RuntimeError("OLLAMA_URL not set")
-    model = os.getenv("OLLAMA_MODEL", "llama3.1:8b")
+    model = os.getenv("OLLAMA_MODEL", "llama3.2:3b")
     payload = json.dumps(
         {
             "model": model,
@@ -173,9 +210,19 @@ def _ollama_chat(prompt: str, max_tokens: int, temperature: float) -> str:
         timeout = float(os.getenv("OLLAMA_TIMEOUT", "180"))
     except ValueError:
         timeout = 180.0
-    with urllib.request.urlopen(req, timeout=max(30.0, timeout)) as resp:
+    with _urlopen(req, timeout=max(30.0, timeout)) as resp:
         body = json.loads(resp.read())
     return body.get("message", {}).get("content") or ""
+
+
+def _try_ollama(prompt: str, max_tokens: int, temperature: float) -> tuple[str | None, str | None]:
+    try:
+        text = _ollama_chat(prompt, max_tokens, temperature)
+        if text.strip():
+            return text, "ollama"
+    except Exception as e:
+        logger.warning("ollama: %s", e)
+    return None, None
 
 
 def _cohere_chat(api_key: str, model: str, prompt: str, max_tokens: int, temperature: float) -> str:
@@ -273,6 +320,8 @@ def _try_openai_provider(
         except Exception as e:
             if _is_rate_limited(e):
                 continue
+            if _is_ip_blocked(e):
+                return None, None
             logger.debug("%s: %s", label, e)
     return None, None
 
@@ -291,7 +340,16 @@ def chat_completion(
     model_pool: groq pool id (fast|main|reason|risk|learning|final|vision|fallback).
     use_swarm: parallel multi-model consensus (debate JSON).
     """
-    if model_pool and collect_keys("GROQ_API_KEY"):
+    order = provider_order()
+    ollama_first = bool(order) and order[0] == "ollama"
+
+    # VPS/datacenter IP block: never waste time on Groq swarm before Ollama
+    if ollama_first or cloud_llm_disabled():
+        text, label = _try_ollama(prompt, max_tokens, temperature)
+        if text:
+            return text, label
+
+    if not cloud_llm_disabled() and model_pool and collect_keys("GROQ_API_KEY"):
         try:
             import groq_orchestrator as groq
 
@@ -307,22 +365,29 @@ def chat_completion(
             if text:
                 return text, label
         except Exception as e:
+            if _is_ip_blocked(e):
+                text, label = _try_ollama(prompt, max_tokens, temperature)
+                if text:
+                    return text, label
             logger.debug("groq pool %s: %s", model_pool, e)
 
-    for pid in provider_order():
+    for pid in order:
         if pid == "ollama":
-            try:
-                text = _ollama_chat(prompt, max_tokens, temperature)
-                if text.strip():
-                    return text, "ollama"
-            except Exception as e:
-                logger.debug("ollama: %s", e)
+            if ollama_first or cloud_llm_disabled():
+                continue
+            text, label = _try_ollama(prompt, max_tokens, temperature)
+            if text:
+                return text, label
             continue
 
         if pid in _OPENAI_PROVIDERS:
             text, label = _try_openai_provider(pid, prompt, max_tokens, temperature, model_override)
             if text:
                 return text, label
+            if cloud_llm_disabled():
+                text, label = _try_ollama(prompt, max_tokens, temperature)
+                if text:
+                    return text, label
             continue
 
         if pid == "cohere":

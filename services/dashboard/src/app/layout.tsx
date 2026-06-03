@@ -3,6 +3,8 @@ import './globals.css'
 import { usePathname } from 'next/navigation'
 import { useState, useEffect, useRef, useCallback } from 'react'
 import SmartAlerts from './components/SmartAlerts'
+import AlertPanel from './components/AlertPanel'
+import { useStreamInvalidate } from '@/hooks/useStream'
 
 const NAV_LINKS = [
   { href: '/', label: 'Dashboard' },
@@ -11,6 +13,8 @@ const NAV_LINKS = [
   { href: '/learning', label: '📈 AI Öğrenme' },
   { href: '/chat', label: '💬 Chat' },
   { href: '/positions', label: '💼 Positions' },
+  { href: '/autopsy', label: '🔬 Otopsi' },
+  { href: '/compare', label: '⚖ Compare' },
   { href: '/scanner', label: '🔍 Scanner' },
   { href: '/markets', label: 'Markets' },
   { href: '/signals', label: 'Signals' },
@@ -137,11 +141,21 @@ function Nav() {
     const saved = localStorage.getItem('notif_last_seen')
     if (saved) setLastSeenTs(Number(saved))
 
-    fetchTicker(); fetchNotifications()
-    const t1 = setInterval(fetchTicker, 10000)
-    const t2 = setInterval(fetchNotifications, 10000)
+    fetchTicker()
+    fetchNotifications()
+    const t1 = setInterval(fetchTicker, 30000)
+    const t2 = setInterval(fetchNotifications, 60000)
     return () => { clearInterval(t1); clearInterval(t2) }
   }, [fetchTicker, fetchNotifications])
+
+  useStreamInvalidate({
+    hints: ['signal', 'agents'],
+    debounceMs: 800,
+    onEvent: () => {
+      fetchTicker()
+      fetchNotifications()
+    },
+  })
 
   // Close notification panel on outside click
   useEffect(() => {
@@ -303,6 +317,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <Nav />
         <main className="p-3 md:p-4 lg:p-6">{children}</main>
         <SmartAlerts />
+        <AlertPanel />
       </body>
     </html>
   )
