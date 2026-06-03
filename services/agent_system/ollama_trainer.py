@@ -192,6 +192,15 @@ async def _collect_knowledge(redis: aioredis.Redis) -> str:
     except Exception as e:
         log.debug(f"Knowledge collect [consensus]: {e}")
 
+    # Historical trade wisdom from PostgreSQL (wisdom_extractor writes this every 60min)
+    try:
+        wisdom_text = await redis.get("wisdom:text")
+        if wisdom_text:
+            text = wisdom_text.decode() if isinstance(wisdom_text, bytes) else wisdom_text
+            sections.append(f"\n### TARİHSEL TRADE ANALİZİ (Tüm Geçmiş)\n{text}")
+    except Exception as e:
+        log.debug(f"Knowledge collect [wisdom]: {e}")
+
     # Hardcoded market mechanics — all indicators (always included)
     sections.append("""
 ### PİYASA MEKANİKLERİ VE İNDİKATÖR KILAVUZU (TEMEL BİLGİ)

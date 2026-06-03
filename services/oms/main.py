@@ -4,8 +4,9 @@ import logging
 import os
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
+import asyncpg
 import redis.asyncio as aioredis
 
 from order_manager import OrderManager
@@ -31,9 +32,19 @@ SAR_KELLY_DISCOUNT        = 0.80
 SAR_MIN_LOSS_PCT          = -1.5
 SAR_POSITION_MONITOR_INTERVAL = 5
 
+_DB_CONFIG = dict(
+    host     = os.getenv("POSTGRES_HOST",     "postgres"),
+    port     = int(os.getenv("POSTGRES_PORT", "5432")),
+    database = os.getenv("POSTGRES_DB",       "prometheus_trading"),
+    user     = os.getenv("POSTGRES_USER",     "prometheus"),
+    password = os.getenv("POSTGRES_PASSWORD", "prometheus123"),
+    command_timeout = 10,
+)
+
 # Running daily P&L (reset at UTC midnight)
 _daily_pnl      = 0.0
 _last_reset_day = -1
+_db_pool: asyncpg.Pool | None = None
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -112,6 +123,63 @@ async def request_immunity_approval(redis: aioredis.Redis, order_dict: dict) -> 
         await asyncio.sleep(0.1)
     log.warning("Immunity system did not respond — rejecting order")
     return False
+
+
+async def _write_trade_to_db(trade: dict):
+    """Persist closed trade to PostgreSQL for permanent memory (wisdom_extractor reads this)."""
+    global _db_pool
+    if _db_pool is None:
+        return
+    try:
+        entry_ts = datetime.fromtimestamp(float(trade.get("entry_time", 0)), tz=timezone.utc)
+        exit_ts  = datetime.fromtimestamp(float(trade.get("closed_at",  time.time())), tz=timezone.utc)
+        hold_sec = float(trade.get("hold_seconds", 0))
+        side     = "BUY" if trade.get("direction") == "long" else "SELL"
+        # regime_at_entry is VARCHAR(10) — store full regime in autopsy_result JSONB
+        regime_short = str(trade.get("regime", "unknown"))[:10]
+        autopsy = {
+            "regime":       trade.get("regime", "unknown"),
+            "close_reason": trade.get("close_reason", "unknown"),
+        }
+        await _db_pool.execute("""
+            INSERT INTO trades (
+                trade_id, symbol, side,
+                entry_price, exit_price,
+                pnl_usdt, pnl_pct,
+                entry_time, exit_time, hold_duration,
+                regime_at_entry, drift_at_entry, crisis_level,
+                confidence, signal_source,
+                is_shadow, autopsy_done, autopsy_result
+            ) VALUES (
+                $1, $2, $3,
+                $4, $5,
+                $6, $7,
+                $8, $9, $10,
+                $11, $12, $13,
+                $14, $15,
+                FALSE, TRUE, $16
+            )
+            ON CONFLICT (trade_id) DO NOTHING
+        """,
+            trade.get("trade_id"),
+            trade.get("symbol"),
+            side,
+            trade.get("entry_price"),
+            trade.get("exit_price"),
+            trade.get("pnl_usdt"),
+            trade.get("pnl_pct"),
+            entry_ts,
+            exit_ts,
+            timedelta(seconds=hold_sec),
+            regime_short,
+            trade.get("drift_status", "STABLE")[:20],
+            int(trade.get("crisis_level", 0)),
+            trade.get("confidence"),
+            trade.get("source", "oms")[:50],
+            json.dumps(autopsy),
+        )
+    except Exception as e:
+        log.warning(f"[DB] trade write failed for {trade.get('trade_id')}: {e}")
 
 
 async def close_position(
@@ -217,6 +285,9 @@ async def close_position(
             await redis.expire(coin_key, 86400 * 30)
         except Exception as _e:
             log.warning(f"coin:stats update failed for {symbol}: {_e}")
+
+        # Permanent PostgreSQL storage — wisdom_extractor reads this for long-term learning
+        await _write_trade_to_db(trade)
 
         outcome = "WIN" if pnl_pct > 0 else "LOSS"
         log.info(
@@ -573,12 +644,21 @@ async def cleanup_duplicate_positions(redis: aioredis.Redis):
 
 
 async def main():
+    global _db_pool
     mode = "DRY_RUN" if DRY_RUN else "LIVE"
     log.info(
         f"OMS starting — {mode} | portfolio=${PORTFOLIO_VALUE:.0f} "
         f"| max_position={MAX_POSITION_PCT:.0%}"
     )
     redis = await aioredis.from_url(REDIS_URL)
+
+    try:
+        _db_pool = await asyncpg.create_pool(**_DB_CONFIG, min_size=1, max_size=3)
+        log.info("[OMS] PostgreSQL pool ready — trades will be persisted")
+    except Exception as e:
+        log.warning(f"[OMS] PostgreSQL unavailable — trades will not be persisted: {e}")
+        _db_pool = None
+
     await cleanup_duplicate_positions(redis)
 
     symbols:      list[str] = []
