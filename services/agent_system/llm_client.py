@@ -101,38 +101,160 @@ def _set_cooldown(key: str, seconds: float = RATE_LIMIT_COOLDOWN):
     log.warning(f"  ↳ key ...{key[-4:]} cooldown {int(seconds)}s")
 
 
+# ── Provider sırası: hızlı/ücretsiz önce, ücretli sonra, Ollama en sonda ─────
+# 400/404 → aynı provider'ın models[] listesindeki sonraki model denenir
+# 429 → o key 65s bekleme; aynı provider'ın diğer key'i denenir
+# 402/403 → 24 saat bloke
 _PROVIDERS = [
+    # ── Tier-1: Çok hızlı, çok key, ücretsiz ────────────────────────────────
     {
         "name": "Groq",
         "url": "https://api.groq.com/openai/v1/chat/completions",
         "key_env": "GROQ_API_KEY",
-        # Primary model + instant fallback tried in order on 400/404
-        "models": ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "llama3-70b-8192"],
-        "model": "llama-3.3-70b-versatile",
+        "models": [
+            "meta-llama/llama-4-scout-17b-16e-instruct",
+            "meta-llama/llama-4-maverick-17b-128e-instruct",
+            "llama-3.3-70b-versatile",
+            "llama-3.1-70b-versatile",
+            "llama-3.1-8b-instant",
+            "gemma2-9b-it",
+        ],
+        "model": "meta-llama/llama-4-scout-17b-16e-instruct",
         "headers": {},
     },
     {
         "name": "Cerebras",
         "url": "https://api.cerebras.ai/v1/chat/completions",
         "key_env": "CEREBRAS_API_KEY",
-        # Correct Cerebras model IDs use dots, not hyphens: llama3.3-70b
-        "models": ["llama3.3-70b", "llama3.1-70b", "llama3.1-8b"],
+        "models": [
+            "llama-4-scout-17b",
+            "llama3.3-70b",
+            "llama3.1-70b",
+            "llama3.1-8b",
+        ],
         "model": "llama3.3-70b",
         "headers": {},
     },
+    # ── Tier-2: Ücretsiz/ucuz, iyi kapasite ─────────────────────────────────
     {
         "name": "SambaNova",
         "url": "https://api.sambanova.ai/v1/chat/completions",
         "key_env": "SAMBANOVA_API_KEY",
-        "models": ["DeepSeek-V3.1", "Meta-Llama-3.3-70B-Instruct"],
+        "models": [
+            "DeepSeek-V3.1",
+            "Meta-Llama-3.3-70B-Instruct",
+            "Meta-Llama-3.1-405B-Instruct",
+            "Meta-Llama-3.1-70B-Instruct",
+        ],
         "model": "DeepSeek-V3.1",
         "headers": {},
     },
     {
+        "name": "Together",
+        "url": "https://api.together.xyz/v1/chat/completions",
+        "key_env": "TOGETHER_API_KEY",
+        "models": [
+            "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+            "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo",
+            "Qwen/Qwen2.5-72B-Instruct-Turbo",
+            "mistralai/Mixtral-8x22B-Instruct-v0.1",
+            "deepseek-ai/DeepSeek-V3",
+        ],
+        "model": "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+        "headers": {},
+    },
+    {
+        "name": "Fireworks",
+        "url": "https://api.fireworks.ai/inference/v1/chat/completions",
+        "key_env": "FIREWORKS_API_KEY",
+        "models": [
+            "accounts/fireworks/models/llama-v3p3-70b-instruct",
+            "accounts/fireworks/models/llama-v3p1-70b-instruct",
+            "accounts/fireworks/models/deepseek-v3",
+            "accounts/fireworks/models/mixtral-8x22b-instruct",
+            "accounts/fireworks/models/qwen2p5-72b-instruct",
+        ],
+        "model": "accounts/fireworks/models/llama-v3p3-70b-instruct",
+        "headers": {},
+    },
+    {
+        "name": "Deepinfra",
+        "url": "https://api.deepinfra.com/v1/openai/chat/completions",
+        "key_env": "DEEPINFRA_API_KEY",
+        "models": [
+            "meta-llama/Llama-3.3-70B-Instruct",
+            "meta-llama/Meta-Llama-3.1-70B-Instruct",
+            "Qwen/Qwen2.5-72B-Instruct",
+            "deepseek-ai/DeepSeek-V3",
+            "mistralai/Mistral-7B-Instruct-v0.3",
+            "google/gemma-2-27b-it",
+        ],
+        "model": "meta-llama/Llama-3.3-70B-Instruct",
+        "headers": {},
+    },
+    {
+        "name": "NVIDIA",
+        "url": "https://integrate.api.nvidia.com/v1/chat/completions",
+        "key_env": "NVIDIA_API_KEY",
+        "models": [
+            "meta/llama-3.3-70b-instruct",
+            "meta/llama-3.1-70b-instruct",
+            "mistralai/mixtral-8x22b-instruct-v0.1",
+            "qwen/qwen2.5-72b-instruct",
+            "deepseek-ai/deepseek-v3",
+        ],
+        "model": "meta/llama-3.3-70b-instruct",
+        "headers": {},
+    },
+    {
+        "name": "Mistral",
+        "url": "https://api.mistral.ai/v1/chat/completions",
+        "key_env": "MISTRAL_API_KEY",
+        "models": [
+            "mistral-large-latest",
+            "mistral-small-latest",
+            "open-mistral-nemo",
+            "open-mistral-7b",
+        ],
+        "model": "mistral-small-latest",
+        "headers": {},
+    },
+    {
+        "name": "Novita",
+        "url": "https://api.novita.ai/v3/openai/chat/completions",
+        "key_env": "NOVITA_API_KEY",
+        "models": [
+            "meta-llama/llama-3.3-70b-instruct",
+            "meta-llama/llama-3.1-70b-instruct",
+            "qwen/qwen2.5-72b-instruct",
+            "deepseek/deepseek-v3",
+        ],
+        "model": "meta-llama/llama-3.3-70b-instruct",
+        "headers": {},
+    },
+    {
+        "name": "Kluster",
+        "url": "https://api.kluster.ai/v1/chat/completions",
+        "key_env": "KLUSTER_API_KEY",
+        "models": [
+            "klusterai/Meta-Llama-3.3-70B-Instruct-Turbo",
+            "klusterai/Meta-Llama-3.1-405B-Instruct-Turbo",
+        ],
+        "model": "klusterai/Meta-Llama-3.3-70B-Instruct-Turbo",
+        "headers": {},
+    },
+    # ── Tier-3: Özel modeller / farklı güçlü yönler ─────────────────────────
+    {
         "name": "OpenRouter",
         "url": "https://openrouter.ai/api/v1/chat/completions",
         "key_env": "OPENROUTER_API_KEY",
-        "models": ["meta-llama/llama-3.3-70b-instruct:free", "mistralai/mistral-7b-instruct:free"],
+        "models": [
+            "meta-llama/llama-3.3-70b-instruct:free",
+            "qwen/qwen-2.5-72b-instruct:free",
+            "google/gemma-2-9b-it:free",
+            "mistralai/mistral-7b-instruct:free",
+            "deepseek/deepseek-v3:free",
+        ],
         "model": "meta-llama/llama-3.3-70b-instruct:free",
         "headers": {
             "HTTP-Referer": "https://prometheus-trading.io",
@@ -140,18 +262,58 @@ _PROVIDERS = [
         },
     },
     {
+        "name": "Perplexity",
+        "url": "https://api.perplexity.ai/chat/completions",
+        "key_env": "PERPLEXITY_API_KEY",
+        "models": [
+            "llama-3.1-sonar-large-128k-online",
+            "llama-3.1-sonar-small-128k-online",
+            "llama-3.1-70b-instruct",
+        ],
+        "model": "llama-3.1-sonar-large-128k-online",
+        "headers": {},
+    },
+    {
+        "name": "XAI",
+        "url": "https://api.x.ai/v1/chat/completions",
+        "key_env": "XAI_API_KEY",
+        "models": ["grok-3-mini-fast", "grok-3-mini", "grok-beta"],
+        "model": "grok-3-mini-fast",
+        "headers": {},
+    },
+    {
+        "name": "HuggingFace",
+        "url": "https://api-inference.huggingface.co/v1/chat/completions",
+        "key_env": "HUGGINGFACE_API_KEY",
+        "models": [
+            "Qwen/Qwen2.5-72B-Instruct",
+            "meta-llama/Llama-3.3-70B-Instruct",
+            "mistralai/Mistral-7B-Instruct-v0.3",
+        ],
+        "model": "Qwen/Qwen2.5-72B-Instruct",
+        "headers": {},
+    },
+    {
         "name": "Cohere",
         "url": "https://api.cohere.com/compatibility/v1/chat/completions",
         "key_env": "COHERE_API_KEY",
-        "models": ["command-r-plus-08-2024", "command-r-08-2024"],
+        "models": ["command-r-plus-08-2024", "command-r-08-2024", "command-light"],
         "model": "command-r-plus-08-2024",
+        "headers": {},
+    },
+    {
+        "name": "AI21",
+        "url": "https://api.ai21.com/studio/v1/chat/completions",
+        "key_env": "AI21_API_KEY",
+        "models": ["jamba-1.5-mini", "jamba-1.5-large"],
+        "model": "jamba-1.5-mini",
         "headers": {},
     },
     {
         "name": "DeepSeek",
         "url": "https://api.deepseek.com/v1/chat/completions",
         "key_env": "DEEPSEEK_API_KEY",
-        "models": ["deepseek-chat", "deepseek-coder"],
+        "models": ["deepseek-chat", "deepseek-reasoner"],
         "model": "deepseek-chat",
         "headers": {},
     },
@@ -159,7 +321,7 @@ _PROVIDERS = [
         "name": "ZAI",
         "url": os.getenv("ZAI_BASE_URL", "https://api.z.ai/api/paas/v4") + "/chat/completions",
         "key_env": "ZAI_API_KEY",
-        "models": [os.getenv("ZAI_MODEL", "GLM-4.5")],
+        "models": [os.getenv("ZAI_MODEL", "GLM-4.5"), "GLM-4-Flash", "GLM-4-Air"],
         "model": os.getenv("ZAI_MODEL", "GLM-4.5"),
         "headers": {},
     },

@@ -102,7 +102,7 @@ async def _call_openai_compat(
 
 
 def _get_providers() -> list[dict]:
-    """Return all configured providers with their keys."""
+    """Return all configured providers with a key present in env."""
     providers = []
 
     def add(name, url, key_env, model, extra=None):
@@ -110,16 +110,25 @@ def _get_providers() -> list[dict]:
         if key:
             providers.append({"name": name, "url": url, "key": key, "model": model, "extra": extra or {}})
 
-    add("Groq",       "https://api.groq.com/openai/v1/chat/completions",             "GROQ_API_KEY",       "llama-3.3-70b-versatile")
-    add("Cerebras",   "https://api.cerebras.ai/v1/chat/completions",                 "CEREBRAS_API_KEY",   "llama3.3-70b")
-    add("SambaNova",  "https://api.sambanova.ai/v1/chat/completions",                "SAMBANOVA_API_KEY",  "DeepSeek-V3.1")
-    add("OpenRouter", "https://openrouter.ai/api/v1/chat/completions",               "OPENROUTER_API_KEY", "meta-llama/llama-3.3-70b-instruct:free",
-        {"HTTP-Referer": "https://prometheus-trading.io", "X-Title": "Prometheus"})
-    add("Cohere",     "https://api.cohere.com/compatibility/v1/chat/completions",    "COHERE_API_KEY",     "command-r-plus-08-2024")
-    add("DeepSeek",   "https://api.deepseek.com/v1/chat/completions",                "DEEPSEEK_API_KEY",   "deepseek-chat")
-    add("ZAI",        f'{os.getenv("ZAI_BASE_URL","https://api.z.ai/api/paas/v4")}/chat/completions', "ZAI_API_KEY", os.getenv("ZAI_MODEL", "GLM-4.5"))
-    # HuggingFace: sunucudan ulaşılamıyor (DNS/firewall), devre dışı
-    # add("HuggingFace","https://api-inference.huggingface.co/v1/chat/completions", "HUGGINGFACE_API_KEY","Qwen/Qwen2.5-7B-Instruct")
+    _OR = {"HTTP-Referer": "https://prometheus-trading.io", "X-Title": "Prometheus"}
+    add("Groq",        "https://api.groq.com/openai/v1/chat/completions",                   "GROQ_API_KEY",        "meta-llama/llama-4-scout-17b-16e-instruct")
+    add("Cerebras",    "https://api.cerebras.ai/v1/chat/completions",                       "CEREBRAS_API_KEY",    "llama3.3-70b")
+    add("SambaNova",   "https://api.sambanova.ai/v1/chat/completions",                      "SAMBANOVA_API_KEY",   "DeepSeek-V3.1")
+    add("Together",    "https://api.together.xyz/v1/chat/completions",                      "TOGETHER_API_KEY",    "meta-llama/Llama-3.3-70B-Instruct-Turbo")
+    add("Fireworks",   "https://api.fireworks.ai/inference/v1/chat/completions",            "FIREWORKS_API_KEY",   "accounts/fireworks/models/llama-v3p3-70b-instruct")
+    add("Deepinfra",   "https://api.deepinfra.com/v1/openai/chat/completions",              "DEEPINFRA_API_KEY",   "meta-llama/Llama-3.3-70B-Instruct")
+    add("NVIDIA",      "https://integrate.api.nvidia.com/v1/chat/completions",              "NVIDIA_API_KEY",      "meta/llama-3.3-70b-instruct")
+    add("Mistral",     "https://api.mistral.ai/v1/chat/completions",                        "MISTRAL_API_KEY",     "mistral-small-latest")
+    add("Novita",      "https://api.novita.ai/v3/openai/chat/completions",                  "NOVITA_API_KEY",      "meta-llama/llama-3.3-70b-instruct")
+    add("Kluster",     "https://api.kluster.ai/v1/chat/completions",                        "KLUSTER_API_KEY",     "klusterai/Meta-Llama-3.3-70B-Instruct-Turbo")
+    add("OpenRouter",  "https://openrouter.ai/api/v1/chat/completions",                     "OPENROUTER_API_KEY",  "meta-llama/llama-3.3-70b-instruct:free", _OR)
+    add("Perplexity",  "https://api.perplexity.ai/chat/completions",                        "PERPLEXITY_API_KEY",  "llama-3.1-sonar-large-128k-online")
+    add("XAI",         "https://api.x.ai/v1/chat/completions",                              "XAI_API_KEY",         "grok-3-mini-fast")
+    add("HuggingFace", "https://api-inference.huggingface.co/v1/chat/completions",          "HUGGINGFACE_API_KEY", "Qwen/Qwen2.5-72B-Instruct")
+    add("Cohere",      "https://api.cohere.com/compatibility/v1/chat/completions",          "COHERE_API_KEY",      "command-r-plus-08-2024")
+    add("AI21",        "https://api.ai21.com/studio/v1/chat/completions",                   "AI21_API_KEY",        "jamba-1.5-mini")
+    add("DeepSeek",    "https://api.deepseek.com/v1/chat/completions",                      "DEEPSEEK_API_KEY",    "deepseek-chat")
+    add("ZAI",         f'{os.getenv("ZAI_BASE_URL","https://api.z.ai/api/paas/v4")}/chat/completions', "ZAI_API_KEY", os.getenv("ZAI_MODEL", "GLM-4.5"))
     return providers
 
 
