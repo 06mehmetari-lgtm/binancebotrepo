@@ -1,5 +1,24 @@
 # Ücretsiz Groq/Cerebras (VPS → ev internet çıkışı)
 
+## Neden 100 “ücretsiz proxy sitesi” yok?
+
+- `GROQ_API_KEY` (gsk_…) o proxy’lere gider → **çalınma riski**
+- Çoğu HTTP only / ölü / Groq HTTPS’i desteklemez
+- Cloudflare yine 1010 verir
+
+**Güvenli rotasyon:** zaten var → `GROQ_API_KEY_1..10` + `CEREBRAS_API_KEY_1..2`  
+**Bypass rotasyon:** `PROXY_URL_1..N` veya `LLM_RELAY_URL_1..N` (kendi listeniz, max 64)
+
+```bash
+# .env örnek — 3 ev/cloudflared relay, biri düşerse diğeri
+LLM_RELAY_URL_1=https://tunnel-a.trycloudflare.com
+LLM_RELAY_URL_2=https://tunnel-b.trycloudflare.com
+LLM_RELAY_SECRET=aynı-sifre
+PROXY_URL_1=socks5://127.0.0.1:1080
+```
+
+---
+
 **Ücretli residential proxy yok.** Ücretsiz yollar:
 
 | Yöntem | Maliyet | Ev PC açık kalmalı |

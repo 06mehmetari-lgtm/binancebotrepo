@@ -137,6 +137,13 @@ def _is_ip_blocked(exc: BaseException) -> bool:
 
 def cloud_bypass_configured() -> bool:
     """Proxy, SOCKS, or LLM relay → Groq/Cerebras can work from blocked VPS."""
+    try:
+        import proxy_pool as pp
+
+        if pp.proxy_urls() or pp.relay_urls():
+            return True
+    except ImportError:
+        pass
     if (os.getenv("HTTPS_PROXY") or os.getenv("HTTP_PROXY") or os.getenv("ALL_PROXY") or "").strip():
         return True
     if (os.getenv("LLM_RELAY_URL") or "").strip():
@@ -157,6 +164,14 @@ def cloud_llm_disabled() -> bool:
 
 
 def groq_api_base() -> str:
+    try:
+        import proxy_pool as pp
+
+        relays = pp.relay_bases_for("groq")
+        if relays:
+            return relays[0]
+    except ImportError:
+        pass
     relay = (os.getenv("LLM_RELAY_URL") or "").strip().rstrip("/")
     if relay:
         return f"{relay}/groq/v1"
@@ -164,52 +179,94 @@ def groq_api_base() -> str:
 
 
 def cerebras_api_base() -> str:
+    try:
+        import proxy_pool as pp
+
+        relays = pp.relay_bases_for("cerebras")
+        if relays:
+            return relays[0]
+    except ImportError:
+        pass
     relay = (os.getenv("LLM_RELAY_URL") or "").strip().rstrip("/")
     if relay:
         return f"{relay}/cerebras/v1"
     return (os.getenv("CEREBRAS_API_BASE") or "https://api.cerebras.ai/v1").strip().rstrip("/")
 
 
-def _provider_base_url(pid: str, default: str) -> str:
+def _provider_base_candidates(pid: str, default: str) -> list[str]:
+    try:
+        import proxy_pool as pp
+
+        if pid in ("groq", "cerebras"):
+            relays = pp.relay_bases_for(pid)
+            if relays:
+                return relays
+    except ImportError:
+        pass
     if pid == "groq":
-        return groq_api_base()
+        return [groq_api_base()]
     if pid == "cerebras":
-        return cerebras_api_base()
-    return default
+        return [cerebras_api_base()]
+    return [default]
+
+
+def _urlopen_one(req: urllib.request.Request, timeout: float, proxy: str | None):
+    if not proxy:
+        return urllib.request.urlopen(req, timeout=timeout)
+    if proxy.lower().startswith("socks"):
+        import socks  # type: ignore[import-untyped]
+        from urllib.parse import urlparse
+
+        p = urlparse(proxy)
+        host = p.hostname or "127.0.0.1"
+        port = p.port or 1080
+        scheme = (p.scheme or "socks5").lower()
+        kind = socks.SOCKS5 if "5" in scheme else socks.SOCKS4
+        socks.set_default_proxy(kind, host, port)
+        import socket
+
+        socket.socket = socks.socksocket  # type: ignore[misc, assignment]
+        return urllib.request.urlopen(req, timeout=timeout)
+    opener = urllib.request.build_opener(
+        urllib.request.ProxyHandler({"http": proxy, "https": proxy})
+    )
+    return opener.open(req, timeout=timeout)
 
 
 def _urlopen(req: urllib.request.Request, timeout: float):
-    proxy = (
-        os.getenv("HTTPS_PROXY")
-        or os.getenv("HTTP_PROXY")
-        or os.getenv("ALL_PROXY")
-        or ""
-    ).strip()
-    if proxy.lower().startswith("socks"):
+    try:
+        import proxy_pool as pp
+
+        attempts = pp.all_proxy_attempts()
+    except ImportError:
+        attempts = [
+            (
+                os.getenv("HTTPS_PROXY")
+                or os.getenv("HTTP_PROXY")
+                or os.getenv("ALL_PROXY")
+                or None
+            )
+        ]
+    last: BaseException | None = None
+    for proxy in attempts:
         try:
-            import socks  # type: ignore[import-untyped]
-            from urllib.parse import urlparse
-
-            p = urlparse(proxy)
-            host = p.hostname or "127.0.0.1"
-            port = p.port or 1080
-            scheme = (p.scheme or "socks5").lower()
-            kind = socks.SOCKS5 if "5" in scheme else socks.SOCKS4
-            socks.set_default_proxy(kind, host, port)
-            import socket
-
-            socket.socket = socks.socksocket  # type: ignore[misc, assignment]
-            return urllib.request.urlopen(req, timeout=timeout)
-        except ImportError:
-            logger.warning("SOCKS proxy set but PySocks missing — pip install PySocks")
+            return _urlopen_one(req, timeout, proxy)
         except Exception as e:
-            logger.warning("SOCKS proxy failed: %s", e)
-    if proxy:
-        opener = urllib.request.build_opener(
-            urllib.request.ProxyHandler({"http": proxy, "https": proxy})
-        )
-        return opener.open(req, timeout=timeout)
-    return urllib.request.urlopen(req, timeout=timeout)
+            last = e
+            if proxy:
+                try:
+                    import proxy_pool as pp
+
+                    pp.mark_proxy_bad(proxy)
+                    logger.warning("proxy failed, next: %s — %s", proxy[:40], e)
+                except ImportError:
+                    pass
+            elif _is_ip_blocked(e):
+                break
+            continue
+    if last:
+        raise last
+    raise RuntimeError("no proxy attempts")
 
 
 def _openai_chat(
@@ -350,9 +407,9 @@ def _try_openai_provider(
     model_override: str | None,
 ) -> tuple[str | None, str | None]:
     prefix, default_base, model_env = _OPENAI_PROVIDERS[pid]
-    base = _provider_base_url(pid, default_base)
+    bases = _provider_base_candidates(pid, default_base)
     if pid == "zai":
-        base = os.getenv("ZAI_BASE_URL", base)
+        bases = [os.getenv("ZAI_BASE_URL", bases[0])]
     relay_secret = (os.getenv("LLM_RELAY_SECRET") or "").strip()
     keys = collect_keys(prefix)
     if pid == "google":
@@ -366,29 +423,40 @@ def _try_openai_provider(
             "HTTP-Referer": os.getenv("OPENROUTER_REFERER", "https://prometheus.local"),
             "X-Title": "Prometheus Trading",
         }
-    if relay_secret and (os.getenv("LLM_RELAY_URL") or "").strip():
+    if relay_secret:
         extra = dict(extra or {})
         extra["X-Relay-Secret"] = relay_secret
-    for idx, key in enumerate(keys):
-        label = pid if len(keys) == 1 else f"{pid}#{idx + 1}"
-        try:
-            text = _openai_chat(
-                base_url=base,
-                api_key=key,
-                model=model,
-                prompt=prompt,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                extra_headers=extra,
-            )
-            if text.strip():
-                return text, label
-        except Exception as e:
-            if _is_rate_limited(e):
-                continue
-            if _is_ip_blocked(e):
-                return None, None
-            logger.debug("%s: %s", label, e)
+    for base in bases:
+        for idx, key in enumerate(keys):
+            label = pid if len(keys) == 1 else f"{pid}#{idx + 1}"
+            if len(bases) > 1:
+                label = f"{label}@{base.split('/')[2][:20]}"
+            try:
+                text = _openai_chat(
+                    base_url=base,
+                    api_key=key,
+                    model=model,
+                    prompt=prompt,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    extra_headers=extra,
+                )
+                if text.strip():
+                    return text, label
+            except Exception as e:
+                if _is_rate_limited(e):
+                    continue
+                if _is_ip_blocked(e):
+                    try:
+                        import proxy_pool as pp
+
+                        for r in pp.relay_urls():
+                            if r.rstrip("/") in base:
+                                pp.mark_relay_bad(r)
+                    except ImportError:
+                        pass
+                    continue
+                logger.debug("%s: %s", label, e)
     return None, None
 
 
