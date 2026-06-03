@@ -48,6 +48,7 @@ async def limits_listener(redis: aioredis.Redis):
         while True:
             await bootstrap_limits(redis)
             immunity.reevaluate_halt()
+            await write_immunity_status(redis)
             await asyncio.sleep(5)
 
     async def on_message():
@@ -56,6 +57,7 @@ async def limits_listener(redis: aioredis.Redis):
                 continue
             await bootstrap_limits(redis)
             immunity.reevaluate_halt()
+            await write_immunity_status(redis)
             lim = get_active_limits()
             log.info(
                 "Risk limits reloaded — leverage=%s pos=%s%% daily_loss=%s%% open=%s",
@@ -67,6 +69,7 @@ async def limits_listener(redis: aioredis.Redis):
 
     await bootstrap_limits(redis)
     immunity.reevaluate_halt()
+    await write_immunity_status(redis)
     await asyncio.gather(poll(), on_message())
 
 
@@ -143,32 +146,37 @@ async def position_close_listener(redis: aioredis.Redis):
             log.error(f"Position close listener error: {e}")
 
 
+async def write_immunity_status(redis: aioredis.Redis) -> None:
+    """Publish current limits + counters to Redis (dashboard /system reads this)."""
+    expire_stale_halt()
+    lim = get_active_limits()
+    status = {
+        "max_position_pct": round(lim.max_position_pct * 100, 2),
+        "max_daily_loss_pct": round(lim.max_daily_loss_pct * 100, 2),
+        "max_leverage": lim.max_leverage,
+        "max_open_positions": lim.max_open_positions,
+        "min_confidence_pct": round(lim.min_immunity_confidence * 100, 2),
+        "min_signal_confidence_pct": round(lim.min_signal_confidence * 100, 2),
+        "max_trades_per_day": lim.max_trades_per_day,
+        "system_halted": immunity._system_halted,
+        "circuit_open": breaker.is_open,
+        "daily_trades": immunity._daily_trades,
+        "open_positions": immunity._open_positions,
+        "daily_loss_pct": round(immunity._daily_loss * 100, 3),
+        "updated_at": time.time(),
+        "limits_updated_at": lim.updated_at,
+        "limits_updated_by": lim.updated_by,
+    }
+    await redis.set("immunity:status", json.dumps(status), ex=120)
+
+
 async def status_writer_loop(redis: aioredis.Redis):
     while True:
         try:
-            expire_stale_halt()
-            lim = get_active_limits()
-            status = {
-                "max_position_pct": lim.max_position_pct * 100,
-                "max_daily_loss_pct": lim.max_daily_loss_pct * 100,
-                "max_leverage": lim.max_leverage,
-                "max_open_positions": lim.max_open_positions,
-                "min_confidence_pct": lim.min_immunity_confidence * 100,
-                "min_signal_confidence_pct": lim.min_signal_confidence * 100,
-                "max_trades_per_day": lim.max_trades_per_day,
-                "system_halted": immunity._system_halted,
-                "circuit_open": breaker.is_open,
-                "daily_trades": immunity._daily_trades,
-                "open_positions": immunity._open_positions,
-                "daily_loss_pct": round(immunity._daily_loss * 100, 3),
-                "updated_at": time.time(),
-                "limits_updated_at": lim.updated_at,
-                "limits_updated_by": lim.updated_by,
-            }
-            await redis.set("immunity:status", json.dumps(status), ex=120)
+            await write_immunity_status(redis)
         except Exception as e:
             log.error(f"Status writer error: {e}")
-        await asyncio.sleep(30)
+        await asyncio.sleep(5)
 
 
 async def main():
@@ -177,6 +185,11 @@ async def main():
     redis_sub = await aioredis.from_url(REDIS_URL)
     redis_ctl = await aioredis.from_url(REDIS_URL)
     redis_lim = await aioredis.from_url(REDIS_URL)
+    from risk_limits import bootstrap_limits
+
+    await bootstrap_limits(redis)
+    immunity.reevaluate_halt()
+    await write_immunity_status(redis)
     await asyncio.gather(
         order_approval_loop(redis),
         status_writer_loop(redis),

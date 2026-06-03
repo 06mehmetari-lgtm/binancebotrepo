@@ -115,7 +115,7 @@ def _row_to_limits(row: tuple) -> RiskLimits:
         min_signal_confidence=float(row[4]),
         min_immunity_confidence=float(row[5]),
         max_trades_per_day=int(row[6]),
-        updated_at=float(row[7] or time.time()),
+        updated_at=float(row[7]) if row[7] is not None else time.time(),
         updated_by=str(row[8] or "system"),
     )
 
