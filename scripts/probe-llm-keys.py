@@ -20,30 +20,41 @@ from llm_providers import (  # noqa: E402
     _OPENAI_PROVIDERS,
     _is_rate_limited,
     _openai_chat,
-    collect_keys,
 )
+
+
+def _labeled_keys(prefix: str) -> list[tuple[str, str]]:
+    """Same order as collect_keys(), with env var name for each key."""
+    from llm_providers import _slots  # noqa: E402
+
+    seen: set[str] = set()
+    out: list[tuple[str, str]] = []
+    for env in (prefix,):
+        k = (os.getenv(env, "") or "").strip()
+        if k and k not in seen:
+            seen.add(k)
+            out.append((env, k))
+    for i in range(1, _slots() + 1):
+        env = f"{prefix}_{i}"
+        k = (os.getenv(env, "") or "").strip()
+        if k and k not in seen:
+            seen.add(k)
+            out.append((env, k))
+    return out
 
 
 def probe_provider(pid: str) -> None:
     prefix, base, model_env = _OPENAI_PROVIDERS[pid]
     model = (os.getenv(model_env) or _DEFAULT_MODELS.get(pid, "")).strip()
-    keys = collect_keys(prefix)
+    labeled = _labeled_keys(prefix)
     print(f"\n{'=' * 60}")
-    print(f"{pid.upper()} — {len(keys)} key(s) — model={model}")
+    print(f"{pid.upper()} — {len(labeled)} key(s) — model={model}")
     print(f"{'=' * 60}")
-    if not keys:
+    if not labeled:
         print("  SKIP: no keys in environment")
         return
     ok = fail = rate = 0
-    for idx, key in enumerate(keys):
-        name = f"{prefix}" if idx == 0 and os.getenv(prefix) else f"{prefix}_{idx + 1}"
-        if not name.startswith(prefix):
-            name = f"{prefix}_{idx + 1}"
-        # match collect_keys order: primary first, then _1.._n
-        if idx == 0 and (os.getenv(prefix) or "").strip() == key:
-            name = prefix
-        elif len(keys) > 1:
-            name = f"{prefix}_{idx + 1}" if (os.getenv(f"{prefix}_{idx + 1}") or "").strip() == key else name
+    for name, key in labeled:
         try:
             text = _openai_chat(
                 base_url=base,
@@ -63,7 +74,7 @@ def probe_provider(pid: str) -> None:
             else:
                 print(f"  FAIL {name}  {e}")
                 fail += 1
-    print(f"  → {ok} OK, {rate} rate-limited, {fail} failed (total {len(keys)})")
+    print(f"  → {ok} OK, {rate} rate-limited, {fail} failed (total {len(labeled)})")
 
 
 def main() -> None:

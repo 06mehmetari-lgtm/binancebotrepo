@@ -156,10 +156,27 @@ else
   fail "GET /api/learning HTTP $code"
 fi
 
+# ── 10) Canlı API ping (Groq + Cerebras) ──
+echo ""
+echo "── 10) Canlı API testi (her anahtar) ──"
+if docker inspect prometheus_agents >/dev/null 2>&1 && [[ -f scripts/probe-llm-keys.py ]]; then
+  docker cp scripts/probe-llm-keys.py prometheus_agents:/tmp/probe_llm_keys.py 2>/dev/null || true
+  if docker compose exec -T agent_system python3 /tmp/probe_llm_keys.py 2>&1; then
+    ok "probe tamamlandı (OK = anahtar çalışıyor; 429 = limit, anahtar geçerli)"
+  else
+    fail "probe hata — logları kontrol edin"
+  fi
+else
+  warn "agent_system çalışmıyor veya probe script yok — atlandı"
+  echo "  Manuel: docker cp scripts/probe-llm-keys.py prometheus_agents:/tmp/probe_llm_keys.py"
+  echo "         docker compose exec agent_system python3 /tmp/probe_llm_keys.py"
+fi
+
 echo ""
 echo "════════════════════════════════════════"
 echo " Özet: Groq ✓ olması için:"
 echo "  1) ~/prometheus/.env dolu"
 echo "  2) docker compose up --force-recreate agent_system learning_engine dashboard"
 echo "  3) Redis system:llm:status dolu + groq key_count >= 1"
+echo "  4) Bölüm 10: her GROQ/CEREBRAS anahtarı için OK (sadece .env değil)"
 echo "════════════════════════════════════════"
