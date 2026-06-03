@@ -144,7 +144,14 @@ def evaluate_position(
             upnl, v_conf, trade_action, checks, time.time(),
         )
 
-    if trade_action == "close" or (sig_dir == "flat" and v_dir == "flat" and v_conf >= 0.55):
+    try:
+        from risk_limits import get_active_limits
+        flat_close_conf = get_active_limits().min_signal_confidence * 0.92
+    except Exception:
+        flat_close_conf = 0.55
+    if trade_action == "close" or (
+        sig_dir == "flat" and v_dir == "flat" and v_conf >= flat_close_conf
+    ):
         return GuardDecision(
             symbol, source, direction, "close", "high",
             "AI çıkış (FLAT) — sinyal ve verdict uyumlu",
@@ -158,7 +165,12 @@ def evaluate_position(
             upnl, v_conf, trade_action, checks, time.time(),
         )
 
-    if v_dir in ("long", "short") and v_dir != direction and v_conf >= 0.6:
+    try:
+        from risk_limits import get_active_limits
+        reverse_conf = get_active_limits().min_signal_confidence
+    except Exception:
+        reverse_conf = 0.6
+    if v_dir in ("long", "short") and v_dir != direction and v_conf >= reverse_conf:
         return GuardDecision(
             symbol, source, direction, "close", "high",
             f"AI yön tersine döndü ({v_dir.upper()} {v_conf:.0%})",

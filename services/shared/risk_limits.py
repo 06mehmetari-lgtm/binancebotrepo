@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 from dataclasses import asdict, dataclass
 from typing import Any
@@ -105,6 +106,45 @@ def parse_redis_raw(raw: str | bytes | None) -> RiskLimits | None:
     return None
 
 
+def _row_to_limits(row: tuple) -> RiskLimits:
+    return RiskLimits(
+        max_leverage=float(row[0]),
+        max_position_pct=float(row[1]),
+        max_daily_loss_pct=float(row[2]),
+        max_open_positions=int(row[3]),
+        min_signal_confidence=float(row[4]),
+        min_immunity_confidence=float(row[5]),
+        max_trades_per_day=int(row[6]),
+        updated_at=float(row[7] or time.time()),
+        updated_by=str(row[8] or "system"),
+    )
+
+
+def load_from_postgres_sync() -> RiskLimits | None:
+    """Postgres system_risk_limits — source of truth when dashboard saves."""
+    url = os.getenv("POSTGRES_URL", "").strip()
+    if not url:
+        return None
+    try:
+        import psycopg2
+
+        conn = psycopg2.connect(url)
+        try:
+            with conn.cursor() as cur:
+                cur.execute(SELECT_SQL)
+                row = cur.fetchone()
+            if not row:
+                return None
+            limits = _row_to_limits(row)
+            set_active_limits(limits)
+            return limits
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.warning("load_from_postgres failed: %s", e)
+    return None
+
+
 async def load_from_redis(redis) -> RiskLimits | None:
     try:
         raw = await redis.get(REDIS_KEY)
@@ -115,6 +155,24 @@ async def load_from_redis(redis) -> RiskLimits | None:
     except Exception as e:
         logger.warning("load_from_redis failed: %s", e)
     return None
+
+
+async def bootstrap_limits(redis) -> RiskLimits:
+    """Prefer Postgres (dashboard), sync to Redis, else Redis cache, else defaults."""
+    pg = load_from_postgres_sync()
+    if pg:
+        await publish_to_redis(redis, pg)
+        logger.info(
+            "risk_limits from Postgres — open=%s daily_loss=%.1f%% signal_conf=%.0f%%",
+            pg.max_open_positions,
+            pg.max_daily_loss_pct * 100,
+            pg.min_signal_confidence * 100,
+        )
+        return pg
+    cached = await load_from_redis(redis)
+    if cached:
+        return cached
+    return get_active_limits()
 
 
 async def publish_to_redis(redis, limits: RiskLimits) -> None:

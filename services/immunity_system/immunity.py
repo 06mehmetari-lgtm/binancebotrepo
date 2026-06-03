@@ -135,6 +135,18 @@ class ImmunitySystem:
             self._system_halted = True
             self._halt_until = time.time() + 86400
 
+    def reevaluate_halt(self) -> None:
+        """Clear halt when dashboard raises daily loss limit above current drawdown."""
+        lim = _limits()
+        if self._system_halted and self._daily_loss < lim.max_daily_loss_pct:
+            self._system_halted = False
+            self._halt_until = 0.0
+            logger.info(
+                "Halt cleared — daily loss %.2f%% within limit %.2f%%",
+                self._daily_loss * 100,
+                lim.max_daily_loss_pct * 100,
+            )
+
     def reset_daily(self):
         lim = _limits()
         self._daily_loss = 0.0

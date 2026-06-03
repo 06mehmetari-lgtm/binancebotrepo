@@ -7,7 +7,7 @@ import time
 import redis.asyncio as aioredis
 
 from immunity import ImmunitySystem
-from risk_limits import REDIS_CHANNEL, get_active_limits, load_from_redis
+from risk_limits import REDIS_CHANNEL, bootstrap_limits, get_active_limits
 from circuit_breaker import CircuitBreaker
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
@@ -46,23 +46,27 @@ async def limits_listener(redis: aioredis.Redis):
 
     async def poll():
         while True:
-            await load_from_redis(redis)
+            await bootstrap_limits(redis)
+            immunity.reevaluate_halt()
             await asyncio.sleep(5)
 
     async def on_message():
         async for msg in pubsub.listen():
             if msg.get("type") != "message":
                 continue
-            await load_from_redis(redis)
+            await bootstrap_limits(redis)
+            immunity.reevaluate_halt()
             lim = get_active_limits()
             log.info(
-                "Risk limits reloaded — leverage=%s pos=%s%% open=%s",
+                "Risk limits reloaded — leverage=%s pos=%s%% daily_loss=%s%% open=%s",
                 lim.max_leverage,
                 round(lim.max_position_pct * 100, 2),
+                round(lim.max_daily_loss_pct * 100, 2),
                 lim.max_open_positions,
             )
 
-    await load_from_redis(redis)
+    await bootstrap_limits(redis)
+    immunity.reevaluate_halt()
     await asyncio.gather(poll(), on_message())
 
 

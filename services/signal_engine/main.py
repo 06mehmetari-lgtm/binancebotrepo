@@ -400,12 +400,12 @@ async def main():
             await asyncio.sleep(5)
 
     async def limits_refresh_loop():
-        from risk_limits import REDIS_CHANNEL, load_from_redis
+        from risk_limits import REDIS_CHANNEL, bootstrap_limits
         pubsub = redis_sub.pubsub()
         await pubsub.subscribe(REDIS_CHANNEL)
-        await load_from_redis(redis)
+        await bootstrap_limits(redis)
         while True:
-            await load_from_redis(redis)
+            await bootstrap_limits(redis)
             await asyncio.sleep(5)
 
     await asyncio.gather(signal_loop(), stats_listener(redis_sub), limits_refresh_loop())

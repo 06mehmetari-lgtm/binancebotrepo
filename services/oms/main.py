@@ -343,10 +343,10 @@ async def main():
     redis_em = await aioredis.from_url(REDIS_URL)
     redis_guard = await aioredis.from_url(REDIS_URL)
     async def limits_refresh_loop():
-        from risk_limits import load_from_redis
-        await load_from_redis(redis)
+        from risk_limits import bootstrap_limits
+        await bootstrap_limits(redis)
         while True:
-            await load_from_redis(redis)
+            await bootstrap_limits(redis)
             await asyncio.sleep(5)
 
     await asyncio.gather(

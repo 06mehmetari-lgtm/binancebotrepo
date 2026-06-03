@@ -351,7 +351,9 @@ services:
       - prometheus_net
 
   shadow_system:
-    build: ./services/shadow_system
+    build:
+      context: ./services
+      dockerfile: shadow_system/Dockerfile
     container_name: prometheus_shadow
     restart: unless-stopped
     environment:

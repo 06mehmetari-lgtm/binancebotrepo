@@ -352,11 +352,23 @@ async def main():
         log.warning(f"shadow dedupe: removed {n} duplicate position key(s)")
     redis_em = await aioredis.from_url(REDIS_URL)
     redis_guard = await aioredis.from_url(REDIS_URL)
+
+    async def limits_refresh_loop():
+        try:
+            from risk_limits import bootstrap_limits
+            await bootstrap_limits(redis)
+            while True:
+                await bootstrap_limits(redis)
+                await asyncio.sleep(5)
+        except ImportError:
+            log.warning("risk_limits module missing — using defaults in simulate_tick")
+
     await asyncio.gather(
         _trading_loop(redis),
         report_loop(redis),
         emergency_listener(redis_em),
         guard_listener(redis_guard),
+        limits_refresh_loop(),
     )
 
 
