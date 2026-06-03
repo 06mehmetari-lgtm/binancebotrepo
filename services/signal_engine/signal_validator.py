@@ -6,8 +6,11 @@ class SignalValidator:
 
     def validate(self, signal: dict, context: dict) -> tuple[bool, str]:
         conf = signal.get("confidence", 0)
-        if conf < self.MIN_CONFIDENCE:
-            return False, f"confidence {conf:.2f} < {self.MIN_CONFIDENCE}"
+        # Ranging regime: harder to predict direction — require stronger conviction
+        regime = signal.get("regime", context.get("regime", ""))
+        min_conf = 0.75 if regime == "ranging" else self.MIN_CONFIDENCE
+        if conf < min_conf:
+            return False, f"confidence {conf:.2f} < {min_conf} (regime={regime})"
         if context.get("crisis_level", 0) >= 4:
             return False, "crisis level 4: no trading"
         if context.get("drift_status") == "SHOCK":

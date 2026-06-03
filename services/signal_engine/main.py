@@ -121,15 +121,16 @@ async def generate_signal(redis: aioredis.Redis, symbol: str) -> dict | None:
     ml_score = float(features.get("ml_score", 0.0) or 0.0)
 
     # ── ML fallback when no LLM verdicts available (Step 9) ───────────────
-    # Requires |ml_score| > 0.65 to pass MIN_CONFIDENCE=0.70 validator
-    if not agent_verdicts and abs(ml_score) > 0.65:
+    # In ranging regime ML signal is unreliable — require stronger conviction
+    _ml_threshold = 0.80 if regime == "ranging" else 0.65
+    if not agent_verdicts and abs(ml_score) > _ml_threshold:
         fallback_dir  = "long" if ml_score > 0 else "short"
         fallback_conf = round(min(0.80, 0.45 + abs(ml_score) * 0.45), 3)
         agent_verdicts = [{
             "agent": "ml_fallback", "direction": fallback_dir,
             "signal": fallback_dir, "confidence": fallback_conf,
         }]
-        log.debug(f"[{symbol}] ML fallback: {fallback_dir} conf={fallback_conf:.2f} ml={ml_score:.3f}")
+        log.debug(f"[{symbol}] ML fallback: {fallback_dir} conf={fallback_conf:.2f} ml={ml_score:.3f} regime={regime}")
 
     # ── RL (PPO) signal ────────────────────────────────────────────────────
     rl_raw  = await redis.get(f"rl:signal:{symbol}")
