@@ -12,7 +12,19 @@
 
 ---
 
-## Seçenek 1 — Ollama (ücretsiz, PC gerekmez) ← şu an bunu kullanın
+## Seçenek 0 — Google Gemini API (ücretsiz katman, PC yok) ← Groq yerine
+
+`GOOGLE_AI_API_KEY` → VPS’ten direkt, çoğu zaman 1010 **yok**.
+
+```bash
+bash scripts/enable-google-gemini-vps.sh
+```
+
+Detay: `scripts/google-ip-secenekleri.md`
+
+---
+
+## Seçenek 1 — Ollama (ücretsiz, PC gerekmez)
 
 Ana makinede (194.163.181.39):
 

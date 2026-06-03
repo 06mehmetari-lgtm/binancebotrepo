@@ -159,6 +159,7 @@ def main() -> None:
         print("proxy=configured (masked)")
     probe_provider("groq")
     probe_provider("cerebras")
+    probe_provider("google")
     probe_ollama()
     print("\nDone.")
 
