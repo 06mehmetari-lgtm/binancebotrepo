@@ -106,6 +106,8 @@ _PROVIDERS = [
         "name": "Groq",
         "url": "https://api.groq.com/openai/v1/chat/completions",
         "key_env": "GROQ_API_KEY",
+        # Primary model + instant fallback tried in order on 400/404
+        "models": ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "llama3-70b-8192"],
         "model": "llama-3.3-70b-versatile",
         "headers": {},
     },
@@ -113,13 +115,16 @@ _PROVIDERS = [
         "name": "Cerebras",
         "url": "https://api.cerebras.ai/v1/chat/completions",
         "key_env": "CEREBRAS_API_KEY",
-        "model": "llama-3.3-70b",
+        # Correct Cerebras model IDs use dots, not hyphens: llama3.3-70b
+        "models": ["llama3.3-70b", "llama3.1-70b", "llama3.1-8b"],
+        "model": "llama3.3-70b",
         "headers": {},
     },
     {
         "name": "SambaNova",
         "url": "https://api.sambanova.ai/v1/chat/completions",
         "key_env": "SAMBANOVA_API_KEY",
+        "models": ["DeepSeek-V3.1", "Meta-Llama-3.3-70B-Instruct"],
         "model": "DeepSeek-V3.1",
         "headers": {},
     },
@@ -127,6 +132,7 @@ _PROVIDERS = [
         "name": "OpenRouter",
         "url": "https://openrouter.ai/api/v1/chat/completions",
         "key_env": "OPENROUTER_API_KEY",
+        "models": ["meta-llama/llama-3.3-70b-instruct:free", "mistralai/mistral-7b-instruct:free"],
         "model": "meta-llama/llama-3.3-70b-instruct:free",
         "headers": {
             "HTTP-Referer": "https://prometheus-trading.io",
@@ -137,6 +143,7 @@ _PROVIDERS = [
         "name": "Cohere",
         "url": "https://api.cohere.com/compatibility/v1/chat/completions",
         "key_env": "COHERE_API_KEY",
+        "models": ["command-r-plus-08-2024", "command-r-08-2024"],
         "model": "command-r-plus-08-2024",
         "headers": {},
     },
@@ -144,6 +151,7 @@ _PROVIDERS = [
         "name": "DeepSeek",
         "url": "https://api.deepseek.com/v1/chat/completions",
         "key_env": "DEEPSEEK_API_KEY",
+        "models": ["deepseek-chat", "deepseek-coder"],
         "model": "deepseek-chat",
         "headers": {},
     },
@@ -151,6 +159,7 @@ _PROVIDERS = [
         "name": "ZAI",
         "url": os.getenv("ZAI_BASE_URL", "https://api.z.ai/api/paas/v4") + "/chat/completions",
         "key_env": "ZAI_API_KEY",
+        "models": [os.getenv("ZAI_MODEL", "GLM-4.5")],
         "model": os.getenv("ZAI_MODEL", "GLM-4.5"),
         "headers": {},
     },
@@ -209,7 +218,7 @@ async def chat_completion(
             if not keys:
                 continue
 
-            provider_succeeded = False
+            provider_models = p.get("models", [p["model"]])
             for api_key in keys:
                 if not _is_ready(api_key):
                     continue
@@ -219,63 +228,69 @@ async def chat_completion(
                     "Content-Type": "application/json",
                     **p["headers"],
                 }
-                payload = {
-                    "model": p["model"],
-                    "messages": messages,
-                    "temperature": temperature,
-                    "max_tokens": max_tokens,
-                }
                 _stat(p["name"])["calls"] += 1
-                try:
-                    async with session.post(
-                        p["url"], headers=headers, json=payload,
-                        timeout=aiohttp.ClientTimeout(total=30),
-                    ) as resp:
-                        if resp.status == 429:
-                            log.warning(f"LLM [{p['name']}] 429 rate limit")
-                            _set_cooldown(api_key)
-                            _stat(p["name"])["rate_limits"] += 1
-                            continue  # sonraki key dene
-                        if resp.status in (402, 403):
-                            # 402 = insufficient credits, 403 = forbidden — skip provider permanently
-                            body = await resp.text()
-                            log.warning(f"LLM [{p['name']}] {resp.status} (bakiye/erişim sorunu) — atlanıyor")
-                            last_error = f"{p['name']} {resp.status}"
-                            _stat(p["name"])["errors"] += 1
-                            _stat(p["name"])["last_error"] = f"HTTP {resp.status}"
-                            _set_cooldown(api_key, seconds=86400)  # 24h bloke
-                            break
-                        if resp.status != 200:
-                            body = await resp.text()
-                            log.warning(f"LLM [{p['name']}] {resp.status}: {body[:80]}")
-                            last_error = f"{p['name']} {resp.status}"
-                            _stat(p["name"])["errors"] += 1
-                            _stat(p["name"])["last_error"] = last_error
-                            break  # bu provider'ı atla
-                        data = await resp.json()
-                        content = data["choices"][0]["message"]["content"]
-                        if not content:
-                            last_error = f"{p['name']} boş yanıt"
-                            continue
-                        log.debug(f"LLM [{p['name']}] ...{api_key[-4:]} başarılı")
-                        _stat(p["name"])["successes"] += 1
-                        _stat(p["name"])["last_success_ts"] = time.time()
-                        return content, p["name"]
-                except asyncio.TimeoutError:
-                    log.warning(f"LLM [{p['name']}] timeout")
-                    last_error = f"{p['name']} timeout"
-                    _stat(p["name"])["errors"] += 1
-                    _stat(p["name"])["last_error"] = "timeout"
-                    break
-                except Exception as e:
-                    log.warning(f"LLM [{p['name']}] bağlantı hatası: {e}")
-                    last_error = str(e)
-                    _stat(p["name"])["errors"] += 1
-                    _stat(p["name"])["last_error"] = str(e)[:80]
-                    break
 
-            if provider_succeeded:
-                break
+                model_succeeded = False
+                for model_name in provider_models:
+                    payload = {
+                        "model": model_name,
+                        "messages": messages,
+                        "temperature": temperature,
+                        "max_tokens": max_tokens,
+                    }
+                    try:
+                        async with session.post(
+                            p["url"], headers=headers, json=payload,
+                            timeout=aiohttp.ClientTimeout(total=30),
+                        ) as resp:
+                            if resp.status == 429:
+                                log.warning(f"LLM [{p['name']}] 429 rate limit")
+                                _set_cooldown(api_key)
+                                _stat(p["name"])["rate_limits"] += 1
+                                break  # rate limited — try next key
+                            if resp.status in (402, 403):
+                                body = await resp.text()
+                                log.warning(f"LLM [{p['name']}] {resp.status} bakiye/erişim sorunu — 24h bloke")
+                                last_error = f"{p['name']} {resp.status}"
+                                _stat(p["name"])["errors"] += 1
+                                _stat(p["name"])["last_error"] = f"HTTP {resp.status}"
+                                _set_cooldown(api_key, seconds=86400)
+                                break
+                            if resp.status in (400, 404):
+                                body = await resp.text()
+                                log.warning(f"LLM [{p['name']}] {resp.status} model={model_name} — sonraki modele geçiliyor")
+                                last_error = f"{p['name']} {resp.status} ({model_name})"
+                                _stat(p["name"])["errors"] += 1
+                                _stat(p["name"])["last_error"] = f"HTTP {resp.status} {model_name}"
+                                continue  # try next model in list
+                            if resp.status != 200:
+                                body = await resp.text()
+                                log.warning(f"LLM [{p['name']}] {resp.status}: {body[:80]}")
+                                last_error = f"{p['name']} {resp.status}"
+                                _stat(p["name"])["errors"] += 1
+                                _stat(p["name"])["last_error"] = last_error
+                                break  # unknown error — skip this provider
+                            data = await resp.json()
+                            content = data["choices"][0]["message"]["content"]
+                            if not content:
+                                last_error = f"{p['name']} boş yanıt"
+                                continue
+                            log.debug(f"LLM [{p['name']}] model={model_name} ...{api_key[-4:]} başarılı")
+                            _stat(p["name"])["successes"] += 1
+                            _stat(p["name"])["last_success_ts"] = time.time()
+                            return content, p["name"]
+                    except asyncio.TimeoutError:
+                        log.warning(f"LLM [{p['name']}] timeout")
+                        last_error = f"{p['name']} timeout"
+                        _stat(p["name"])["errors"] += 1
+                        _stat(p["name"])["last_error"] = "timeout"
+                        break
+                    except Exception as e:
+                        log.warning(f"LLM [{p['name']}] bağlantı hatası: {e}")
+                        last_error = str(e)
+                        _stat(p["name"])["errors"] += 1
+                        _stat(p["name"])["last_error"] = str(e)[:80]
+                        break
 
         # Ollama — yerel yedek, sıralı (lock ile)
         try:

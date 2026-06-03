@@ -111,7 +111,7 @@ def _get_providers() -> list[dict]:
             providers.append({"name": name, "url": url, "key": key, "model": model, "extra": extra or {}})
 
     add("Groq",       "https://api.groq.com/openai/v1/chat/completions",             "GROQ_API_KEY",       "llama-3.3-70b-versatile")
-    add("Cerebras",   "https://api.cerebras.ai/v1/chat/completions",                 "CEREBRAS_API_KEY",   "gpt-oss-120b")
+    add("Cerebras",   "https://api.cerebras.ai/v1/chat/completions",                 "CEREBRAS_API_KEY",   "llama3.3-70b")
     add("SambaNova",  "https://api.sambanova.ai/v1/chat/completions",                "SAMBANOVA_API_KEY",  "DeepSeek-V3.1")
     add("OpenRouter", "https://openrouter.ai/api/v1/chat/completions",               "OPENROUTER_API_KEY", "meta-llama/llama-3.3-70b-instruct:free",
         {"HTTP-Referer": "https://prometheus-trading.io", "X-Title": "Prometheus"})
