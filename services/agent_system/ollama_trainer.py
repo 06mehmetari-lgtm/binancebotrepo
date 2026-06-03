@@ -201,6 +201,34 @@ async def _collect_knowledge(redis: aioredis.Redis) -> str:
     except Exception as e:
         log.debug(f"Knowledge collect [wisdom]: {e}")
 
+    # 30-day per-coin historical patterns (historical_learner writes this every 24h)
+    try:
+        hist_text = await redis.get("coin:history:text")
+        if hist_text:
+            text = hist_text.decode() if isinstance(hist_text, bytes) else hist_text
+            # Include only the summary + top patterns (cap at 6000 chars)
+            sections.append(f"\n### 30 GÜNLÜK COİN PATTERN ANALİZİ\n{text[:6000]}")
+    except Exception as e:
+        log.debug(f"Knowledge collect [hist_patterns]: {e}")
+
+    # Market-wide momentum summary
+    try:
+        summary_raw = await redis.get("coin:history:summary")
+        if summary_raw:
+            summary = json.loads(summary_raw)
+            bull = summary.get("bullish_coins", [])[:20]
+            bear = summary.get("bearish_coins", [])[:20]
+            lwr  = summary.get("avg_long_wr", 0.5)
+            swr  = summary.get("avg_short_wr", 0.5)
+            sections.append(
+                f"\n### MEVCUT PİYASA MOMENTUM (30g analiz)\n"
+                f"- Genel LONG win: %{lwr*100:.0f} | SHORT win: %{swr*100:.0f}\n"
+                f"- Boğa momentum coinler: {', '.join(bull[:15])}\n"
+                f"- Ayı momentum coinler: {', '.join(bear[:15])}"
+            )
+    except Exception as e:
+        log.debug(f"Knowledge collect [hist_summary]: {e}")
+
     # Hardcoded market mechanics — all indicators (always included)
     sections.append("""
 ### PİYASA MEKANİKLERİ VE İNDİKATÖR KILAVUZU (TEMEL BİLGİ)

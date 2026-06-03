@@ -17,6 +17,7 @@ from ollama_trainer import ollama_training_loop
 from multi_llm_trade_analysis import multi_llm_trade_loop
 from fast_lesson_writer import fast_lesson_loop
 from wisdom_extractor import wisdom_extractor_loop
+from historical_learner import historical_learner_loop
 import rag_context
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
@@ -560,6 +561,7 @@ async def main():
         multi_llm_trade_loop(REDIS_URL),
         fast_lesson_loop(REDIS_URL),
         wisdom_extractor_loop(REDIS_URL),
+        historical_learner_loop(REDIS_URL),
     )
 
 

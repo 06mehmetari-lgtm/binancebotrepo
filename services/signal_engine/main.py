@@ -93,10 +93,12 @@ async def generate_signal(redis: aioredis.Redis, symbol: str) -> dict | None:
     agents_raw      = await redis.get(f"agents:verdicts:{symbol}")
     features_raw    = await redis.get(f"features:latest:{symbol}")
     coin_stats_raw  = await redis.hgetall(f"coin:stats:{symbol}")
+    hist_raw        = await redis.get(f"coin:history:{symbol}")
 
     context        = json.loads(context_raw)  if context_raw  else {}
     agent_verdicts = json.loads(agents_raw)   if agents_raw   else []
     features       = json.loads(features_raw) if features_raw else None
+    hist_analysis  = json.loads(hist_raw)     if hist_raw     else {}
 
     if not features:
         return None
@@ -105,6 +107,11 @@ async def generate_signal(redis: aioredis.Redis, symbol: str) -> dict | None:
     coin_trades = int(coin_stats_raw.get(b"total_trades", 0) or 0)
     coin_wr     = float(coin_stats_raw.get(b"win_rate", 0.5) or 0.5)
     coin_consec = int(coin_stats_raw.get(b"consecutive_losses", 0) or 0)
+
+    # Historical pattern data (from historical_learner — 30d analysis)
+    hist_long_wr   = float(hist_analysis.get("current_hist_long_wr",  0.5))
+    hist_short_wr  = float(hist_analysis.get("current_hist_short_wr", 0.5))
+    hist_momentum  = float(hist_analysis.get("momentum_score", 0.0))
 
     stats = _get_kelly_stats(symbol)
     kelly_fraction = kelly.calculate(
@@ -121,11 +128,24 @@ async def generate_signal(redis: aioredis.Redis, symbol: str) -> dict | None:
     ml_score = float(features.get("ml_score", 0.0) or 0.0)
 
     # ── ML fallback when no LLM verdicts available (Step 9) ───────────────
-    # Ranging regime: slightly higher threshold (0.72 vs 0.65) to reduce noise
+    # Use historical pattern data to guide direction when available
     _ml_threshold = 0.72 if regime == "ranging" else 0.65
     if not agent_verdicts and abs(ml_score) > _ml_threshold:
         fallback_dir  = "long" if ml_score > 0 else "short"
         fallback_conf = round(min(0.80, 0.45 + abs(ml_score) * 0.45), 3)
+
+        # Historical pattern override: if history strongly contradicts ML, flip or reduce
+        if hist_analysis:
+            if fallback_dir == "short" and hist_long_wr > 0.65 and hist_short_wr < 0.40:
+                # History says LONG strongly, ML says SHORT → flip to LONG with lower conf
+                fallback_dir  = "long"
+                fallback_conf = round(min(0.76, fallback_conf * 0.90), 3)
+                log.debug(f"[{symbol}] ML→LONG override (hist_long={hist_long_wr:.0%})")
+            elif fallback_dir == "long" and hist_short_wr > 0.65 and hist_long_wr < 0.40:
+                fallback_dir  = "short"
+                fallback_conf = round(min(0.76, fallback_conf * 0.90), 3)
+                log.debug(f"[{symbol}] ML→SHORT override (hist_short={hist_short_wr:.0%})")
+
         agent_verdicts = [{
             "agent": "ml_fallback", "direction": fallback_dir,
             "signal": fallback_dir, "confidence": fallback_conf,
@@ -249,6 +269,23 @@ async def generate_signal(redis: aioredis.Redis, symbol: str) -> dict | None:
             signal_dict["confidence"] = round(max(0.0, signal_dict["confidence"] - 0.05), 4)
         elif coin_wr > 0.65:
             signal_dict["confidence"] = round(min(1.0, signal_dict["confidence"] + 0.05), 4)
+
+    # Historical 30d pattern adjustment — boost/cut based on per-coin history
+    if hist_analysis and signal_dict["direction"] != "flat":
+        direction = signal_dict["direction"]
+        h_wr = hist_long_wr if direction == "long" else hist_short_wr
+        opp_wr = hist_short_wr if direction == "long" else hist_long_wr
+        if h_wr > 0.62:
+            # History supports this direction strongly
+            signal_dict["confidence"] = round(min(1.0, signal_dict["confidence"] + 0.05), 4)
+        elif h_wr < 0.40:
+            # History opposes this direction
+            signal_dict["confidence"] = round(max(0.0, signal_dict["confidence"] - 0.08), 4)
+        if opp_wr > 0.65:
+            # Opposite direction has very strong historical support → penalise this direction more
+            signal_dict["confidence"] = round(max(0.0, signal_dict["confidence"] - 0.05), 4)
+        signal_dict["hist_win_rate"]  = h_wr
+        signal_dict["hist_momentum"]  = hist_momentum
 
     is_valid, reason = validator.validate(signal_dict, context)
     signal_dict["is_valid"] = is_valid
