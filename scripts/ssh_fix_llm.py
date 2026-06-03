@@ -44,14 +44,9 @@ def main():
     sftp = c.open_sftp()
     sftp.put(str(LOCAL_ENV), f"{REMOTE_DIR}/.env")
     sftp.close()
-    print("Re-uploaded .env after git pull")
+    run_cmd(c, f"sed -i 's/\\r$//' {REMOTE_DIR}/.env && echo stripped_crlf")
+    print("Re-uploaded .env after git pull (CRLF stripped)")
     n = run_cmd(c, f"grep -cE '^GROQ_API_KEY' {REMOTE_DIR}/.env || echo 0")
-    run_cmd(
-        c,
-        f"cd {REMOTE_DIR} && export REDIS_PASSWORD=$(grep '^REDIS_PASSWORD=' .env|cut -d= -f2-) && "
-        "docker compose build agent_system learning_engine dashboard",
-        timeout=600,
-    )
     run_cmd(
         c,
         f"cd {REMOTE_DIR} && export REDIS_PASSWORD=$(grep '^REDIS_PASSWORD=' .env|cut -d= -f2-) && "
