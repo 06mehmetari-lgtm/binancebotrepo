@@ -1,6 +1,5 @@
 'use client'
 import { useEffect, useState, Fragment, useCallback } from 'react'
-import { useStreamInvalidate } from '@/hooks/useStream'
 import {
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   ReferenceLine, Area, AreaChart,
@@ -179,15 +178,9 @@ export default function PositionsPage() {
         if (d.limits?.max_open_positions) setMaxOpenLimit(d.limits.max_open_positions)
       })
       .catch(() => {})
-    const t = setInterval(fetchData, 60000)
+    const t = setInterval(fetchData, 5000)
     return () => clearInterval(t)
   }, [fetchData])
-
-  useStreamInvalidate({
-    hints: ['portfolio', 'guard', 'trade_closed'],
-    debounceMs: 250,
-    onEvent: () => { void fetchData() },
-  })
 
   const runEmergencyClose = async () => {
     const ok = window.confirm(

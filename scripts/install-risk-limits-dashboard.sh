@@ -14,15 +14,12 @@ FILES=(
   services/dashboard/package-lock.json
   services/dashboard/src/app/api/risk-limits/route.ts
   services/dashboard/src/app/api/risk/route.ts
-  services/dashboard/src/app/api/stream/route.ts
   services/dashboard/src/app/risk/page.tsx
   services/dashboard/src/app/positions/page.tsx
   services/dashboard/src/components/RiskLimitsEditor.tsx
-  services/dashboard/src/hooks/useStream.ts
   services/dashboard/src/lib/postgres.ts
   services/dashboard/src/lib/risk-limits-config.ts
   services/dashboard/src/lib/risk-limits-service.ts
-  services/dashboard/src/lib/stream-events.ts
 )
 
 for f in "${FILES[@]}"; do
