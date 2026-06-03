@@ -12,7 +12,7 @@ bash scripts/setup-vps-llm-wait-mode.sh
 
 - **Gemini** önce (limit → bekler, kota açılınca devam)
 - **Ollama** yedek
-- **Groq/Cerebras** atlanır (1010)
+- **Groq/Cerebras** denenir (`ALLOW_GROQ_ON_VPS=true`; otomatik 1010 skip kaldırıldı)
 - **PC gerekmez**
 
 ---

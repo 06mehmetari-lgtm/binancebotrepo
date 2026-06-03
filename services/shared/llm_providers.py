@@ -19,8 +19,6 @@ DEFAULT_ORDER = (
     "cohere,deepseek,huggingface,google,perplexity,zai,anthropic"
 )
 
-_cloud_ip_blocked: bool = False
-
 _OPENAI_PROVIDERS: dict[str, tuple[str, str, str]] = {
     # id -> (key_prefix, base_url, model_env)
     "groq": ("GROQ_API_KEY", "https://api.groq.com/openai/v1", "GROQ_LEARN_MODEL"),
@@ -90,8 +88,15 @@ def collect_keys(prefix: str, alt_primary: str | None = None) -> list[str]:
     return out
 
 
+def allow_groq_on_vps() -> bool:
+    """VPS'ten Groq/Cerebras dene (.env); otomatik IP block bayrağı devre dışı."""
+    return (os.getenv("ALLOW_GROQ_ON_VPS", "") or "").strip().lower() in ("1", "true", "yes", "on")
+
+
 def vps_llm_mode() -> bool:
-    """PC kapalı VPS: sadece Google Gemini + Ollama (Groq/Cerebras 1010 atlanır)."""
+    """Kota beklemeli VPS modu; ALLOW_GROQ_ON_VPS=true ise sağlayıcı sırasını .env belirler."""
+    if allow_groq_on_vps():
+        return False
     return (os.getenv("LLM_VPS_MODE", "") or "").strip().lower() in ("1", "true", "yes", "on")
 
 
@@ -143,16 +148,32 @@ def _is_rate_limited(exc: BaseException) -> bool:
     return any(x in msg for x in ("429", "rate", "quota", "limit", "too many"))
 
 
+def _log_llm_http_error(exc: BaseException, *, provider: str = "", label: str = "") -> None:
+    if isinstance(exc, urllib.error.HTTPError):
+        detail = http_error_detail(exc, max_len=500)
+        logger.warning(
+            "LLM HTTP provider=%s label=%s status=%s reason=%s body=%s",
+            provider or "?",
+            label or "?",
+            exc.code,
+            exc.reason,
+            detail,
+        )
+
+
 def _is_ip_blocked(exc: BaseException) -> bool:
-    global _cloud_ip_blocked
-    if isinstance(exc, urllib.error.HTTPError) and exc.code in (403, 502):
-        msg = http_error_detail(exc).lower()
-        if any(x in msg for x in ("1010", "access denied", "network settings", "cloudflare")):
-            _cloud_ip_blocked = True
-            return True
-    s = str(exc).lower()
-    if "error code: 1010" in s or "access denied" in s:
-        _cloud_ip_blocked = True
+    """
+    Gerçek Groq/CF datacenter engeli — yalnızca HTTP 403 + belirli gövde metni.
+    urllib 'error code: 1010' tek başına veya LLM_CLOUD_BLOCKED ile karıştırılmaz.
+    """
+    if not isinstance(exc, urllib.error.HTTPError):
+        return False
+    if exc.code not in (403,):
+        return False
+    msg = http_error_detail(exc).lower()
+    if "network settings" in msg:
+        return True
+    if "access denied" in msg and "cloudflare" in msg:
         return True
     return False
 
@@ -176,13 +197,14 @@ def cloud_bypass_configured() -> bool:
 
 
 def cloud_llm_disabled() -> bool:
-    """VPS IP block (1010) or operator chose local-only LLM."""
+    """Yalnızca .env — otomatik 'IP blocked' bayrağı yok (ALLOW_GROQ_ON_VPS ile Groq açık)."""
+    if allow_groq_on_vps():
+        return (os.getenv("LLM_OLLAMA_ONLY", "") or "").strip().lower() in ("1", "true", "yes", "on")
     if cloud_bypass_configured():
         return False
-    if _cloud_ip_blocked:
+    if (os.getenv("LLM_OLLAMA_ONLY", "") or "").strip().lower() in ("1", "true", "yes", "on"):
         return True
-    v = (os.getenv("LLM_OLLAMA_ONLY", "") or os.getenv("LLM_CLOUD_BLOCKED", "")).strip().lower()
-    return v in ("1", "true", "yes", "on")
+    return (os.getenv("LLM_CLOUD_BLOCKED", "") or "").strip().lower() in ("1", "true", "yes", "on")
 
 
 def groq_api_base() -> str:
@@ -321,9 +343,10 @@ def _openai_chat(
         with _urlopen(req, timeout=60) as resp:
             body = json.loads(resp.read())
         return (body.get("choices") or [{}])[0].get("message", {}).get("content") or ""
+    except urllib.error.HTTPError as e:
+        _log_llm_http_error(e, provider=base_url)
+        raise
     except Exception as e:
-        if _is_ip_blocked(e):
-            logger.warning("cloud LLM IP blocked (403/1010) — use Ollama or HTTPS_PROXY")
         raise
 
 
@@ -470,6 +493,7 @@ def _try_openai_provider(
                     _quota_wait(pid)
                     continue
                 if _is_ip_blocked(e):
+                    _log_llm_http_error(e, provider=pid, label=label)
                     try:
                         import proxy_pool as pp
 
@@ -479,6 +503,7 @@ def _try_openai_provider(
                     except ImportError:
                         pass
                     continue
+                _log_llm_http_error(e, provider=pid, label=label)
                 logger.debug("%s: %s", label, e)
     return None, None
 

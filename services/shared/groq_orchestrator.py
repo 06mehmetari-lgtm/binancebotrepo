@@ -192,9 +192,9 @@ def chat_pool(
     if not groq_keys():
         return None, None
     try:
-        from llm_providers import cloud_llm_disabled
+        from llm_providers import allow_groq_on_vps, cloud_llm_disabled
 
-        if cloud_llm_disabled():
+        if cloud_llm_disabled() and not allow_groq_on_vps():
             return None, None
     except ImportError:
         pass
@@ -258,9 +258,9 @@ def swarm_consensus(
     Requires AI_MINIMUM_MODEL_VOTE successful parses.
     """
     try:
-        from llm_providers import cloud_llm_disabled
+        from llm_providers import allow_groq_on_vps, cloud_llm_disabled
 
-        if cloud_llm_disabled():
+        if cloud_llm_disabled() and not allow_groq_on_vps():
             return None, None
     except ImportError:
         pass

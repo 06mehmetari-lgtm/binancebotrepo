@@ -64,16 +64,20 @@ def _ping(base: str, key: str, model: str) -> tuple[bool, str]:
     except Exception as e:
         if _is_rate_limited(e):
             return True, "rate limited (429 — anahtar geçerli)"
+        code = getattr(e, "code", None)
         detail = http_error_detail(e)
+        ip_blk = _is_ip_blocked(e)
         hint = ""
         low = detail.lower()
-        if "access denied" in low or "network settings" in low:
-            hint = " → muhtemelen VPS/datacenter IP engeli (Groq Cloudflare)"
+        if ip_blk:
+            hint = " → datacenter IP engeli (403 + network settings)"
         elif "decommissioned" in low or "model_decommissioned" in low:
             hint = " → model kapatılmış; .env model adını güncelleyin"
-        elif "permission" in low or e.__class__.__name__ == "HTTPError" and getattr(e, "code", 0) == 403:
-            hint = " → 403: IP engeli veya model/plan yetkisi yok"
-        return False, f"{detail}{hint}"
+        elif code == 401:
+            hint = " → geçersiz API anahtarı"
+        elif code == 403:
+            hint = " → 403 (otomatik IP block yok — anahtar/plan kontrol)"
+        return False, f"HTTP={code} ip_blocked={ip_blk} {detail[:220]}{hint}"
 
 
 def probe_provider(pid: str) -> None:
