@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from llm_providers import chat_completion
 
 logger = logging.getLogger(__name__)
-GROQ_MODEL = os.getenv("GROQ_DEBATE_MODEL") or os.getenv("GROQ_LEARN_MODEL", "llama-3.1-70b-versatile")
+GROQ_MODEL = os.getenv("GROQ_DEBATE_MODEL") or os.getenv("GROQ_LEARN_MODEL", "llama-3.3-70b-versatile")
 
 
 @dataclass

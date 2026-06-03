@@ -73,7 +73,9 @@ def models_for_pool(pool: str) -> list[str]:
             v = (os.getenv(legacy, "") or "").strip()
             if v:
                 models = [v]
-    return models
+    from llm_providers import resolve_model
+
+    return [resolve_model("groq", m) for m in models]
 
 
 def groq_keys() -> list[str]:

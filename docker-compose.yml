@@ -191,7 +191,7 @@ services:
       - LEARNING_GLOBAL_SYNC_SEC=${LEARNING_GLOBAL_SYNC_SEC:-30}
       - LEARNING_FAST_TRACK=${LEARNING_FAST_TRACK:-true}
       - LEARNING_OPEN_POSITION_SEC=${LEARNING_OPEN_POSITION_SEC:-0.5}
-      - GROQ_LEARN_MODEL=${GROQ_LEARN_MODEL:-llama-3.1-70b-versatile}
+      - GROQ_LEARN_MODEL=${GROQ_LEARN_MODEL:-llama-3.3-70b-versatile}
       - OLLAMA_URL=http://ollama:11434
       - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3.1:8b}
       - LLM_KEY_SLOTS=${LLM_KEY_SLOTS:-32}
@@ -282,8 +282,8 @@ services:
       # API anahtarları yalnızca env_file: .env (boş ${VAR} env_file'i ezmesin diye burada yok)
       - LLM_KEY_SLOTS=${LLM_KEY_SLOTS:-32}
       - LLM_PROVIDER_ORDER=${LLM_PROVIDER_ORDER:-groq,cerebras,sambanova,openrouter,ollama}
-      - GROQ_DEBATE_MODEL=${GROQ_DEBATE_MODEL:-llama-3.1-70b-versatile}
-      - GROQ_LEARN_MODEL=${GROQ_LEARN_MODEL:-llama-3.1-70b-versatile}
+      - GROQ_DEBATE_MODEL=${GROQ_DEBATE_MODEL:-llama-3.3-70b-versatile}
+      - GROQ_LEARN_MODEL=${GROQ_LEARN_MODEL:-llama-3.3-70b-versatile}
       - GROQ_FAST_MODELS=${GROQ_FAST_MODELS:-}
       - GROQ_MAIN_MODELS=${GROQ_MAIN_MODELS:-}
       - GROQ_LEARNING_MODELS=${GROQ_LEARNING_MODELS:-}
@@ -456,7 +456,7 @@ services:
       - QDRANT_URL=http://qdrant:6333
       - OLLAMA_URL=http://ollama:11434
       - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3.1:8b}
-      - GROQ_LEARN_MODEL=${GROQ_LEARN_MODEL:-llama-3.1-70b-versatile}
+      - GROQ_LEARN_MODEL=${GROQ_LEARN_MODEL:-llama-3.3-70b-versatile}
       - LLM_KEY_SLOTS=${LLM_KEY_SLOTS:-32}
       - DRY_RUN=${DRY_RUN:-true}
     depends_on:

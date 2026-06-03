@@ -33,9 +33,25 @@ _OPENAI_PROVIDERS: dict[str, tuple[str, str, str]] = {
     "zai": ("ZAI_API_KEY", "https://api.z.ai/api/paas/v4", "ZAI_MODEL"),
 }
 
+# Deprecated provider model IDs → current replacements (see Groq/Cerebras deprecation docs)
+_MODEL_REMAP: dict[str, dict[str, str]] = {
+    "groq": {
+        "llama-3.1-70b-versatile": "llama-3.3-70b-versatile",
+        "llama-3.1-70b-specdec": "llama-3.3-70b-specdec",
+        "mixtral-8x7b-32768": "llama-3.3-70b-versatile",
+        "gemma2-9b-it": "llama-3.1-8b-instant",
+        "llama3-70b-8192": "llama-3.3-70b-versatile",
+        "llama3-8b-8192": "llama-3.1-8b-instant",
+    },
+    "cerebras": {
+        "llama3.1-8b": "gpt-oss-120b",
+        "llama3.1-70b": "llama-3.3-70b",
+    },
+}
+
 _DEFAULT_MODELS: dict[str, str] = {
-    "groq": "llama-3.1-70b-versatile",
-    "cerebras": "llama3.1-8b",
+    "groq": "llama-3.3-70b-versatile",
+    "cerebras": "gpt-oss-120b",
     "sambanova": "Meta-Llama-3.1-8B-Instruct",
     "openrouter": "google/gemma-2-9b-it:free",
     "mistral": "open-mistral-nemo",
@@ -74,6 +90,26 @@ def collect_keys(prefix: str, alt_primary: str | None = None) -> list[str]:
 def provider_order() -> list[str]:
     raw = os.getenv("LLM_PROVIDER_ORDER", DEFAULT_ORDER)
     return [p.strip().lower() for p in raw.split(",") if p.strip()]
+
+
+def resolve_model(provider_id: str, model: str) -> str:
+    """Map deprecated model env values to supported IDs."""
+    m = (model or "").strip()
+    if not m:
+        return _DEFAULT_MODELS.get(provider_id, m)
+    return _MODEL_REMAP.get(provider_id, {}).get(m, m)
+
+
+def http_error_detail(exc: BaseException, max_len: int = 280) -> str:
+    if isinstance(exc, urllib.error.HTTPError):
+        try:
+            raw = exc.read().decode("utf-8", errors="replace")
+            if raw:
+                return raw[:max_len]
+        except Exception:
+            pass
+        return f"HTTP {exc.code}: {exc.reason}"
+    return str(exc)[:max_len]
 
 
 def _is_rate_limited(exc: BaseException) -> bool:
@@ -190,8 +226,8 @@ def _anthropic_chat(api_key: str, model: str, prompt: str, max_tokens: int, temp
 
 def _model_for(pid: str, model_env: str, override: str | None) -> str:
     if override:
-        return override
-    return os.getenv(model_env, _DEFAULT_MODELS.get(pid, "gpt-4o-mini"))
+        return resolve_model(pid, override)
+    return resolve_model(pid, os.getenv(model_env, _DEFAULT_MODELS.get(pid, "gpt-4o-mini")))
 
 
 def _try_openai_provider(

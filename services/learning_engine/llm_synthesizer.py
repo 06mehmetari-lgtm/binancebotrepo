@@ -10,7 +10,7 @@ from llm_providers import chat_completion
 
 logger = logging.getLogger(__name__)
 
-GROQ_MODEL = os.getenv("GROQ_LEARN_MODEL", "llama-3.1-70b-versatile")
+GROQ_MODEL = os.getenv("GROQ_LEARN_MODEL", "llama-3.3-70b-versatile")
 
 
 def _parse_json_response(raw: str) -> dict | None:

@@ -161,8 +161,18 @@ echo ""
 echo "── 10) Canlı API testi (her anahtar) ──"
 if docker inspect prometheus_agents >/dev/null 2>&1 && [[ -f scripts/probe-llm-keys.py ]]; then
   docker cp scripts/probe-llm-keys.py prometheus_agents:/tmp/probe_llm_keys.py 2>/dev/null || true
-  if docker compose exec -T agent_system python3 /tmp/probe_llm_keys.py 2>&1; then
-    ok "probe tamamlandı (OK = anahtar çalışıyor; 429 = limit, anahtar geçerli)"
+  if probe_out=$(docker compose exec -T agent_system python3 /tmp/probe_llm_keys.py 2>&1); then
+    echo "$probe_out"
+    if echo "$probe_out" | grep -qE '^\s+OK'; then
+      ok "probe: en az bir anahtar OK"
+    elif echo "$probe_out" | grep -qi 'access denied\|network settings'; then
+      fail "probe: Groq 403 — VPS/datacenter IP engeli olabilir (anahtarlar doğru olsa bile)"
+      warn "Çözüm: LLM_PROVIDER_ORDER=ollama,groq,... veya farklı sunucu bölgesi"
+    elif echo "$probe_out" | grep -qE '^\s+FAIL.*403'; then
+      fail "probe: tüm anahtarlar 403 — bash scripts/fix-llm-models-on-server.sh sonra tekrar deneyin"
+    else
+      warn "probe bitti; OK satırı yok — fix-llm-models-on-server.sh çalıştırın"
+    fi
   else
     fail "probe hata — logları kontrol edin"
   fi
