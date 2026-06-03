@@ -4,8 +4,7 @@ import { createRedis } from '../_redis'
 import { discoverSymbols, scanKeys } from '@/lib/universe'
 import { fetchOpenPositions } from '@/lib/positions'
 import { buildStrategyDocument, CURRICULUM } from '@/lib/learning-hub'
-import { anyLlmConfigured, getLlmProviderStatus } from '@/lib/llm-providers'
-import { getGroqPoolStatus } from '@/lib/groq-pools'
+import { resolveLlmStatus } from '@/lib/llm-status-redis'
 
 const QDRANT_URL = process.env.QDRANT_URL || 'http://qdrant:6333'
 const OLLAMA_URL = process.env.OLLAMA_URL || 'http://ollama:11434'
@@ -75,6 +74,7 @@ export async function GET(req: Request) {
       vixRaw,
       fearRaw,
       immunityRaw,
+      llmStatusRaw,
       ollama,
       qdrant,
     ] = await Promise.all([
@@ -93,6 +93,7 @@ export async function GET(req: Request) {
       redis.get('macro:vix'),
       redis.get('sentiment:fear_greed'),
       redis.get('immunity:status'),
+      redis.get('system:llm:status'),
       ollamaStatus(),
       qdrantInfo(),
     ])
@@ -178,9 +179,10 @@ export async function GET(req: Request) {
     })
 
     const dryRun = process.env.DRY_RUN !== 'false'
-    const llmProviders = getLlmProviderStatus()
-    const groqConfigured = llmProviders.find(p => p.id === 'groq')?.configured ?? false
-    const llmAny = anyLlmConfigured()
+    const llmBundle = resolveLlmStatus(llmStatusRaw)
+    const llmProviders = llmBundle.providers
+    const groqConfigured = llmBundle.groq_configured
+    const llmAny = llmBundle.any_configured
     const strategyDoc = buildStrategyDocument({
       symbols_tracked: symbols.length,
       profiles_count: profileKeys.length,
@@ -253,15 +255,16 @@ export async function GET(req: Request) {
       },
       llm: {
         any_configured: llmAny,
+        status_source: llmBundle.source,
         providers: llmProviders,
         groq: {
           configured: groqConfigured,
-          key_count: llmProviders.find(p => p.id === 'groq')?.key_count ?? 0,
+          key_count: llmBundle.groq_key_count,
           model: process.env.GROQ_LEARN_MODEL ?? 'llama-3.1-70b-versatile',
         },
         ollama,
         provider_order: (process.env.LLM_PROVIDER_ORDER ?? '').split(',').map(s => s.trim()).filter(Boolean),
-        groq_pools: getGroqPoolStatus(),
+        groq_pools: llmBundle.groq_pools,
         ai_swarm: process.env.AI_ENABLE_SWARM !== 'false',
         ai_min_votes: Number(process.env.AI_MINIMUM_MODEL_VOTE ?? 3),
         agent_model: 'Groq model havuzları + swarm consensus (debate)',

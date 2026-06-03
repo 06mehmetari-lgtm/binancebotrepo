@@ -325,6 +325,7 @@ async def debate_loop(redis: aioredis.Redis):
 
         await asyncio.gather(*[_debate_one(s) for s in batch])
         await redis.set("system:heartbeat:agent_system", str(time.time()), ex=120)
+        await _publish_llm_status(redis)
         await asyncio.sleep(AGENT_CYCLE_SEC)
 
 
@@ -340,9 +341,24 @@ async def _supervise(name: str, coro_fn):
             await asyncio.sleep(5)
 
 
+async def _publish_llm_status(redis) -> None:
+    try:
+        import json
+        from llm_status import build_llm_status_payload
+
+        await redis.set(
+            "system:llm:status",
+            json.dumps(build_llm_status_payload()),
+            ex=300,
+        )
+    except Exception:
+        log.debug("llm status publish skipped", exc_info=True)
+
+
 async def main():
     log.info("agent_system starting — 9-agent debate team — dynamic symbols")
     redis = await aioredis.from_url(REDIS_URL)
+    await _publish_llm_status(redis)
     try:
         await asyncio.gather(
             _supervise("debate_loop", lambda: debate_loop(redis)),

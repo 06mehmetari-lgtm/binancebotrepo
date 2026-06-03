@@ -54,6 +54,7 @@ type HubData = {
     groq_pools?: Array<{ id: string; label: string; count: number; models: string[] }>
     ai_swarm?: boolean
     ai_min_votes?: number
+    status_source?: 'redis' | 'env'
     learn_llm_every_n?: number
   }
   pipeline: {
@@ -502,8 +503,11 @@ export default function LearningPage() {
             <h2 className="text-white font-bold mb-2">LLM durumu</h2>
             <p className={d.llm.any_configured ? 'text-green-400 text-sm' : 'text-red-400 text-sm'}>
               {d.llm.any_configured
-                ? `✓ En az bir sağlayıcı aktif (Groq anahtar: ${d.llm.groq.key_count ?? 0})`
-                : '✗ Hiç LLM anahtarı yok — .env dosyasına anahtar ekleyin'}
+                ? `✓ En az bir sağlayıcı aktif (Groq: ${d.llm.groq.key_count ?? 0} anahtar)`
+                : '✗ LLM anahtarı görünmüyor — agent_system çalışıyor mu? .env kontrol edin'}
+            </p>
+            <p className="text-gray-600 text-[10px]">
+              Durum kaynağı: {d.llm.status_source === 'redis' ? 'agent_system (.env doğru)' : 'dashboard env (sınırlı)'}
             </p>
             <p className="text-gray-500 text-xs mt-2 font-mono">
               Legacy: {d.llm.groq.model} · Swarm: {d.llm.ai_swarm ? `açık (min ${d.llm.ai_min_votes ?? 3} oy)` : 'kapalı'}
