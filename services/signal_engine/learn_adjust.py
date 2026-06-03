@@ -28,24 +28,42 @@ def adjust_confidence(
     factor = str(top.get("factor", ""))
 
     aligned = (
-        (direction == "long" and effect == "up")
-        or (direction == "short" and effect == "down")
+        (direction == "long" and effect in ("long_edge", "up"))
+        or (direction == "short" and effect in ("short_edge", "down"))
     )
     opposed = (
-        (direction == "long" and effect == "down")
-        or (direction == "short" and effect == "up")
+        (direction == "long" and effect in ("short_edge", "down"))
+        or (direction == "short" and effect in ("long_edge", "up"))
     )
 
     note = ""
-    if aligned and wr >= 0.55:
-        confidence = min(0.95, confidence * (1.0 + 0.08 * wr))
+    if aligned and wr >= 0.52:
+        confidence = min(0.95, confidence * (1.0 + 0.1 * wr))
         note = f"learn+:{factor}"
-    elif opposed and wr >= 0.55:
-        confidence = max(0.0, confidence * 0.82)
+    elif opposed and wr >= 0.52:
+        confidence = max(0.0, confidence * 0.78)
         note = f"learn-:{factor}"
 
-    avoid = profile.get("avoid_hint", "")
-    if avoid and opposed:
-        confidence *= 0.9
+    avoid = str(profile.get("avoid_hint", "") or "")
+    avoid_low = avoid.lower()
+    entry_only = (
+        "agresif boyut",
+        "açma:",
+        "long açma",
+        "chase",
+        "crowded long",
+    )
+    if avoid and direction in ("long", "short"):
+        if any(p in avoid_low for p in entry_only):
+            confidence *= 0.88
+            note = (note + "|avoid_entry").lstrip("|")
+        elif opposed:
+            confidence *= 0.9
+
+    stage = profile.get("learning_stage", "L0")
+    if stage == "L3" and aligned:
+        confidence = min(0.95, confidence * 1.04)
+    elif stage == "L0" and direction != "flat":
+        confidence *= 0.96
 
     return round(confidence, 4), note

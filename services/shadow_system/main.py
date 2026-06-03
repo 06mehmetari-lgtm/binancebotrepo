@@ -34,6 +34,17 @@ async def discover_symbols(redis: aioredis.Redis) -> list[str]:
 
 trader = PaperTrader(initial_capital=PORTFOLIO_VALUE)
 SHADOW_IDS = ["SHADOW_A", "SHADOW_B", "SHADOW_C"]
+# Tek sembol = tek paper pozisyon (dashboard mükerrer satır olmasın)
+SHADOW_OPEN_IDS = [
+    s.strip()
+    for s in os.getenv("SHADOW_OPEN_IDS", "SHADOW_A").split(",")
+    if s.strip()
+] or ["SHADOW_A"]
+SHADOW_ONE_PER_SYMBOL = os.getenv("SHADOW_ONE_PER_SYMBOL", "true").lower() in (
+    "1",
+    "true",
+    "yes",
+)
 
 
 async def _is_halted(redis: aioredis.Redis) -> bool:
@@ -157,6 +168,45 @@ async def emergency_listener(redis: aioredis.Redis):
             log.error(f"Shadow emergency error: {e}")
 
 
+async def _shadow_owner(redis: aioredis.Redis, symbol: str) -> str | None:
+    for sid in SHADOW_IDS:
+        if await redis.exists(f"shadow:positions:{sid}:{symbol}"):
+            return sid
+    return None
+
+
+async def dedupe_shadow_positions(redis: aioredis.Redis) -> int:
+    """Aynı sembolde B/C kopyalarını sil — yalnızca leader shadow tutulur."""
+    if not SHADOW_ONE_PER_SYMBOL:
+        return 0
+    leader = SHADOW_OPEN_IDS[0]
+    by_symbol: dict[str, list[tuple[str, str]]] = {}
+    cursor = 0
+    while True:
+        cursor, keys = await redis.scan(cursor, match="shadow:positions:*", count=200)
+        for key in keys:
+            k = key.decode() if isinstance(key, bytes) else key
+            parts = k.split(":")
+            if len(parts) < 4:
+                continue
+            sid, sym = parts[2], parts[3]
+            by_symbol.setdefault(sym, []).append((sid, k))
+        if cursor == 0:
+            break
+    removed = 0
+    for sym, entries in by_symbol.items():
+        if len(entries) <= 1:
+            continue
+        keep_sid = leader if any(e[0] == leader for e in entries) else entries[0][0]
+        for sid, k in entries:
+            if sid == keep_sid:
+                continue
+            await redis.delete(k)
+            removed += 1
+            log.info(f"shadow dedupe: removed duplicate {sid} {sym}")
+    return removed
+
+
 async def simulate_tick(redis: aioredis.Redis, symbol: str):
     if await _is_halted(redis):
         return
@@ -180,6 +230,7 @@ async def simulate_tick(redis: aioredis.Redis, symbol: str):
 
     confidence = float(signal.get("confidence", 0.5))
     size_usd = PORTFOLIO_VALUE * 0.05 * confidence
+    owner = await _shadow_owner(redis, symbol) if SHADOW_ONE_PER_SYMBOL else None
 
     for shadow_id in SHADOW_IDS:
         pos_key = f"shadow:positions:{shadow_id}:{symbol}"
@@ -188,7 +239,6 @@ async def simulate_tick(redis: aioredis.Redis, symbol: str):
         if pos_raw:
             pos = json.loads(pos_raw)
             if pos.get("direction") != direction:
-                # Close opposite position with correct side
                 pos_direction = pos.get("direction", "long")
                 close_side = "SELL" if pos_direction == "long" else "BUY_COVER"
                 result = trader.execute(shadow_id, symbol, close_side, price, 0)
@@ -205,18 +255,39 @@ async def simulate_tick(redis: aioredis.Redis, symbol: str):
                     }
                     await redis.publish("ch:trade_closed", json.dumps(closed))
                     schedule_save(closed)
+                    if SHADOW_ONE_PER_SYMBOL:
+                        owner = None
             else:
-                continue  # Already in correct direction
+                continue
 
-        # Open new position if none exists
-        if not await redis.exists(pos_key):
-            open_side = "BUY" if direction == "long" else "SELL_SHORT"
-            result = trader.execute(shadow_id, symbol, open_side, price, size_usd)
-            if result:
-                await redis.set(pos_key, json.dumps({
-                    "direction": direction, "price": price,
-                    "size_usd": size_usd, "time": time.time(),
-                }), ex=86400)
+    if SHADOW_ONE_PER_SYMBOL and owner:
+        return
+
+    open_targets = (
+        SHADOW_OPEN_IDS
+        if SHADOW_ONE_PER_SYMBOL
+        else SHADOW_IDS
+    )
+    for shadow_id in open_targets:
+        pos_key = f"shadow:positions:{shadow_id}:{symbol}"
+        if await redis.exists(pos_key):
+            continue
+        open_side = "BUY" if direction == "long" else "SELL_SHORT"
+        result = trader.execute(shadow_id, symbol, open_side, price, size_usd)
+        if result:
+            await redis.set(
+                pos_key,
+                json.dumps({
+                    "direction": direction,
+                    "price": price,
+                    "size_usd": size_usd,
+                    "time": time.time(),
+                    "entry_signal": signal,
+                }),
+                ex=86400,
+            )
+            if SHADOW_ONE_PER_SYMBOL:
+                break
 
 
 async def report_loop(redis: aioredis.Redis):
@@ -266,8 +337,14 @@ async def report_loop(redis: aioredis.Redis):
 
 
 async def main():
-    log.info("shadow_system starting")
+    log.info(
+        f"shadow_system starting — open_ids={SHADOW_OPEN_IDS} "
+        f"one_per_symbol={SHADOW_ONE_PER_SYMBOL}"
+    )
     redis = await aioredis.from_url(REDIS_URL)
+    n = await dedupe_shadow_positions(redis)
+    if n:
+        log.warning(f"shadow dedupe: removed {n} duplicate position key(s)")
     redis_em = await aioredis.from_url(REDIS_URL)
     redis_guard = await aioredis.from_url(REDIS_URL)
     await asyncio.gather(

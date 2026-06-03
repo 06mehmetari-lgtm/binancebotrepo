@@ -327,6 +327,8 @@ services:
     environment:
       - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379
       - POSTGRES_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/prometheus_trading
+      - SHADOW_OPEN_IDS=${SHADOW_OPEN_IDS:-SHADOW_A}
+      - SHADOW_ONE_PER_SYMBOL=${SHADOW_ONE_PER_SYMBOL:-true}
     depends_on:
       - redis
       - postgres
@@ -415,8 +417,14 @@ services:
       - NEXT_PUBLIC_API_URL=http://localhost:8000
       - REDIS_PASSWORD=${REDIS_PASSWORD}
       - REDIS_HOST=redis
+      - QDRANT_URL=http://qdrant:6333
+      - OLLAMA_URL=http://ollama:11434
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - GROQ_LEARN_MODEL=${GROQ_LEARN_MODEL:-llama-3.1-70b-versatile}
+      - DRY_RUN=${DRY_RUN:-true}
     depends_on:
       - redis
+      - ollama
     networks:
       - prometheus_net
 

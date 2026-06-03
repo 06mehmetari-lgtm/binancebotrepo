@@ -212,18 +212,38 @@ async def generate_signal(redis: aioredis.Redis, symbol: str) -> dict | None:
     signal_dict["trade_action"] = "none"
 
     open_pos = json.loads(pos_raw) if pos_raw else None
+    v_dir = str(verdict.get("direction", "flat") if verdict else "flat")
+    v_conf = float(verdict.get("confidence", 0) if verdict else 0)
+
     if open_pos:
         pos_dir = open_pos.get("direction", "long")
         signal_dict["has_position"] = True
         signal_dict["position_direction"] = pos_dir
-        if final_dir == "flat":
+        if final_dir == "flat" or v_dir == "flat":
+            signal_dict["direction"] = "flat"
             signal_dict["trade_action"] = "close"
             signal_dict["is_valid"] = True
             signal_dict["reject_reason"] = ""
+            signal_dict["close_reason"] = (
+                "ensemble_flat" if final_dir == "flat" else "verdict_flat"
+            )
         elif final_dir == pos_dir:
             signal_dict["trade_action"] = "hold"
+            if v_conf < 0.35:
+                signal_dict["trade_action"] = "close"
+                signal_dict["close_reason"] = "low_ai_confidence"
+                signal_dict["direction"] = "flat"
+                signal_dict["is_valid"] = True
+                signal_dict["reject_reason"] = ""
         elif final_dir in ("long", "short") and final_dir != pos_dir:
             signal_dict["trade_action"] = "reverse"
+    elif (
+        not is_valid
+        and learn_raw
+        and final_dir in ("long", "short")
+        and "avoid_entry" in (learn_note or "")
+    ):
+        signal_dict["reject_reason"] = signal_dict.get("reject_reason") or "learn_avoid_entry"
 
     if verdict:
         signal_dict["consensus_reasoning"] = verdict.get("consensus_reasoning") or verdict.get("reasoning", "")

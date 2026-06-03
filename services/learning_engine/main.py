@@ -113,66 +113,78 @@ class LearningEngine:
         return True
 
     async def on_trade_closed(self, redis: aioredis.Redis, trade: dict):
-        symbol = trade.get("symbol")
+        symbol = str(trade.get("symbol", "")).upper()
         if not symbol:
             return
         pnl = float(trade.get("pnl_pct", 0) or 0)
         direction = trade.get("direction", "long")
         won = pnl > 0
         learner = self._learner(symbol)
-        key = f"trade_{direction}_{'win' if won else 'loss'}"
-        st = learner._pat(key)
-        if won:
-            st.hits += 1
-            st.total_move_pct += abs(pnl) * 100
-        else:
-            st.misses += 1
-        lesson = (
-            f"Kapanan {direction}: {'kâr' if won else 'zarar'} {pnl:+.2%} — "
-            f"rejim {learner.last_regime} iken"
+
+        imbalance_5 = None
+        funding = None
+        feat_raw = await redis.get(f"features:latest:{symbol}")
+        if feat_raw:
+            try:
+                features = json.loads(feat_raw)
+                imbalance_5 = float(features.get("imbalance_5", 0) or 0)
+                funding = float(features.get("funding_rate", 0) or 0)
+            except (json.JSONDecodeError, TypeError, ValueError):
+                pass
+
+        lessons = learner.record_trade_close(
+            direction,
+            pnl,
+            won,
+            imbalance_5=imbalance_5,
+            funding=funding,
+            source=str(trade.get("source", trade.get("shadow_id", ""))),
         )
-        await persist_profile(redis, learner.build_profile(), [lesson])
+        await persist_profile(redis, learner.build_profile(), lessons)
+        log.info(f"[learn] trade_closed {symbol} {direction} pnl={pnl:+.2%} lessons={len(lessons)}")
 
 
-async def feature_listener(engine: LearningEngine, redis: aioredis.Redis):
-    pubsub = redis.pubsub()
+async def pubsub_listener(engine: LearningEngine, redis_cmd: aioredis.Redis):
+    """Dedicated pubsub connection — features + trade_closed on one listener."""
+    redis_sub = await aioredis.from_url(REDIS_URL)
+    pubsub = redis_sub.pubsub()
     await pubsub.psubscribe("ch:features:*")
-    log.info("learning_engine: subscribed ch:features:*")
+    await pubsub.subscribe("ch:trade_closed")
+    log.info("learning_engine: pubsub (features + trade_closed)")
     sem = asyncio.Semaphore(int(os.getenv("LEARNING_CONCURRENCY", "80")))
 
-    async def _one(sym: str):
+    async def _ingest(sym: str):
         async with sem:
-            await engine.ingest_symbol(redis, sym)
+            await engine.ingest_symbol(redis_cmd, sym)
 
-    async for msg in pubsub.listen():
-        if msg.get("type") != "pmessage":
-            continue
+    try:
+        async for msg in pubsub.listen():
+            try:
+                mtype = msg.get("type")
+                if mtype == "pmessage":
+                    sym = msg.get("data")
+                    if isinstance(sym, bytes):
+                        sym = sym.decode()
+                    if not sym or not str(sym).endswith("USDT"):
+                        ch = msg.get("channel", b"")
+                        if isinstance(ch, bytes):
+                            ch = ch.decode()
+                        sym = ch.split(":")[-1] if ":" in ch else sym
+                    await _ingest(str(sym).upper())
+                elif mtype == "message":
+                    trade = json.loads(msg["data"])
+                    await engine.on_trade_closed(redis_cmd, trade)
+            except Exception as e:
+                log.debug(f"pubsub: {e}")
+    finally:
         try:
-            sym = msg.get("data")
-            if isinstance(sym, bytes):
-                sym = sym.decode()
-            if not sym or not str(sym).endswith("USDT"):
-                ch = msg.get("channel", b"")
-                if isinstance(ch, bytes):
-                    ch = ch.decode()
-                sym = ch.split(":")[-1] if ":" in ch else sym
-            await _one(str(sym).upper())
-        except Exception as e:
-            log.debug(f"feature listener: {e}")
-
-
-async def trade_listener(engine: LearningEngine, redis: aioredis.Redis):
-    pubsub = redis.pubsub()
-    await pubsub.subscribe("ch:trade_closed")
-    log.info("learning_engine: subscribed ch:trade_closed")
-    async for msg in pubsub.listen():
-        if msg.get("type") != "message":
-            continue
+            await pubsub.aclose()
+        except Exception:
+            pass
         try:
-            trade = json.loads(msg["data"])
-            await engine.on_trade_closed(redis, trade)
-        except Exception as e:
-            log.error(f"trade listener: {e}")
+            await redis_sub.aclose()
+        except Exception:
+            pass
 
 
 async def _open_position_symbols(redis: aioredis.Redis) -> list[str]:
@@ -263,15 +275,10 @@ async def main():
         f"Ollama={'on' if ollama else 'off'}"
     )
     redis = await aioredis.from_url(REDIS_URL)
-    redis_sub = await aioredis.from_url(REDIS_URL)
-    redis_trade = await aioredis.from_url(REDIS_URL)
     engine = LearningEngine()
-
-    redis_hot = await aioredis.from_url(REDIS_URL)
     await asyncio.gather(
-        feature_listener(engine, redis_sub),
-        trade_listener(engine, redis_trade),
-        open_position_boost_loop(engine, redis_hot),
+        pubsub_listener(engine, redis),
+        open_position_boost_loop(engine, redis),
         scan_loop(engine, redis),
         global_sync_loop(engine, redis),
     )

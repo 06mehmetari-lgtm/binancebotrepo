@@ -43,6 +43,58 @@ export type PositionDecision = {
     ai_confidence?: number
     updated_at?: number
   }
+  regime?: string
+  context_regime?: string
+  ai_confidence_pct?: number
+  shadow_accounts?: number
+  sources_label?: string
+}
+
+function priceFromFeatures(raw: string | null): number {
+  if (!raw) return 0
+  try {
+    const f = JSON.parse(raw) as { close?: number; last_price?: number }
+    return Number(f.close ?? f.last_price ?? 0)
+  } catch {
+    return 0
+  }
+}
+
+/** Aynı sembol+yön: OMS öncelikli, shadow kopyaları tek satırda birleştirilir. */
+export function consolidatePositions(rows: PositionDecision[]): PositionDecision[] {
+  const map = new Map<string, PositionDecision>()
+  for (const p of rows) {
+    const key = `${p.symbol}:${p.direction}`
+    const cur = map.get(key)
+    if (!cur) {
+      map.set(key, { ...p, shadow_accounts: p.source === 'shadow' ? 1 : 0 })
+      continue
+    }
+    if (p.source === 'oms') {
+      map.set(key, {
+        ...p,
+        shadow_accounts: cur.shadow_accounts,
+        sources_label: cur.shadow_accounts ? 'oms+shadow' : 'oms',
+      })
+      continue
+    }
+    if (cur.source === 'oms') {
+      map.set(key, {
+        ...cur,
+        size_usd: cur.size_usd + p.size_usd,
+        shadow_accounts: (cur.shadow_accounts ?? 0) + 1,
+        sources_label: 'oms+shadow',
+      })
+      continue
+    }
+    map.set(key, {
+      ...cur,
+      size_usd: cur.size_usd + p.size_usd,
+      shadow_accounts: (cur.shadow_accounts ?? 1) + 1,
+      sources_label: `shadow×${(cur.shadow_accounts ?? 1) + 1}`,
+    })
+  }
+  return [...map.values()]
 }
 
 function tickerMid(raw: string | null): number {
@@ -118,6 +170,8 @@ export async function fetchOpenPositions(redis: Redis): Promise<{
   const pipeline = redis.pipeline()
   for (const r of raws) pipeline.get(r.key)
   for (const r of raws) pipeline.get(`binance:ticker:${r.symbol.toLowerCase()}`)
+  for (const r of raws) pipeline.get(`features:latest:${r.symbol}`)
+  for (const r of raws) pipeline.get(`context:latest:${r.symbol}`)
   for (const r of raws) pipeline.get(`signal:latest:${r.symbol}`)
   for (const r of raws) pipeline.get(`agents:verdict:${r.symbol}`)
   for (const r of raws) pipeline.get(`agents:verdicts:${r.symbol}`)
@@ -134,13 +188,21 @@ export async function fetchOpenPositions(redis: Redis): Promise<{
     if (!posObj) continue
 
     const tickerRaw = exec?.[n + i]?.[1] as string | null
-    const sigRaw = exec?.[2 * n + i]?.[1] as string | null
-    const verdictRaw = exec?.[3 * n + i]?.[1] as string | null
-    const votesRaw = exec?.[4 * n + i]?.[1] as string | null
-    const guardRaw = exec?.[5 * n + i]?.[1] as string | null
+    const featRaw = exec?.[2 * n + i]?.[1] as string | null
+    const ctxRaw = exec?.[3 * n + i]?.[1] as string | null
+    const sigRaw = exec?.[4 * n + i]?.[1] as string | null
+    const verdictRaw = exec?.[5 * n + i]?.[1] as string | null
+    const votesRaw = exec?.[6 * n + i]?.[1] as string | null
+    const guardRaw = exec?.[7 * n + i]?.[1] as string | null
     const guardParsed = safeJson(guardRaw) as Record<string, unknown> | null
 
-    const currentPrice = tickerMid(tickerRaw)
+    let currentPrice = tickerMid(tickerRaw)
+    if (currentPrice <= 0) currentPrice = priceFromFeatures(featRaw)
+    const ctxParsed = safeJson(ctxRaw) as { regime?: string } | null
+    const regime =
+      String(ctxParsed?.regime ?? '') ||
+      String((safeJson(sigRaw) as { regime?: string } | null)?.regime ?? '') ||
+      'unknown'
     const entryPrice = Number(posObj.entry_price ?? posObj.price ?? 0)
     const direction = String(posObj.direction ?? 'long')
     const sizeUsd = Number(posObj.size_usd ?? 0)
@@ -188,6 +250,8 @@ export async function fetchOpenPositions(redis: Redis): Promise<{
         ? 'Long pozisyon — giriş sinyali ensemble + ajan onayı ile açıldı'
         : 'Short pozisyon — giriş sinyali ensemble + ajan onayı ile açıldı')
 
+    const aiConf = verdict?.confidence ?? Number(currentSignal?.confidence ?? 0)
+
     positions.push({
       symbol: raws[i].symbol,
       direction,
@@ -206,6 +270,9 @@ export async function fetchOpenPositions(redis: Redis): Promise<{
       votes: Array.isArray(votes) ? votes : [],
       trade_action: currentSignal?.trade_action as string | undefined,
       open_reason: openReason,
+      regime,
+      context_regime: regime,
+      ai_confidence_pct: aiConf > 0 ? Math.round(aiConf * 100) : undefined,
       guard: guardParsed
         ? {
             action: String(guardParsed.action ?? 'hold'),
@@ -219,15 +286,16 @@ export async function fetchOpenPositions(redis: Redis): Promise<{
     })
   }
 
-  const longN = positions.filter(p => p.direction === 'long').length
-  const shortN = positions.filter(p => p.direction === 'short').length
+  const consolidated = consolidatePositions(positions)
+  const longN = consolidated.filter(p => p.direction === 'long').length
+  const shortN = consolidated.filter(p => p.direction === 'short').length
 
   return {
-    positions,
+    positions: consolidated,
     portfolio: {
-      total_open: pf?.total_open ?? positions.length,
-      oms_open: pf?.oms_open ?? positions.filter(p => p.source === 'oms').length,
-      shadow_open: pf?.shadow_open ?? positions.filter(p => p.source === 'shadow').length,
+      total_open: consolidated.length,
+      oms_open: consolidated.filter(p => p.source === 'oms').length,
+      shadow_open: consolidated.filter(p => p.shadow_accounts && p.shadow_accounts > 0).length,
       long_positions: pf?.long_positions ?? longN,
       short_positions: pf?.short_positions ?? shortN,
       updated_at: pf?.updated_at,

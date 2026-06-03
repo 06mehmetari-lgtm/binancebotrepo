@@ -236,6 +236,7 @@ async def main():
         for i in range(0, len(symbols_list), BATCH):
             await asyncio.gather(*[_process(s) for s in symbols_list[i:i + BATCH]])
 
+        await redis.set("system:heartbeat:feature_engine", str(time.time()), ex=120)
         await asyncio.sleep(1)
 
 

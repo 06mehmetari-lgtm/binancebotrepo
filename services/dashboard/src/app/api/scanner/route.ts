@@ -2,35 +2,11 @@ import { NextResponse } from 'next/server'
 export const dynamic = 'force-dynamic'
 import { createRedis } from '../_redis'
 import { discoverSymbols } from '@/lib/universe'
+import { computeSQS } from '@/lib/sqs'
 
 function safe(raw: string | null): Record<string, unknown> | null {
   if (!raw) return null
   try { return JSON.parse(raw) } catch { return null }
-}
-
-function computeSQS(p: {
-  confidence: number; direction: string; sharpe: number | null
-  winRate: number | null; regime: string | null; drift: string
-  shadowSharpe?: number; shadowWr?: number
-}): number {
-  if (p.direction === 'flat') return 0
-  const confScore = Math.min(1, p.confidence) * 30
-  let btScore = 0
-  if (p.sharpe !== null && p.winRate !== null) {
-    const sn = Math.min(1, Math.max(0, p.sharpe / 3.0))
-    const wn = Math.min(1, Math.max(0, p.winRate / 100))
-    btScore = (sn * 0.7 + wn * 0.3) * 35
-  }
-  let shadowScore = 0
-  if (p.shadowSharpe !== undefined && p.shadowWr !== undefined) {
-    const ss = Math.min(1, Math.max(0, p.shadowSharpe / 2.0))
-    const sw = Math.min(1, Math.max(0, p.shadowWr / 100))
-    shadowScore = (ss * 0.6 + sw * 0.4) * 15
-  }
-  const regAdj = (p.regime === 'trending_up' || p.regime === 'trending_down') ? 5
-    : p.regime === 'volatile' ? -5 : 0
-  const driftAdj = p.drift === 'WARNING' ? -5 : p.drift === 'DRIFTING' ? -15 : p.drift === 'SHOCK' ? -30 : 0
-  return Math.round(Math.max(0, Math.min(100, confScore + btScore + shadowScore + regAdj + driftAdj)))
 }
 
 export async function GET() {
@@ -84,9 +60,17 @@ export async function GET() {
       const sharpe = bt ? (typeof bt.sharpe_ratio === 'number' ? bt.sharpe_ratio : null) : null
       const winRate = bt ? (typeof bt.win_rate_pct === 'number' ? bt.win_rate_pct : null) : null
 
+      const imb = typeof f.imbalance_5 === 'number' ? f.imbalance_5 : null
       const sqs = computeSQS({
-        confidence, direction, sharpe, winRate, regime, drift,
-        shadowSharpe: bestShadow?.sharpe, shadowWr: bestShadow?.win_rate,
+        confidence,
+        direction,
+        sharpe,
+        winRate,
+        regime,
+        drift,
+        shadowSharpe: bestShadow?.sharpe,
+        shadowWr: bestShadow ? bestShadow.win_rate * 100 : undefined,
+        imbalance5: imb,
       })
 
       coins.push({

@@ -64,6 +64,17 @@ async def publish_portfolio_state(redis: aioredis.Redis) -> dict:
             "shadow_id": shadow_id,
         })
 
+    # Tek sembol = tek kayıt (shadow A/B/C mükerrer sayılmasın)
+    deduped: list[dict] = []
+    seen: set[tuple[str, str, str]] = set()
+    for p in positions:
+        key = (p["symbol"], p.get("source", "oms"), str(p.get("shadow_id", "")))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(p)
+    positions = deduped
+
     long_n = sum(1 for p in positions if p["direction"] == "long")
     short_n = sum(1 for p in positions if p["direction"] == "short")
 

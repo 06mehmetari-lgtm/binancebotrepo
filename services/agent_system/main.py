@@ -174,159 +174,187 @@ _learn_debate_at: dict[str, float] = {}
 LEARN_DEBATE_COOLDOWN = float(os.getenv("LEARN_DEBATE_COOLDOWN_SEC", "45"))
 
 
-async def learn_update_listener(redis: aioredis.Redis):
-    """Re-debate symbol when learning_engine publishes new behavioral profile."""
-    pubsub = redis.pubsub()
-    await pubsub.psubscribe("ch:learn:*")
-    log.info("agent_system: listening for learning profile updates")
-    async for msg in pubsub.listen():
-        if msg.get("type") != "pmessage":
+async def _handle_learn_message(redis_cmd: aioredis.Redis, msg: dict) -> None:
+    sym = msg.get("data")
+    if isinstance(sym, bytes):
+        sym = sym.decode()
+    symbol = str(sym).upper()
+    if not symbol.endswith("USDT"):
+        ch = msg.get("channel", b"")
+        if isinstance(ch, bytes):
+            ch = ch.decode()
+        symbol = ch.split(":")[-1].upper()
+    now = time.time()
+    if now - _learn_debate_at.get(symbol, 0) < LEARN_DEBATE_COOLDOWN:
+        return
+    _learn_debate_at[symbol] = now
+    await run_debate_for_symbol(redis_cmd, symbol)
+
+
+async def _handle_trade_closed(redis_cmd: aioredis.Redis, msg: dict) -> None:
+    trade = json.loads(msg["data"])
+    symbol = trade.get("symbol")
+    if not symbol:
+        return
+    pnl = float(trade.get("pnl_pct", 0))
+    pos_dir = trade.get("direction") or trade.get("side", "long")
+    if pos_dir in ("BUY", "SELL_SHORT"):
+        return
+    was_win = pnl > 0
+
+    votes_raw = await redis_cmd.get(f"agents:verdicts:{symbol}")
+    if not votes_raw:
+        return
+    votes = json.loads(votes_raw)
+    weights = dict(debate.weights)
+    for v in votes:
+        agent_key = (v.get("agent") or "").replace("_agent", "")
+        if not agent_key:
             continue
-        try:
-            sym = msg.get("data")
-            if isinstance(sym, bytes):
-                sym = sym.decode()
-            symbol = str(sym).upper()
-            if not symbol.endswith("USDT"):
-                ch = msg.get("channel", b"")
-                if isinstance(ch, bytes):
-                    ch = ch.decode()
-                symbol = ch.split(":")[-1].upper()
-            now = time.time()
-            if now - _learn_debate_at.get(symbol, 0) < LEARN_DEBATE_COOLDOWN:
-                continue
-            _learn_debate_at[symbol] = now
-            await run_debate_for_symbol(redis, symbol)
-        except Exception as e:
-            log.debug(f"learn listener: {e}")
+        voted = v.get("signal", "flat")
+        if voted == "flat":
+            continue
+        correct = (voted == pos_dir) == was_win
+        debate.update_weights(agent_key, correct)
+        weights[agent_key] = debate.weights.get(agent_key, 1.0)
+    await redis_cmd.set("agents:weights", json.dumps(weights), ex=86400 * 7)
 
 
-async def trade_feedback_loop(redis: aioredis.Redis):
-    """Adjust agent weights when shadow/OMS closes a trade."""
-    pubsub = redis.pubsub()
+async def pubsub_listener(redis_cmd: aioredis.Redis):
+    """
+    Dedicated Redis connection for pub/sub only.
+    Never mix pubsub.listen() with GET/SET on the same connection (redis-py requirement).
+    """
+    redis_sub = await aioredis.from_url(REDIS_URL)
+    pubsub = redis_sub.pubsub()
     await pubsub.subscribe("ch:trade_closed")
-    log.info("agent_system: listening for trade feedback")
-    async for msg in pubsub.listen():
-        if msg.get("type") != "message":
-            continue
+    await pubsub.psubscribe("ch:learn:*")
+    log.info("agent_system: pubsub listener (trade_closed + learn)")
+    try:
+        async for msg in pubsub.listen():
+            try:
+                mtype = msg.get("type")
+                if mtype == "message":
+                    await _handle_trade_closed(redis_cmd, msg)
+                elif mtype == "pmessage":
+                    await _handle_learn_message(redis_cmd, msg)
+            except Exception as e:
+                log.error(f"pubsub handler: {e}")
+    finally:
         try:
-            trade = json.loads(msg["data"])
-            symbol = trade.get("symbol")
-            if not symbol:
-                continue
-            pnl = float(trade.get("pnl_pct", 0))
-            pos_dir = trade.get("direction") or trade.get("side", "long")
-            if pos_dir in ("BUY", "SELL_SHORT"):
-                continue
-            was_win = pnl > 0
+            await pubsub.aclose()
+        except Exception:
+            pass
+        try:
+            await redis_sub.aclose()
+        except Exception:
+            pass
 
-            votes_raw = await redis.get(f"agents:verdicts:{symbol}")
-            if not votes_raw:
-                continue
-            votes = json.loads(votes_raw)
-            weights = dict(debate.weights)
-            for v in votes:
-                agent_key = (v.get("agent") or "").replace("_agent", "")
-                if not agent_key:
-                    continue
-                voted = v.get("signal", "flat")
-                if voted == "flat":
-                    continue
-                correct = (voted == pos_dir) == was_win
-                debate.update_weights(agent_key, correct)
-                weights[agent_key] = debate.weights.get(agent_key, 1.0)
-            await redis.set("agents:weights", json.dumps(weights), ex=86400 * 7)
-        except Exception as e:
-            log.error(f"Trade feedback error: {e}")
+
+_debate_sem: asyncio.Semaphore | None = None
+
+
+def _debate_sem() -> asyncio.Semaphore:
+    global _debate_sem
+    if _debate_sem is None:
+        n = int(os.getenv("AGENT_CONCURRENCY", "20"))
+        _debate_sem = asyncio.Semaphore(max(1, n))
+    return _debate_sem
+
+
+async def debate_loop(redis: aioredis.Redis):
+    active_set: set[str] = set()
+    last_refresh = 0.0
+    cycle_offset = 0
+
+    async def _debate_one(symbol: str):
+        async with _debate_sem():
+            try:
+                await run_debate_for_symbol(redis, symbol)
+            except Exception as e:
+                log.exception(f"Debate error for {symbol}: {e}")
+
+    while True:
+        now = time.time()
+        if now - last_refresh > SYMBOL_REFRESH_INTERVAL or not active_set:
+            syms = await discover_symbols(redis)
+            if syms:
+                active_set = set(syms)
+                log.info(
+                    f"agent_system: {len(active_set)} symbols — "
+                    f"batches of {AGENT_BATCH_SIZE}"
+                )
+            last_refresh = now
+
+        symbols_list = sorted(active_set)
+        n = len(symbols_list)
+        if n == 0:
+            await asyncio.sleep(AGENT_CYCLE_SEC)
+            continue
+
+        priority: list[str] = []
+        pf_raw = await redis.get("portfolio:state:v1")
+        if pf_raw:
+            try:
+                pf = json.loads(pf_raw)
+                priority = list(
+                    dict.fromkeys(
+                        p["symbol"]
+                        for p in pf.get("positions", [])
+                        if p.get("source") == "oms" and p.get("symbol")
+                    )
+                )
+            except json.JSONDecodeError:
+                pass
+
+        batch_n = min(AGENT_BATCH_SIZE, n)
+        batch: list[str] = []
+        used: set[str] = set()
+        for sym in priority:
+            if sym in active_set and len(batch) < batch_n:
+                batch.append(sym)
+                used.add(sym)
+        idx = 0
+        while len(batch) < batch_n and idx < n:
+            sym = symbols_list[(cycle_offset + idx) % n]
+            if sym not in used:
+                batch.append(sym)
+                used.add(sym)
+            idx += 1
+        cycle_offset = (cycle_offset + batch_n) % n
+
+        await asyncio.gather(*[_debate_one(s) for s in batch])
+        await redis.set("system:heartbeat:agent_system", str(time.time()), ex=120)
+        await asyncio.sleep(AGENT_CYCLE_SEC)
+
+
+async def _supervise(name: str, coro_fn):
+    """Run coroutine factory in a loop; isolate failures."""
+    while True:
+        try:
+            await coro_fn()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception(f"{name} crashed — retry in 5s")
+            await asyncio.sleep(5)
 
 
 async def main():
     log.info("agent_system starting — 9-agent debate team — dynamic symbols")
     redis = await aioredis.from_url(REDIS_URL)
-
-    active_set: set[str] = set()
-    last_refresh = 0.0
-    cycle_offset = 0
-    _sem = asyncio.Semaphore(int(os.getenv("AGENT_CONCURRENCY", "40")))
-
-    async def _debate_one(symbol: str):
-        async with _sem:
-            try:
-                await run_debate_for_symbol(redis, symbol)
-            except Exception as e:
-                log.error(f"Debate error for {symbol}: {e}")
-
-    async def debate_loop():
-        nonlocal active_set, last_refresh, cycle_offset
-        while True:
-            now = time.time()
-            if now - last_refresh > SYMBOL_REFRESH_INTERVAL or not active_set:
-                syms = await discover_symbols(redis)
-                if syms:
-                    active_set = set(syms)
-                    log.info(f"agent_system: {len(active_set)} symbols — rotating batches of {AGENT_BATCH_SIZE}")
-                last_refresh = now
-
-            symbols_list = sorted(active_set)
-            n = len(symbols_list)
-            if n == 0:
-                await asyncio.sleep(AGENT_CYCLE_SEC)
-                continue
-
-            priority: list[str] = []
-            pf_raw = await redis.get("portfolio:state:v1")
-            if pf_raw:
-                try:
-                    pf = json.loads(pf_raw)
-                    priority = list(
-                        dict.fromkeys(
-                            p["symbol"]
-                            for p in pf.get("positions", [])
-                            if p.get("source") == "oms" and p.get("symbol")
-                        )
-                    )
-                except json.JSONDecodeError:
-                    pass
-
-            batch_n = min(AGENT_BATCH_SIZE, n)
-            batch: list[str] = []
-            used: set[str] = set()
-            for sym in priority:
-                if sym in active_set and len(batch) < batch_n:
-                    batch.append(sym)
-                    used.add(sym)
-            idx = 0
-            while len(batch) < batch_n and idx < n:
-                sym = symbols_list[(cycle_offset + idx) % n]
-                if sym not in used:
-                    batch.append(sym)
-                    used.add(sym)
-                idx += 1
-            cycle_offset = (cycle_offset + batch_n) % n
-
-            await asyncio.gather(*[_debate_one(s) for s in batch])
-            await asyncio.sleep(AGENT_CYCLE_SEC)
-
-    async def _supervise(name: str, coro):
-        while True:
-            try:
-                await coro
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                log.exception(f"{name} task crashed — retry in 5s")
-                await asyncio.sleep(5)
-
-    redis_fb = await aioredis.from_url(REDIS_URL)
-    redis_learn = await aioredis.from_url(REDIS_URL)
-    redis_guard = await aioredis.from_url(REDIS_URL)
-    await asyncio.gather(
-        _supervise("debate_loop", debate_loop()),
-        _supervise("position_guard", position_guard_loop(redis_guard, run_debate_for_symbol)),
-        _supervise("weight_update", weight_update_loop(redis)),
-        _supervise("trade_feedback", trade_feedback_loop(redis_fb)),
-        _supervise("learn_update", learn_update_listener(redis_learn)),
-    )
+    try:
+        await asyncio.gather(
+            _supervise("debate_loop", lambda: debate_loop(redis)),
+            _supervise(
+                "position_guard",
+                lambda: position_guard_loop(redis, run_debate_for_symbol),
+            ),
+            _supervise("weight_update", lambda: weight_update_loop(redis)),
+            _supervise("pubsub", lambda: pubsub_listener(redis)),
+        )
+    finally:
+        await redis.aclose()
 
 
 if __name__ == "__main__":

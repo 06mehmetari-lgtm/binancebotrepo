@@ -170,7 +170,7 @@ export default function PositionsPage() {
 
   useEffect(() => {
     fetchData()
-    const t = setInterval(fetchData, 5000)
+    const t = setInterval(fetchData, 2000)
     return () => clearInterval(t)
   }, [])
 
@@ -423,17 +423,27 @@ export default function PositionsPage() {
               <tbody>
                 {positions.map(pos => {
                   const exp = expandedSymbol === pos.symbol
-                  const entry = pos.entry_signal ?? {}
-                  const regime = String(entry.regime ?? pos.verdict?.direction ?? '—')
+                  const regime = pos.regime ?? pos.context_regime ?? String(pos.current_signal?.regime ?? '—')
+                  const confPct = pos.ai_confidence_pct ?? (
+                    pos.verdict?.confidence != null
+                      ? Math.round(pos.verdict.confidence * 100)
+                      : null
+                  )
+                  const rowKey = `${pos.symbol}-${pos.direction}-${pos.source}`
                   return (
-                  <Fragment key={pos.symbol}>
+                  <Fragment key={rowKey}>
                   <tr
                     className={`border-b border-gray-800/40 hover:bg-gray-800/20 transition-colors cursor-pointer ${
                       (pos.unrealized_pct ?? 0) > 0.5 ? 'bg-green-950/10' :
                       (pos.unrealized_pct ?? 0) < -0.5 ? 'bg-red-950/10' : ''
                     }`}
                     onClick={() => setExpandedSymbol(exp ? null : pos.symbol)}>
-                    <td className="px-4 py-3 font-bold text-white">{pos.symbol}</td>
+                    <td className="px-4 py-3 font-bold text-white">
+                      {pos.symbol}
+                      {pos.sources_label ? (
+                        <span className="ml-1 text-[10px] text-gray-500 font-normal">({pos.sources_label})</span>
+                      ) : null}
+                    </td>
                     <td className="px-4 py-3">
                       <span className={`text-xs px-2 py-0.5 rounded font-bold border ${DIR_STYLE[pos.direction] ?? ''}`}>
                         {pos.direction === 'long' ? '▲ LONG' : '▼ SHORT'}
@@ -450,7 +460,10 @@ export default function PositionsPage() {
                       {(pos.age_hours ?? 0) < 1 ? `${Math.round((pos.age_hours ?? 0) * 60)}m` : `${(pos.age_hours ?? 0).toFixed(1)}h`}
                     </td>
                     <td className="px-4 py-3 text-xs text-gray-400">
-                      {entry.confidence != null ? `${Math.round(Number(entry.confidence) <= 1 ? Number(entry.confidence) * 100 : Number(entry.confidence))}%` : '—'}
+                      {confPct != null ? `${confPct}%` : '—'}
+                      {pos.verdict?.direction === 'flat' && (
+                        <span className="block text-[10px] text-yellow-500">FLAT</span>
+                      )}
                     </td>
                     <td className={`px-4 py-3 text-xs ${
                       regime === 'trending_up' ? 'text-green-400' :

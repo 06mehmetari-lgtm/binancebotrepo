@@ -34,22 +34,31 @@ echo -e "${GRAY}$(date '+%Y-%m-%d %H:%M:%S')${NC}\n"
 # ─── 1. DOCKER CONTAINERS ──────────────────────────────────
 hdr "1. DOCKER CONTAINERS"
 CONTAINERS=(
+  "prometheus_postgres:PostgreSQL"
+  "prometheus_timescale:TimescaleDB"
   "prometheus_redis:Redis"
+  "prometheus_qdrant:Qdrant"
+  "prometheus_ollama:Ollama"
   "prometheus_data:Data Ingestion"
   "prometheus_features:Feature Engine"
   "prometheus_context:Context Engine"
+  "prometheus_learning:Learning Engine"
+  "prometheus_sentiment:Sentiment"
+  "prometheus_macro:Macro"
   "prometheus_signal:Signal Engine"
   "prometheus_agents:Agent System"
   "prometheus_shadow:Shadow System"
   "prometheus_immunity:Immunity System"
   "prometheus_oms:OMS"
-  "prometheus_sentiment:Sentiment"
-  "prometheus_macro:Macro"
   "prometheus_neat:NEAT Evolution"
   "prometheus_rl:RL Agent"
+  "prometheus_autopsy:Autopsy"
+  "prometheus_rag:RAG Memory"
+  "prometheus_scenarios:Scenario Engine"
   "prometheus_backtest:Backtest"
   "prometheus_dashboard:Dashboard"
-  "prometheus_autopsy:Autopsy"
+  "prometheus_monitor:Prometheus"
+  "prometheus_grafana:Grafana"
 )
 
 for entry in "${CONTAINERS[@]}"; do
@@ -240,10 +249,59 @@ else
   echo -e "  ${YELLOW}⚠${NC}  BTCUSDT için ajan kararı yok"
 fi
 
-# ─── 6. CONTAINER LOG (SON HATALAR) ─────────────────────────
-hdr "6. CONTAINER HATALAR (Son 5)"
-for C in prometheus_signal prometheus_features prometheus_backtest; do
-  ERRORS=$(docker logs "$C" --since=30m 2>&1 | grep -i "error\|exception\|traceback\|critical" | tail -3)
+# Guard / portfolio
+GUARD=$(rget "guard:status:v1")
+PF=$(rget "portfolio:state:v1")
+if [ -n "$GUARD" ]; then
+  GINFO=$(echo "$GUARD" | python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+print(f\"aktif={d.get('active')} pozisyon={d.get('count',0)}\")
+" 2>/dev/null)
+  ok "Position Guard: ${GREEN}$GINFO${NC}"
+else
+  warn "Position Guard: ${YELLOW}guard:status:v1 yok${NC}"
+fi
+if [ -n "$PF" ]; then
+  PINFO=$(echo "$PF" | python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+print(f\"toplam={d.get('total_open',0)} oms={d.get('oms_open',0)} shadow={d.get('shadow_open',0)}\")
+" 2>/dev/null)
+  info "Portfolio: $PINFO"
+fi
+
+# Learning profiles
+LEARN_COUNT=$(rkeys "learn:profile:*" | wc -l | tr -d ' ')
+if [ "$LEARN_COUNT" -gt 0 ]; then
+  ok "Learning Engine: ${GREEN}${LEARN_COUNT}${NC} davranış profili"
+else
+  warn "Learning Engine: ${YELLOW}learn:profile:* yok${NC}"
+fi
+
+# ─── 6. SORUNLU CONTAINER ÖZETİ ─────────────────────────────
+hdr "6. SORUNLU CONTAINER'LAR"
+PROBLEM=0
+for entry in "${CONTAINERS[@]}"; do
+  NAME="${entry%%:*}"
+  STATUS=$(docker inspect --format='{{.State.Status}}' "$NAME" 2>/dev/null)
+  RESTART=$(docker inspect --format='{{.RestartCount}}' "$NAME" 2>/dev/null)
+  if [ -z "$STATUS" ] || [ "$STATUS" != "running" ]; then
+    fail "${entry##*:} ($NAME) — ${STATUS:-NOT FOUND}"
+    PROBLEM=$((PROBLEM + 1))
+  elif [ "${RESTART:-0}" -gt 3 ] 2>/dev/null; then
+    warn "${entry##*:} ($NAME) — running ama RestartCount=$RESTART"
+    PROBLEM=$((PROBLEM + 1))
+  fi
+done
+if [ "$PROBLEM" -eq 0 ]; then
+  ok "Tüm izlenen servisler running (RestartCount≤3)"
+fi
+
+# ─── 7. CONTAINER LOG (SON HATALAR) ─────────────────────────
+hdr "7. CONTAINER HATALAR (Son 5, 30 dk)"
+for C in prometheus_agents prometheus_signal prometheus_features prometheus_learning prometheus_rag prometheus_oms prometheus_data; do
+  ERRORS=$(docker logs "$C" --since=30m 2>&1 | grep -iE "error|exception|traceback|critical|division by zero" | grep -vi "Event loop is closed" | tail -3)
   if [ -n "$ERRORS" ]; then
     echo -e "  ${RED}[$C]${NC}"
     echo "$ERRORS" | while read -r line; do
@@ -252,19 +310,24 @@ for C in prometheus_signal prometheus_features prometheus_backtest; do
   fi
 done
 
-# ─── 7. ÖZET ────────────────────────────────────────────────
-hdr "7. ÖZET"
+# ─── 8. ÖZET ────────────────────────────────────────────────
+hdr "8. ÖZET"
 
 RUNNING=$(docker ps --filter "name=prometheus_" --format "{{.Names}}" 2>/dev/null | wc -l | tr -d ' ')
-TOTAL=18
+TOTAL=${#CONTAINERS[@]}
 echo -e "  Çalışan container: ${GREEN}${RUNNING}${NC} / ${TOTAL}"
 echo -e "  Feature verisi: ${FEAT_COUNT:-0} sembol"
 echo -e "  Aktif sinyal: ${SIG_COUNT:-0} sembol"
 echo -e "  Ajan kararı: ${AGT_COUNT:-0} sembol"
 echo ""
 
-if [ "$FEAT_COUNT" -gt 0 ] && [ "$SIG_COUNT" -gt 0 ]; then
+if [ "${PROBLEM:-0}" -gt 0 ]; then
+  echo -e "  ${RED}${BOLD}✗ ${PROBLEM} servis sorunlu (stopped/restarting/yüksek restart)${NC}"
+fi
+if [ "$FEAT_COUNT" -gt 0 ] && [ "$SIG_COUNT" -gt 0 ] && [ "${PROBLEM:-0}" -eq 0 ]; then
   echo -e "  ${GREEN}${BOLD}✓ SİSTEM GERÇEK VERİYLE ÇALIŞIYOR${NC}"
+elif [ "$FEAT_COUNT" -gt 0 ] && [ "$SIG_COUNT" -gt 0 ]; then
+  echo -e "  ${YELLOW}${BOLD}⚠ Veri akışı var; bazı container'lar sorunlu${NC}"
 elif [ "$FEAT_COUNT" -gt 0 ]; then
   echo -e "  ${YELLOW}${BOLD}⚠ Özellikler var ama sinyal yok — signal_engine kontrol et${NC}"
 else

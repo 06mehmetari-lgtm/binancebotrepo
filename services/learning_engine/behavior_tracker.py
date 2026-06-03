@@ -121,6 +121,41 @@ class SymbolLearner:
             "drift_modes": list({s.drift for s in recent}),
         }
 
+    def record_trade_close(
+        self,
+        direction: str,
+        pnl_pct: float,
+        won: bool,
+        *,
+        imbalance_5: float | None = None,
+        funding: float | None = None,
+        source: str = "",
+    ) -> list[str]:
+        """Her kapanan işlemden derinlik/funding bağlamıyla ders."""
+        key = f"trade_{direction}_{'win' if won else 'loss'}"
+        st = self._pat(key)
+        if won:
+            st.hits += 1
+            st.total_move_pct += abs(pnl_pct) * 100
+        else:
+            st.misses += 1
+        lessons: list[str] = [
+            f"Kapanış {direction} {'kâr' if won else 'zarar'} {pnl_pct:+.2%} "
+            f"(rejim {self.last_regime}, kaynak {source or '?'})"
+        ]
+        if imbalance_5 is not None:
+            side = "bid baskısı" if imbalance_5 > 0.2 else (
+                "ask baskısı" if imbalance_5 < -0.2 else "dengeli defter"
+            )
+            lessons.append(f"imbalance_5={imbalance_5:.2f} → {side}")
+            if imbalance_5 > 0.25 and not won and direction == "long":
+                self._pat("bid_pressure_up").misses += 1
+            elif imbalance_5 < -0.25 and not won and direction == "long":
+                self._pat("bid_pressure_up").hits += 1
+        if funding is not None and abs(funding) > 0.0004:
+            lessons.append(f"funding={funding*100:.3f}% kapanış anı")
+        return lessons
+
     def observe(self, sample: TickSample) -> list[str]:
         """Returns new lesson lines only for meaningful regime shifts (deduped)."""
         new_lessons: list[str] = []

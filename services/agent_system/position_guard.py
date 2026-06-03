@@ -26,7 +26,9 @@ MAX_LOSS_PCT = float(os.getenv("GUARD_MAX_LOSS_PCT", "1.5"))
 EMERGENCY_LOSS_PCT = float(os.getenv("GUARD_EMERGENCY_LOSS_PCT", "2.5"))
 MIN_HOLD_CONFIDENCE = float(os.getenv("GUARD_MIN_HOLD_CONFIDENCE", "0.45"))
 GUARD_DEBATE_MAX_AGE = float(os.getenv("GUARD_DEBATE_MAX_AGE", "8"))
+GUARD_ACTION_COOLDOWN = float(os.getenv("GUARD_ACTION_COOLDOWN", "30"))
 _guard_sem: asyncio.Semaphore | None = None
+_last_close_publish: dict[str, float] = {}
 
 
 def _guard_semaphore() -> asyncio.Semaphore:
@@ -142,10 +144,17 @@ def evaluate_position(
             upnl, v_conf, trade_action, checks, time.time(),
         )
 
-    if trade_action == "close" or sig_dir == "flat" and v_dir == "flat" and v_conf >= 0.55:
+    if trade_action == "close" or (sig_dir == "flat" and v_dir == "flat" and v_conf >= 0.55):
         return GuardDecision(
             symbol, source, direction, "close", "high",
             "AI çıkış (FLAT) — sinyal ve verdict uyumlu",
+            upnl, v_conf, trade_action, checks, time.time(),
+        )
+
+    if v_dir == "flat" and direction in ("long", "short"):
+        return GuardDecision(
+            symbol, source, direction, "close", "high",
+            f"AI FLAT ({v_conf:.0%}) — yön uyumsuz pozisyon kapatılıyor",
             upnl, v_conf, trade_action, checks, time.time(),
         )
 
@@ -170,12 +179,23 @@ def evaluate_position(
             upnl, v_conf, trade_action, checks, time.time(),
         )
 
-    if avoid and upnl < -0.3 and len(avoid) > 5:
-        return GuardDecision(
-            symbol, source, direction, "close", "medium",
-            f"Öğrenme kaçınma kuralı: {avoid[:80]}",
-            upnl, v_conf, trade_action, checks, time.time(),
+    # learn:profile avoid_hint is for new entries (signal sizing), not micro-loss exits
+    if avoid and upnl <= -MAX_LOSS_PCT and len(avoid) > 5:
+        low = avoid.lower()
+        entry_only = (
+            "agresif boyut",
+            "açma:",
+            "long açma",
+            "short açma",
+            "chase",
+            "crowded long",
         )
+        if not any(p in low for p in entry_only):
+            return GuardDecision(
+                symbol, source, direction, "close", "medium",
+                f"Öğrenme kaçınma + zarar %{abs(upnl):.2f}: {avoid[:80]}",
+                upnl, v_conf, trade_action, checks, time.time(),
+            )
 
     if v_conf < MIN_HOLD_CONFIDENCE and upnl < 0:
         urgency = "medium"
@@ -187,12 +207,32 @@ def evaluate_position(
     )
 
 
+def _position_key(pos: dict) -> tuple[str, str, str]:
+    return (
+        str(pos.get("symbol", "")).upper(),
+        str(pos.get("source", "oms")),
+        str(pos.get("shadow_id", "")),
+    )
+
+
+def _dedupe_positions(positions: list[dict]) -> list[dict]:
+    seen: set[tuple[str, str, str]] = set()
+    out: list[dict] = []
+    for pos in positions:
+        key = _position_key(pos)
+        if not key[0] or key in seen:
+            continue
+        seen.add(key)
+        out.append(pos)
+    return out
+
+
 async def list_open_positions(redis: aioredis.Redis) -> list[dict]:
     raw = await redis.get("portfolio:state:v1")
     if raw:
         try:
             state = json.loads(raw)
-            return list(state.get("positions") or [])
+            return _dedupe_positions(list(state.get("positions") or []))
         except json.JSONDecodeError:
             pass
     positions: list[dict] = []
@@ -213,7 +253,7 @@ async def list_open_positions(redis: aioredis.Redis) -> list[dict]:
                     pass
         if cursor == 0:
             break
-    return positions
+    return _dedupe_positions(positions)
 
 
 async def run_guard_cycle(
@@ -274,6 +314,11 @@ async def run_guard_cycle(
         await redis.set(f"guard:position:{symbol}", json.dumps(dec.to_dict()), ex=120)
 
         if dec.action in ("close", "emergency_close"):
+            pub_key = f"{symbol}:{dec.source}:{dec.shadow_id}"
+            now = time.time()
+            if now - _last_close_publish.get(pub_key, 0) < GUARD_ACTION_COOLDOWN:
+                continue
+            _last_close_publish[pub_key] = now
             await redis.publish(GUARD_CHANNEL, json.dumps(dec.to_dict()))
             log.warning(
                 f"[GUARD] {symbol} {dec.action} ({dec.urgency}) — {dec.reason}"
