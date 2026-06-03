@@ -97,7 +97,12 @@ export async function GET(req: Request) {
 
     const learnGlobal = safeJson(learnGlobalRaw) as Record<string, unknown> | null
     const promotion = (safeJson(promotionRaw) as Record<string, unknown>) ?? {}
-    const shadowLb = (safeJson(shadowLbRaw) as unknown[]) ?? []
+    type ShadowEntry = { trades?: number; promotion_ready?: boolean; shadow_id?: string }
+    const shadowParsed = safeJson(shadowLbRaw)
+    const shadowLb: ShadowEntry[] = Array.isArray(shadowParsed)
+      ? (shadowParsed as ShadowEntry[])
+      : []
+    const firstShadow = shadowLb[0]
     const immunity = safeJson(immunityRaw) as Record<string, unknown> | null
 
     const profileKeys = await scanKeys(redis, 'learn:profile:*')
@@ -226,8 +231,16 @@ export async function GET(req: Request) {
           { label: 'Max drawdown', value: '10%' },
         ],
         live_steps: [
-          { step: 1, text: 'Shadow SHADOW_A kriterleri sağlasın (100+ işlem)', done: (shadowLb[0] as { trades?: number })?.trades >= 100 },
-          { step: 2, text: 'Sharpe ≥ 1.5 ve WR ≥ 52%', done: Boolean((shadowLb[0] as { promotion_ready?: boolean })?.promotion_ready) },
+          {
+            step: 1,
+            text: 'Shadow SHADOW_A kriterleri sağlasın (100+ işlem)',
+            done: (firstShadow?.trades ?? 0) >= 100,
+          },
+          {
+            step: 2,
+            text: 'Sharpe ≥ 1.5 ve WR ≥ 52%',
+            done: Boolean(firstShadow?.promotion_ready),
+          },
           { step: 3, text: 'system:promotion:status approved=true', done: Boolean(promotion.approved) },
           { step: 4, text: '.env DRY_RUN=false + LIVE_TRADING_CONFIRMED=true', done: false },
         ],

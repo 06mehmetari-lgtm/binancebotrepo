@@ -94,7 +94,7 @@ export function consolidatePositions(rows: PositionDecision[]): PositionDecision
       sources_label: `shadow×${(cur.shadow_accounts ?? 1) + 1}`,
     })
   }
-  return [...map.values()]
+  return Array.from(map.values())
 }
 
 function tickerMid(raw: string | null): number {
