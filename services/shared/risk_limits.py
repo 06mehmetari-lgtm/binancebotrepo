@@ -91,16 +91,24 @@ def is_paper_unlimited() -> bool:
 
 
 def apply_paper_overrides(lim: RiskLimits) -> RiskLimits:
+    """Paper: öğrenme için gevşek ama kârlılık için alt sınır korunur."""
     if not is_paper_unlimited():
         return lim
+    try:
+        from profit_rules import PAPER_MIN_SIGNAL_CONFIDENCE, SHADOW_MAX_OPEN
+        paper_conf = max(PAPER_MIN_SIGNAL_CONFIDENCE, 0.58)
+        paper_open = min(SHADOW_MAX_OPEN, 5)
+    except ImportError:
+        paper_conf = 0.58
+        paper_open = 3
     return RiskLimits(
-        max_leverage=max(lim.max_leverage, 10.0),
-        max_position_pct=max(lim.max_position_pct, 1.0),
-        max_daily_loss_pct=1.0,
-        max_open_positions=500,
-        min_signal_confidence=min(lim.min_signal_confidence, 0.35),
-        min_immunity_confidence=min(lim.min_immunity_confidence, 0.30),
-        max_trades_per_day=10_000,
+        max_leverage=min(max(lim.max_leverage, 3.0), 5.0),
+        max_position_pct=min(max(lim.max_position_pct, 0.05), 0.08),
+        max_daily_loss_pct=min(max(lim.max_daily_loss_pct, 0.03), 0.05),
+        max_open_positions=min(max(lim.max_open_positions, paper_open), paper_open),
+        min_signal_confidence=max(paper_conf, min(lim.min_signal_confidence, 0.58)),
+        min_immunity_confidence=max(0.52, min(lim.min_immunity_confidence, 0.52)),
+        max_trades_per_day=min(max(lim.max_trades_per_day, 80), 120),
         updated_at=lim.updated_at,
         updated_by=f"{lim.updated_by}+paper",
     )

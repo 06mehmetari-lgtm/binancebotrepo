@@ -146,9 +146,15 @@ def evaluate_risk(
         stop_loss = 1.0
 
     stop_loss = stop_loss * (1.0 + risk_score * 0.3)
-    take_profit = [0.5, 1.5, 3.0, 5.0, 10.0] if confidence >= 0.7 else [0.5, 2.0, 5.0]
+    try:
+        from profit_rules import profit_tiers, PAPER_MIN_SIGNAL_CONFIDENCE
+        take_profit = profit_tiers()
+        min_conf = PAPER_MIN_SIGNAL_CONFIDENCE if paper else 0.52
+    except ImportError:
+        take_profit = [1.5, 3.0, 6.0, 12.0] if confidence >= 0.7 else [1.5, 3.0, 6.0]
+        min_conf = 0.58 if paper else 0.52
 
-    approved = risk_score < 0.72 and confidence >= 0.30
+    approved = risk_score < 0.72 and confidence >= min_conf
     if not approved:
         reasons.append("risk_score_high" if risk_score >= 0.72 else "low_confidence")
 

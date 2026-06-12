@@ -9,6 +9,7 @@ COPY shared/llm_status.py ./llm_status.py
 COPY shared/llm_runtime_keys.py ./llm_runtime_keys.py
 COPY shared/llm_health.py ./llm_health.py
 COPY shared/risk_limits.py ./risk_limits.py
+COPY shared/profit_rules.py ./profit_rules.py
 COPY shared/proxy_pool.py ./proxy_pool.py
 COPY shared/position_plan.py ./position_plan.py
 EXPOSE 8007

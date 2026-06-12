@@ -11,6 +11,38 @@ from shadow_evaluator import ShadowEvaluator
 from promotion_engine import PromotionEngine
 from trade_store import schedule_save
 
+try:
+    from profit_rules import (
+        SHADOW_HARD_STOP_PCT,
+        SHADOW_MAX_OPEN,
+        SHADOW_MIN_CONFIDENCE,
+        SYMBOL_COOLDOWN_SEC,
+        cooldown_key,
+        entry_allowed,
+        is_on_cooldown,
+        profit_tiers,
+    )
+except ImportError:
+    SHADOW_MIN_CONFIDENCE = 0.62
+    SHADOW_MAX_OPEN = 3
+    SHADOW_HARD_STOP_PCT = 1.2
+    SYMBOL_COOLDOWN_SEC = 1800
+
+    def cooldown_key(symbol: str, source: str = "shadow") -> str:
+        return f"trade:cooldown:{source}:{symbol.upper()}"
+
+    def is_on_cooldown(until: float | None) -> bool:
+        return bool(until and time.time() < float(until))
+
+    def profit_tiers() -> list[float]:
+        return [1.5, 3.0, 6.0, 12.0]
+
+    def entry_allowed(confidence: float, *, stop_pct: float = 0, tp_pct: float = 0, min_conf: float | None = None):
+        mc = min_conf or SHADOW_MIN_CONFIDENCE
+        if confidence < mc:
+            return False, f"confidence {confidence:.2f} < {mc:.2f}"
+        return True, "ok"
+
 EMERGENCY_CHANNEL = "ch:emergency:close_all"
 GUARD_CHANNEL = "ch:position:guard"
 HALT_KEY = "system:trading:halted"
@@ -169,6 +201,8 @@ async def guard_listener(redis: aioredis.Redis):
                     }
                     await redis.publish("ch:trade_closed", json.dumps(payload))
                     schedule_save(payload)
+                    await _set_symbol_cooldown(redis, symbol)
+                    await _publish_portfolio(redis)
                     log.warning(f"[GUARD→SHADOW] {sid} {symbol} closed")
                 break
         except Exception as e:
@@ -228,8 +262,126 @@ async def dedupe_shadow_positions(redis: aioredis.Redis) -> int:
     return removed
 
 
+def _upnl_pct(direction: str, entry: float, price: float) -> float:
+    if entry <= 0 or price <= 0:
+        return 0.0
+    if direction == "long":
+        return (price - entry) / entry * 100
+    return (entry - price) / entry * 100
+
+
+async def _shadow_open_count(redis: aioredis.Redis, shadow_id: str) -> int:
+    n = 0
+    cursor = 0
+    prefix = f"shadow:positions:{shadow_id}:"
+    while True:
+        cursor, keys = await redis.scan(cursor, match=f"{prefix}*", count=100)
+        n += len(keys)
+        if cursor == 0:
+            break
+    return n
+
+
+async def _set_symbol_cooldown(redis: aioredis.Redis, symbol: str) -> None:
+    until = time.time() + SYMBOL_COOLDOWN_SEC
+    await redis.set(cooldown_key(symbol, "shadow"), str(until), ex=SYMBOL_COOLDOWN_SEC + 120)
+
+
+async def _is_symbol_cooled(redis: aioredis.Redis, symbol: str) -> bool:
+    raw = await redis.get(cooldown_key(symbol, "shadow"))
+    if not raw:
+        return False
+    try:
+        return is_on_cooldown(float(raw))
+    except (TypeError, ValueError):
+        return False
+
+
+async def _publish_portfolio(redis: aioredis.Redis) -> None:
+    try:
+        from portfolio_sync import publish_portfolio_state
+        await publish_portfolio_state(redis)
+    except ImportError:
+        pass
+
+
+async def _force_close_shadow(
+    redis: aioredis.Redis,
+    shadow_id: str,
+    symbol: str,
+    pos: dict,
+    price: float,
+    reason: str,
+) -> None:
+    pos_key = f"shadow:positions:{shadow_id}:{symbol}"
+    pos_direction = pos.get("direction", "long")
+    close_side = "SELL" if pos_direction == "long" else "BUY_COVER"
+    result = trader.execute(shadow_id, symbol, close_side, price, 0)
+    await redis.delete(pos_key)
+    if result:
+        await redis.lpush(f"shadow:trades:{shadow_id}", json.dumps(result))
+        await redis.ltrim(f"shadow:trades:{shadow_id}", 0, 999)
+        payload = {
+            "shadow_id": shadow_id,
+            "symbol": symbol,
+            "source": "shadow_system",
+            "close_reason": reason,
+            "closed_at": time.time(),
+            **result,
+        }
+        await redis.publish("ch:trade_closed", json.dumps(payload))
+        schedule_save(payload)
+        await _set_symbol_cooldown(redis, symbol)
+        log.warning(f"[SHADOW STOP] {shadow_id} {symbol} {reason} pnl={result.get('pnl_pct', 0):.2%}")
+    await _publish_portfolio(redis)
+
+
+async def _enforce_hard_stops(redis: aioredis.Redis) -> None:
+    """Tick başı — açık shadow pozisyonlarında sert stop (guard beklemeden)."""
+    cursor = 0
+    while True:
+        cursor, keys = await redis.scan(cursor, match="shadow:positions:*", count=100)
+        for key in keys:
+            k = key.decode() if isinstance(key, bytes) else key
+            parts = k.split(":")
+            if len(parts) < 4:
+                continue
+            shadow_id, sym = parts[2], parts[3]
+            if shadow_id not in SHADOW_OPEN_IDS:
+                continue
+            pos_raw = await redis.get(k)
+            if not pos_raw:
+                continue
+            try:
+                pos = json.loads(pos_raw)
+            except json.JSONDecodeError:
+                continue
+            ticker_raw = await redis.get(f"binance:ticker:{sym.lower()}")
+            if not ticker_raw:
+                continue
+            ticker = json.loads(ticker_raw)
+            ticker_data = ticker.get("data", ticker)
+            price = float(ticker_data.get("b", ticker_data.get("best_bid", 0)))
+            if price <= 0:
+                continue
+            entry = float(pos.get("price", pos.get("entry_price", 0)))
+            direction = str(pos.get("direction", "long"))
+            upnl = _upnl_pct(direction, entry, price)
+            ladder = pos.get("ladder") or {}
+            sl_pct = float(ladder.get("stop_loss_pct") or SHADOW_HARD_STOP_PCT)
+            if upnl <= -sl_pct:
+                await _force_close_shadow(
+                    redis, shadow_id, sym, pos, price,
+                    f"hard_stop %{sl_pct:.1f} ({upnl:+.2f}%)",
+                )
+        if cursor == 0:
+            break
+
+
 async def simulate_tick(redis: aioredis.Redis, symbol: str):
     if await _is_halted(redis):
+        return
+    if await _is_symbol_cooled(redis, symbol):
         return
     sig_raw = await redis.get(f"signal:latest:{symbol}")
     if not sig_raw:
@@ -250,12 +402,22 @@ async def simulate_tick(redis: aioredis.Redis, symbol: str):
         return
 
     confidence = float(signal.get("confidence", 0.5))
+    decision = signal.get("decision") or {}
+    sl_pct = float(decision.get("stop_loss_pct") or signal.get("stop_loss_pct") or 1.2)
+    tp_tiers = decision.get("take_profit_tiers_pct") or signal.get("take_profit_tiers") or profit_tiers()
+    tp_pct = float(tp_tiers[0] if tp_tiers else profit_tiers()[0])
+    ok, why = entry_allowed(confidence, stop_pct=sl_pct, tp_pct=tp_pct)
+    if not ok:
+        return
+
     try:
         from risk_limits import get_active_limits
         max_pos_pct = get_active_limits().max_position_pct
+        if max_pos_pct > 1:
+            max_pos_pct = 0.05
     except Exception:
         max_pos_pct = 0.05
-    size_usd = PORTFOLIO_VALUE * max_pos_pct * confidence
+    size_usd = PORTFOLIO_VALUE * max_pos_pct * min(confidence, 0.85)
     owner = await _shadow_owner(redis, symbol) if SHADOW_ONE_PER_SYMBOL else None
 
     for shadow_id in SHADOW_IDS:
@@ -281,6 +443,8 @@ async def simulate_tick(redis: aioredis.Redis, symbol: str):
                     }
                     await redis.publish("ch:trade_closed", json.dumps(closed))
                     schedule_save(closed)
+                    await _set_symbol_cooldown(redis, symbol)
+                    await _publish_portfolio(redis)
                     if SHADOW_ONE_PER_SYMBOL:
                         owner = None
             else:
@@ -298,6 +462,8 @@ async def simulate_tick(redis: aioredis.Redis, symbol: str):
         pos_key = f"shadow:positions:{shadow_id}:{symbol}"
         if await redis.exists(pos_key):
             continue
+        if await _shadow_open_count(redis, shadow_id) >= SHADOW_MAX_OPEN:
+            continue
         open_side = "BUY" if direction == "long" else "SELL_SHORT"
         result = trader.execute(shadow_id, symbol, open_side, price, size_usd)
         if result:
@@ -309,8 +475,18 @@ async def simulate_tick(redis: aioredis.Redis, symbol: str):
                     "size_usd": size_usd,
                     "time": time.time(),
                     "entry_signal": signal,
+                    "ladder": {
+                        "take_profit_pct": tp_pct,
+                        "stop_loss_pct": sl_pct,
+                        "entry_confidence": confidence,
+                    },
                 }),
                 ex=86400,
+            )
+            await _publish_portfolio(redis)
+            log.info(
+                f"[SHADOW OPEN] {shadow_id} {direction.upper()} {symbol} "
+                f"conf={confidence:.2f} size=${size_usd:.0f} sl={sl_pct}% tp={tp_pct}%"
             )
             if SHADOW_ONE_PER_SYMBOL:
                 break
@@ -415,6 +591,11 @@ async def _trading_loop(redis: aioredis.Redis):
             symbols = await discover_symbols(redis)
             last_refresh = now
             log.info(f"shadow_system tracking {len(symbols)} symbols")
+
+        try:
+            await _enforce_hard_stops(redis)
+        except Exception as e:
+            log.error(f"shadow hard_stop: {e}")
 
         for symbol in symbols:
             try:

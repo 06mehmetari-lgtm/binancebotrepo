@@ -21,21 +21,37 @@ log = logging.getLogger(__name__)
 GUARD_CHANNEL = "ch:position:guard"
 GUARD_STATUS_KEY = "guard:status:v1"
 
-# Eşikler (paper test için sıkı; canlıda immunity ayrıca korur)
-MAX_LOSS_PCT = float(os.getenv("GUARD_MAX_LOSS_PCT", "1.5"))
-EMERGENCY_LOSS_PCT = float(os.getenv("GUARD_EMERGENCY_LOSS_PCT", "2.5"))
+try:
+    from profit_rules import (
+        GUARD_EMERGENCY_LOSS_PCT as _PR_EMERGENCY,
+        GUARD_MAX_LOSS_PCT as _PR_MAX_LOSS,
+        GUARD_TAKE_PROFIT_PCT as _PR_TP,
+        profit_tiers as _profit_tiers_from_rules,
+    )
+except ImportError:
+    _PR_MAX_LOSS = 1.0
+    _PR_EMERGENCY = 1.8
+    _PR_TP = 1.2
+    _profit_tiers_from_rules = None
+
+# Eşikler — autopsy: %0.5 TP çok erken, -%8 zarar guard dışı kaldı
+MAX_LOSS_PCT = float(os.getenv("GUARD_MAX_LOSS_PCT", str(_PR_MAX_LOSS)))
+EMERGENCY_LOSS_PCT = float(os.getenv("GUARD_EMERGENCY_LOSS_PCT", str(_PR_EMERGENCY)))
 MIN_HOLD_CONFIDENCE = float(os.getenv("GUARD_MIN_HOLD_CONFIDENCE", "0.45"))
 GUARD_DEBATE_MAX_AGE = float(os.getenv("GUARD_DEBATE_MAX_AGE", "8"))
-GUARD_ACTION_COOLDOWN = float(os.getenv("GUARD_ACTION_COOLDOWN", "30"))
-TAKE_PROFIT_PCT = float(os.getenv("GUARD_TAKE_PROFIT_PCT", "0.5"))
-PAPER_MIN_HOLD_SEC = float(os.getenv("PAPER_MIN_HOLD_SEC", "120"))
-PROFIT_PROTECT_PCT = float(os.getenv("GUARD_PROFIT_PROTECT_PCT", "0.25"))
-TRAIL_MIN_PEAK_PCT = float(os.getenv("GUARD_TRAIL_MIN_PEAK", "1.5"))
-TRAIL_GIVEBACK_PCT = float(os.getenv("GUARD_TRAIL_GIVEBACK_PCT", "0.6"))
+GUARD_ACTION_COOLDOWN = float(os.getenv("GUARD_ACTION_COOLDOWN", "15"))
+TAKE_PROFIT_PCT = float(os.getenv("GUARD_TAKE_PROFIT_PCT", str(_PR_TP)))
+PAPER_MIN_HOLD_SEC = float(os.getenv("PAPER_MIN_HOLD_SEC", "180"))
+PROFIT_PROTECT_PCT = float(os.getenv("GUARD_PROFIT_PROTECT_PCT", "0.8"))
+TRAIL_MIN_PEAK_PCT = float(os.getenv("GUARD_TRAIL_MIN_PEAK", "2.0"))
+TRAIL_GIVEBACK_PCT = float(os.getenv("GUARD_TRAIL_GIVEBACK_PCT", "0.5"))
+SYMBOL_COOLDOWN_SEC = int(os.getenv("SYMBOL_COOLDOWN_SEC", "1800"))
 
 
 def _profit_tiers() -> list[float]:
-    raw = os.getenv("GUARD_PROFIT_TIERS", "0.5,2,5,10,25")
+    if _profit_tiers_from_rules:
+        return _profit_tiers_from_rules()
+    raw = os.getenv("GUARD_PROFIT_TIERS", "1.5,3,6,12")
     tiers = sorted({float(x.strip()) for x in raw.split(",") if x.strip()})
     return tiers or [0.5, 2.0, 5.0, 10.0, 25.0]
 _guard_sem: asyncio.Semaphore | None = None
@@ -486,32 +502,57 @@ def _explain_price_move(
     return " · ".join(p for p in parts if p)[:320]
 
 
-async def list_open_positions(redis: aioredis.Redis) -> list[dict]:
-    raw = await redis.get("portfolio:state:v1")
-    if raw:
-        try:
-            state = json.loads(raw)
-            return _dedupe_positions(list(state.get("positions") or []))
-        except json.JSONDecodeError:
-            pass
-    positions: list[dict] = []
+async def _scan_position_keys(redis: aioredis.Redis, pattern: str) -> list[str]:
+    keys: list[str] = []
     cursor = 0
     while True:
-        cursor, keys = await redis.scan(cursor, match="oms:position:*", count=50)
-        for key in keys:
-            k = key.decode() if isinstance(key, bytes) else key
-            sym = k.split(":")[-1]
-            pr = await redis.get(k)
-            if pr:
-                try:
-                    p = json.loads(pr)
-                    p["symbol"] = sym
-                    p["source"] = "oms"
-                    positions.append(p)
-                except json.JSONDecodeError:
-                    pass
+        cursor, batch = await redis.scan(cursor, match=pattern, count=100)
+        keys.extend(k.decode() if isinstance(k, bytes) else k for k in batch)
         if cursor == 0:
             break
+    return keys
+
+
+async def list_open_positions(redis: aioredis.Redis) -> list[dict]:
+    """OMS + shadow — portfolio cache expire olsa bile guard her ikisini görür."""
+    positions: list[dict] = []
+
+    for key in await _scan_position_keys(redis, "oms:position:*"):
+        sym = key.split(":")[-1]
+        pr = await redis.get(key)
+        if not pr:
+            continue
+        try:
+            p = json.loads(pr)
+            p["symbol"] = sym
+            p["source"] = "oms"
+            positions.append(p)
+        except json.JSONDecodeError:
+            pass
+
+    for key in await _scan_position_keys(redis, "shadow:positions:*"):
+        parts = key.split(":")
+        if len(parts) < 4:
+            continue
+        shadow_id, sym = parts[2], parts[3]
+        pr = await redis.get(key)
+        if not pr:
+            continue
+        try:
+            p = json.loads(pr)
+            positions.append({
+                "symbol": sym,
+                "direction": p.get("direction", "long"),
+                "size_usd": float(p.get("size_usd", 0)),
+                "entry_price": float(p.get("price", p.get("entry_price", 0))),
+                "entry_time": p.get("time", p.get("entry_time")),
+                "source": "shadow",
+                "shadow_id": shadow_id,
+                "ladder": p.get("ladder") or {},
+            })
+        except (json.JSONDecodeError, TypeError, ValueError):
+            pass
+
     return _dedupe_positions(positions)
 
 
@@ -635,6 +676,12 @@ async def run_guard_cycle(
                 continue
             _last_close_publish[pub_key] = now
             await redis.publish(GUARD_CHANNEL, json.dumps(dec.to_dict()))
+            try:
+                from profit_rules import cooldown_key
+                ck = cooldown_key(symbol, dec.source)
+            except ImportError:
+                ck = f"trade:cooldown:{dec.source}:{symbol}"
+            await redis.set(ck, str(now + SYMBOL_COOLDOWN_SEC), ex=SYMBOL_COOLDOWN_SEC + 60)
             log.warning(
                 f"[GUARD] {symbol} {dec.action} ({dec.urgency}) — {dec.reason}"
             )

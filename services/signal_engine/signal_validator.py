@@ -5,12 +5,22 @@ class SignalValidator:
     def _min_confidence(self) -> float:
         try:
             from risk_limits import get_active_limits, is_paper_unlimited
+            from profit_rules import PAPER_MIN_SIGNAL_CONFIDENCE
             lim = get_active_limits()
             if is_paper_unlimited():
-                return min(lim.min_signal_confidence, 0.30)
+                return max(PAPER_MIN_SIGNAL_CONFIDENCE, lim.min_signal_confidence)
             return lim.min_immunity_confidence
+        except ImportError:
+            try:
+                from risk_limits import get_active_limits, is_paper_unlimited
+                lim = get_active_limits()
+                if is_paper_unlimited():
+                    return max(0.58, lim.min_signal_confidence)
+                return lim.min_immunity_confidence
+            except Exception:
+                return 0.52
         except Exception:
-            return 0.52
+            return 0.58
 
     def _paper_mode(self) -> bool:
         try:

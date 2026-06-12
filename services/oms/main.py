@@ -210,6 +210,15 @@ async def close_position(
         log.info(f"Position CLOSED: {symbol} {direction} pnl={pnl_pct:.2%} (${pnl_usdt:+.2f})")
 
     await redis.delete(f"oms:position:{symbol}")
+    try:
+        from profit_rules import SYMBOL_COOLDOWN_SEC, cooldown_key
+        await redis.set(
+            cooldown_key(symbol, "oms"),
+            str(time.time() + SYMBOL_COOLDOWN_SEC),
+            ex=SYMBOL_COOLDOWN_SEC + 120,
+        )
+    except ImportError:
+        pass
     await publish_portfolio_state(redis)
 
 
@@ -314,6 +323,22 @@ async def process_signal(redis: aioredis.Redis, symbol: str):
 
     if not signal.get("is_valid"):
         return
+
+    try:
+        from profit_rules import OMS_MIN_CONFIDENCE, cooldown_key, is_on_cooldown
+        conf = float(signal.get("confidence", 0))
+        if conf < OMS_MIN_CONFIDENCE:
+            return
+        cd_raw = await redis.get(cooldown_key(symbol, "oms"))
+        if cd_raw:
+            try:
+                if is_on_cooldown(float(cd_raw)):
+                    return
+            except (TypeError, ValueError):
+                pass
+    except ImportError:
+        if float(signal.get("confidence", 0)) < 0.60:
+            return
 
     cap = _portfolio_cap()
     price = await get_price(redis, symbol)
@@ -457,11 +482,11 @@ async def process_signal(redis: aioredis.Redis, symbol: str):
         or signal.get("take_profit_tiers")
         or []
     )
-    tp_pct = float(tp_tiers[0] if tp_tiers else os.getenv("PAPER_TAKE_PROFIT_PCT", "0.5"))
+    tp_pct = float(tp_tiers[0] if tp_tiers else os.getenv("PAPER_TAKE_PROFIT_PCT", "1.5"))
     sl_pct = float(
         decision.get("stop_loss_pct")
         or signal.get("stop_loss_pct")
-        or os.getenv("PAPER_STOP_LOSS_PCT", "1.5")
+        or os.getenv("PAPER_STOP_LOSS_PCT", "1.2")
     )
     trade_plan: dict = {}
     entry_blueprint: dict = {}

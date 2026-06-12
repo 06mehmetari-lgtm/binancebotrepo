@@ -14,10 +14,10 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 PROMOTION_CRITERIA = {
-    "min_sharpe": 1.2,
-    "min_win_rate": 0.55,
-    "min_trades": 30,
-    "max_drawdown": 0.08,
+    "min_sharpe": 1.5,
+    "min_win_rate": 0.52,
+    "min_trades": 100,
+    "max_drawdown": 0.10,
 }
 
 
