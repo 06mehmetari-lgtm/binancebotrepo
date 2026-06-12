@@ -123,14 +123,34 @@ class LearningEngine:
 
         imbalance_5 = None
         funding = None
+        market_state: dict = {}
         feat_raw = await redis.get(f"features:latest:{symbol}")
         if feat_raw:
             try:
                 features = json.loads(feat_raw)
                 imbalance_5 = float(features.get("imbalance_5", 0) or 0)
                 funding = float(features.get("funding_rate", 0) or 0)
+                market_state["volume_ratio"] = float(features.get("volume_ratio", 1) or 1)
+                market_state["rsi_14"] = float(features.get("rsi_14", 50) or 50)
             except (json.JSONDecodeError, TypeError, ValueError):
                 pass
+
+        ctx_raw = await redis.get(f"context:latest:{symbol}")
+        if ctx_raw:
+            try:
+                ctx = json.loads(ctx_raw)
+                market_state["regime"] = str(ctx.get("regime") or "")
+                market_state["regime_strength"] = float(ctx.get("regime_strength", 0) or 0)
+                market_state["crisis_level"] = int(ctx.get("crisis_level", 0) or 0)
+                market_state["drift_status"] = str(ctx.get("drift_status") or "")
+            except (json.JSONDecodeError, TypeError, ValueError):
+                pass
+
+        exit_r = str(trade.get("exit_reason", "") or "")
+        if not won and "breakout" in exit_r.lower():
+            market_state["pattern"] = "false_breakout"
+        elif not won and float(trade.get("volume_ratio", market_state.get("volume_ratio", 1) or 1)) < 0.8:
+            market_state["pattern"] = "low_liquidity"
 
         lessons = learner.record_trade_close(
             direction,
@@ -149,7 +169,16 @@ class LearningEngine:
         entry_r = str(trade.get("entry_reason", "") or "")[:120]
         if entry_r:
             lessons.append(f"Giriş nedeni: {entry_r}")
-        await persist_profile(redis, learner.build_profile(), lessons)
+        profile = learner.build_profile()
+        if market_state:
+            profile["last_market_state"] = market_state
+        await persist_profile(redis, profile, lessons)
+        if market_state:
+            await redis.lpush(
+                f"trade:market_state:{symbol}",
+                json.dumps({"ts": time.time(), "pnl_pct": pnl, "won": won, **market_state}),
+            )
+            await redis.ltrim(f"trade:market_state:{symbol}", 0, 49)
         log.info(f"[learn] trade_closed {symbol} {direction} pnl={pnl:+.2%} lessons={len(lessons)}")
 
 

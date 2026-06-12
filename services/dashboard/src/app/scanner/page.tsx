@@ -164,7 +164,7 @@ export default function ScannerPage() {
 
   const wsOk = data.ws_status?.status === 'CONNECTED'
 
-  if (loading) return (
+  if (loading && (data.coins ?? []).length === 0) return (
     <div className="flex items-center justify-center mt-32 gap-3 text-gray-500">
       <span className="animate-spin text-green-400 text-lg">◌</span>
       <span className="text-sm">Connecting to live scanner...</span>

@@ -9,6 +9,7 @@ import redis.asyncio as aioredis
 
 from regime_classifier import RegimeClassifier
 from crisis_detector import CrisisDetector
+from regime_sequence import classify_regime_sequence
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
@@ -90,9 +91,16 @@ async def compute_context(redis: aioredis.Redis, symbol: str) -> dict | None:
     crisis_triggers = crisis_detector.detect(metrics)
     crisis_level = min(len(crisis_triggers), 4)
 
+    seq = classify_regime_sequence(history, vec)
+    if seq.get("strength", 0) >= 0.5 and seq.get("regime") not in ("unknown", "ranging"):
+        regime = seq["regime"]
+    regime_strength = float(seq.get("strength", 0) or 0)
+
     context = {
         "symbol": symbol,
         "regime": regime,
+        "regime_strength": regime_strength,
+        "regime_sequence": seq,
         "crisis_level": crisis_level,
         "crisis_triggers": crisis_triggers,
         "drift_status": features.get("drift_status", "STABLE"),
@@ -101,6 +109,7 @@ async def compute_context(redis: aioredis.Redis, symbol: str) -> dict | None:
         "ls_ratio": float(features.get("ls_ratio_z", 0) or 0),
         "vix_level": vix_raw * 100,
         "reddit_sentiment": float(features.get("reddit_sentiment", 0) or 0),
+        "news_sentiment": float(features.get("news_sentiment", features.get("headline_sentiment", 0)) or 0),
         "onchain_netflow": float(features.get("onchain_netflow", 0) or 0),
         "timestamp": time.time(),
     }

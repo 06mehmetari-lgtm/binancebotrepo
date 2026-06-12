@@ -79,6 +79,11 @@ export async function GET(req: Request) {
             drift_status: String(liveSignal.drift_status ?? 'STABLE'),
             kelly_fraction: Number(liveSignal.kelly_fraction ?? 0),
             regime: liveSignal.regime,
+            stop_loss_pct: liveSignal.stop_loss_pct,
+            take_profit_tiers: liveSignal.take_profit_tiers,
+            risk: liveSignal.risk,
+            outcome: (liveSignal.ensemble as { outcome?: unknown } | undefined)?.outcome,
+            reject_reason: liveSignal.reject_reason,
           }
         : null,
       risk_context: {
@@ -86,6 +91,8 @@ export async function GET(req: Request) {
         drift_status: String(liveSignal?.drift_status ?? 'STABLE'),
         kelly_fraction: Number(liveSignal?.kelly_fraction ?? 0),
         max_position_pct: Number(riskLimitsRaw?.max_position_pct ?? 0.05),
+        risk_score: Number((liveSignal?.risk as { risk_score?: number } | undefined)?.risk_score ?? 0),
+        approved: Boolean((liveSignal?.risk as { approved?: boolean } | undefined)?.approved),
       },
       learn_profile: learnProfile,
       learn_global: learnGlobal,

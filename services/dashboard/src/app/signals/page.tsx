@@ -2,10 +2,26 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useStreamInvalidate } from '@/hooks/useStream'
 
+interface TradingDecision {
+  action?: string
+  entry?: number | null
+  stop_loss?: number | null
+  take_profit?: number[]
+  risk_score?: number
+  win_probability?: number
+  approved?: boolean
+  position_size_pct?: number
+  reason?: string[]
+}
+
 interface Signal {
   symbol: string; direction: string; confidence: number; kelly_fraction: number
   regime: string; crisis_level: number; drift_status: string; timestamp?: number
   consensus_reasoning?: string; vix?: number
+  decision?: TradingDecision
+  decision_reasons?: string[]
+  is_valid?: boolean
+  trade_action?: string
 }
 
 const DIR_STYLE: Record<string, string> = {
@@ -97,9 +113,54 @@ function SignalCard({ sig }: { sig: Signal }) {
           </span>
         </div>
 
+        {sig.decision && (sig.decision.entry || sig.decision.stop_loss) && (
+          <div className="grid grid-cols-2 gap-2 text-xs">
+            {sig.decision.entry != null && (
+              <div className="bg-gray-800/40 rounded p-2">
+                <p className="text-gray-500 mb-0.5">Entry</p>
+                <p className="text-white font-mono font-bold">{sig.decision.entry}</p>
+              </div>
+            )}
+            {sig.decision.stop_loss != null && (
+              <div className="bg-gray-800/40 rounded p-2">
+                <p className="text-gray-500 mb-0.5">Stop</p>
+                <p className="text-red-400 font-mono font-bold">{sig.decision.stop_loss}</p>
+              </div>
+            )}
+            {sig.decision.take_profit && sig.decision.take_profit.length > 0 && (
+              <div className="col-span-2 bg-gray-800/40 rounded p-2">
+                <p className="text-gray-500 mb-0.5">Take Profit</p>
+                <p className="text-green-400 font-mono text-[11px]">{sig.decision.take_profit.join(' → ')}</p>
+              </div>
+            )}
+            {(sig.decision.risk_score != null || sig.decision.win_probability != null) && (
+              <div className="col-span-2 flex gap-3 text-[11px] text-gray-500">
+                {sig.decision.win_probability != null && (
+                  <span>P(win) <span className="text-blue-400 font-bold">{Math.round(sig.decision.win_probability * 100)}%</span></span>
+                )}
+                {sig.decision.risk_score != null && (
+                  <span>Risk <span className="text-orange-400 font-bold">{sig.decision.risk_score.toFixed(2)}</span></span>
+                )}
+                {sig.decision.approved != null && (
+                  <span>{sig.decision.approved ? '✓ Onaylı' : '✗ Red'}</span>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
+        {(sig.decision?.reason?.length || sig.decision_reasons?.length) && (
+          <div className="pt-1 border-t border-gray-800/40">
+            <p className="text-gray-600 text-[10px] uppercase tracking-wider mb-1">Karar nedenleri</p>
+            <p className="text-gray-400 text-xs leading-relaxed line-clamp-3">
+              {(sig.decision?.reason ?? sig.decision_reasons ?? []).join(' · ')}
+            </p>
+          </div>
+        )}
+
         {sig.consensus_reasoning && (
           <div className="pt-1 border-t border-gray-800/40">
-            <p className="text-gray-600 text-[10px] uppercase tracking-wider mb-1">Reasoning</p>
+            <p className="text-gray-600 text-[10px] uppercase tracking-wider mb-1">AI Reasoning</p>
             <p className="text-gray-400 text-xs leading-relaxed line-clamp-3">{sig.consensus_reasoning}</p>
           </div>
         )}
@@ -161,7 +222,7 @@ export default function SignalsPage() {
         <div>
           <h1 className="text-white font-bold text-base">Active Signals</h1>
           <p className="text-gray-500 text-xs mt-0.5">
-            Confidence-weighted vote from 9 agents · threshold ≥ 60% · suppressed to flat below threshold
+            Regime + 13 agent + risk engine · karar: entry/stop/TP · eşik ≥ 60%
           </p>
         </div>
         <span className="text-xs text-gray-600 shrink-0">{lastUpdate ? `${lastUpdate} · 5s` : '5s refresh'}</span>

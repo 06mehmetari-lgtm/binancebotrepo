@@ -7,6 +7,13 @@ import { useStreamInvalidate } from '@/hooks/useStream'
 interface Market { symbol: string; rsi_14: number; direction: string; confidence: number; regime: string; crisis_level: number; kelly_fraction: number; drift_status: string }
 interface Signal { symbol: string; direction: string; confidence: number; regime: string; crisis_level: number; drift_status: string; kelly_fraction: number; rsi?: number }
 interface Shadow { shadow_id: string; sharpe: number; win_rate: number; trades: number; return: number; promotion_ready: boolean; max_drawdown: number }
+interface PipelineHealth {
+  service: string
+  age_sec: number | null
+  stale: boolean
+  ok: boolean
+}
+
 interface Status {
   active_symbol_count: number
   total_signals: number
@@ -20,6 +27,10 @@ interface Status {
   macro_vix: number
   ws_status: { status: string; symbols?: number } | null
   shadow: { leaderboard: Shadow[] }
+  pipeline_health?: PipelineHealth[]
+  pipeline_ok?: number
+  pipeline_total?: number
+  pipeline_ready?: boolean
 }
 interface SymbolResult { win_rate_pct: number; sharpe_ratio: number; total_return_pct: number; max_drawdown_pct: number; total_trades: number; profit_factor: number }
 
@@ -189,7 +200,7 @@ export default function Home() {
   useEffect(() => { setStreamLive(sseConnected) }, [sseConnected])
   useEffect(() => { fetchAll(); const t = setInterval(fetchAll, 5000); return () => clearInterval(t) }, [fetchAll])
 
-  if (loading) return (
+  if (loading && markets.length === 0 && signals.length === 0) return (
     <div className="flex items-center justify-center mt-32 gap-3 text-gray-500">
       <span className="animate-spin text-orange-400">⚡</span>
       <span className="text-sm">Connecting to Prometheus...</span>
@@ -243,6 +254,38 @@ export default function Home() {
           {lastUpdate ? `Güncellendi ${lastUpdate}` : ''} · {streamLive ? 'SSE canlı' : '5s'}
         </span>
       </div>
+
+      {status.pipeline_health && status.pipeline_health.length > 0 && (
+        <div className={`rounded-lg border px-4 py-3 ${
+          status.pipeline_ready
+            ? 'bg-green-950/30 border-green-800/50'
+            : 'bg-orange-950/30 border-orange-800/50'
+        }`}>
+          <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+            <p className="text-xs font-semibold text-gray-300">
+              Pipeline: {status.pipeline_ok ?? 0}/{status.pipeline_total ?? 0} servis canlı
+            </p>
+            {!status.pipeline_ready && (
+              <a href="/system" className="text-xs text-orange-400 hover:underline">System →</a>
+            )}
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {status.pipeline_health.map(h => (
+              <span
+                key={h.service}
+                className={`text-[10px] px-2 py-0.5 rounded border ${
+                  h.ok
+                    ? 'text-green-400 bg-green-900/20 border-green-800/40'
+                    : 'text-red-400 bg-red-900/20 border-red-800/40'
+                }`}
+                title={h.age_sec != null ? `${Math.round(h.age_sec)}s önce` : 'heartbeat yok'}
+              >
+                {h.service}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* ── Portfolio live panel ── */}
       {portfolio?.stats && (

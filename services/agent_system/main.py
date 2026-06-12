@@ -134,9 +134,14 @@ async def run_debate_for_symbol(redis: aioredis.Redis, symbol: str):
         elif result.final_signal in ("long", "short") and result.final_signal != pos_dir:
             trade_action = "reverse"
 
+    buy_votes = sum(1 for v in result.all_votes if getattr(v, "signal", None) == "long")
+    sell_votes = sum(1 for v in result.all_votes if getattr(v, "signal", None) == "short")
+
     verdict = {
         "symbol": symbol,
         "direction": direction,
+        "buy_votes": buy_votes,
+        "sell_votes": sell_votes,
         "confidence": result.final_confidence,
         "consensus": result.consensus_strength,
         "reasoning": result.majority_reasoning,

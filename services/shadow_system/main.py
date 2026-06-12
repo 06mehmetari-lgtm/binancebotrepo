@@ -33,6 +33,27 @@ async def discover_symbols(redis: aioredis.Redis) -> list[str]:
 
 
 trader = PaperTrader(initial_capital=PORTFOLIO_VALUE)
+
+
+async def _sync_shadow_capital(redis: aioredis.Redis) -> float:
+    """Align shadow paper capital with OMS 10k TRY → USD cap when available."""
+    global trader
+    try:
+        raw = await redis.get("portfolio:try:v1")
+        if raw:
+            data = json.loads(raw)
+            usd = float(data.get("usd_cap", 0) or 0)
+            if usd > 0:
+                for sid in SHADOW_IDS:
+                    p = trader.portfolios.get(sid)
+                    if p and p.initial_capital != usd:
+                        ratio = usd / p.initial_capital if p.initial_capital else 1.0
+                        p.initial_capital = usd
+                        p.capital = p.capital * ratio
+                return usd
+    except (json.JSONDecodeError, TypeError, ValueError):
+        pass
+    return PORTFOLIO_VALUE
 SHADOW_IDS = ["SHADOW_A", "SHADOW_B", "SHADOW_C"]
 # Tek sembol = tek paper pozisyon (dashboard mükerrer satır olmasın)
 SHADOW_OPEN_IDS = [
@@ -341,12 +362,23 @@ async def report_loop(redis: aioredis.Redis):
         await asyncio.sleep(300)
 
 
+async def capital_refresh_loop(redis: aioredis.Redis):
+    while True:
+        try:
+            cap = await _sync_shadow_capital(redis)
+            log.debug(f"shadow capital synced: ${cap:.2f}")
+        except Exception as e:
+            log.warning(f"shadow capital sync: {e}")
+        await asyncio.sleep(300)
+
+
 async def main():
     log.info(
         f"shadow_system starting — open_ids={SHADOW_OPEN_IDS} "
         f"one_per_symbol={SHADOW_ONE_PER_SYMBOL}"
     )
     redis = await aioredis.from_url(REDIS_URL)
+    await _sync_shadow_capital(redis)
     n = await dedupe_shadow_positions(redis)
     if n:
         log.warning(f"shadow dedupe: removed {n} duplicate position key(s)")
@@ -369,6 +401,7 @@ async def main():
         emergency_listener(redis_em),
         guard_listener(redis_guard),
         limits_refresh_loop(),
+        capital_refresh_loop(redis),
     )
 
 

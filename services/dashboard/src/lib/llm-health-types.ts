@@ -15,6 +15,7 @@ export type LlmHealthPayload = {
     groq?: ProviderHealth
     cerebras?: ProviderHealth
     google?: ProviderHealth
+    openrouter?: ProviderHealth
     ollama?: ProviderHealth
   }
   any_cloud_ok?: boolean
@@ -31,6 +32,7 @@ export type KeyOverridesMeta = {
   groq_count: number
   cerebras_count: number
   google_count: number
+  openrouter_count?: number
   runtime_keys_active: boolean
   groq_masked: string[]
   cerebras_masked: string[]

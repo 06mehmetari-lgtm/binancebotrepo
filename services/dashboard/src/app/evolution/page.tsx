@@ -138,7 +138,7 @@ export default function EvolutionPage() {
   const avgFitness = genomes.length > 0 ? genomes.reduce((s, g) => s + (g.fitness ?? 0), 0) / genomes.length : 0
   const speciesSet = new Set(genomes.map(g => g.species).filter(Boolean))
 
-  if (loading) return (
+  if (loading && genomes.length === 0 && shadows.length === 0) return (
     <div className="flex items-center justify-center mt-32 gap-3 text-gray-500">
       <span className="animate-spin text-green-400 text-lg">◌</span>
       <span className="text-sm">Loading evolution data...</span>

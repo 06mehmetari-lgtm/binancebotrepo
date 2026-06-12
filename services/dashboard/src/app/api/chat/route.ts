@@ -101,6 +101,9 @@ export async function POST(req: Request) {
       signal
         ? `Sinyal: ${signal.direction} conf=${signal.confidence} action=${signal.trade_action} valid=${signal.is_valid}`
         : 'Sinyal yok',
+      signal?.decision
+        ? `Karar: ${(signal.decision as Record<string, unknown>).action} entry=${(signal.decision as Record<string, unknown>).entry} stop=${(signal.decision as Record<string, unknown>).stop_loss} risk=${(signal.decision as Record<string, unknown>).risk_score} neden=${((signal.decision as { reason?: string[] }).reason ?? []).join(',')}`
+        : '',
       verdict
         ? `AI verdict: ${verdict.direction} conf=${verdict.confidence}`
         : 'Verdict yok',
@@ -162,13 +165,17 @@ function buildRuleAnswer(
   message: string,
 ): string {
   const m = message.toLowerCase()
+  const decision = signal?.decision as Record<string, unknown> | undefined
   if (m.includes('al') || m.includes('long') || m.includes('buy')) {
     const dir = signal?.direction ?? verdict?.direction ?? 'flat'
     const conf = Number(signal?.confidence ?? verdict?.confidence ?? 0)
-    if (dir === 'long' && conf >= 0.6) {
-      return `${symbol}: Sinyal LONG (%${Math.round(conf * 100)}). Paper modda Emir Merkezi veya sinyal döngüsü işler. ${profile?.best_entry_hint ?? ''}`
+    const entry = decision?.entry
+    const stop = decision?.stop_loss
+    if (dir === 'long' && conf >= 0.6 && signal?.is_valid !== false) {
+      const levels = entry && stop ? ` Giriş ${entry} stop ${stop}.` : ''
+      return `${symbol}: Sinyal LONG (%${Math.round(conf * 100)}).${levels} Risk-first: küçük pozisyon, stop zorunlu. ${profile?.best_entry_hint ?? ''}`
     }
-    return `${symbol}: Şu an güçlü LONG yok (yön=${dir}, güven %${Math.round(conf * 100)}). Scanner SQS ve AI Analiz sayfasına bakın.`
+    return `${symbol}: Şu an güçlü LONG yok (yön=${dir}, güven %${Math.round(conf * 100)}). Scanner ve Analiz sayfasına bakın.`
   }
   if (m.includes('sat') || m.includes('kapat') || m.includes('close')) {
     return `${symbol}: FLAT/close sinyali veya Emir Merkezi → Kapat kullanın. Guard ~1s izler.`

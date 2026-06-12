@@ -178,6 +178,10 @@ class SymbolLearner:
                 self._pat("bid_pressure_up").hits += 1
         if funding is not None and abs(funding) > 0.0004:
             lessons.append(f"funding={funding*100:.3f}% kapanış anı")
+        if not won and "breakout" in (exit_reason or "").lower():
+            fb = self._pat("false_breakout")
+            fb.misses += 1
+            lessons.append("false_breakout — düşük hacimde chase yapma, rejim doğrula")
         if not won and pnl_pct < -0.003:
             rc = self._pat("recovery_dca_candidate")
             rc.misses += 1

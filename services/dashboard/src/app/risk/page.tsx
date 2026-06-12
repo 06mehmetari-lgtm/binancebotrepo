@@ -175,7 +175,7 @@ export default function RiskPage() {
   const totalDriftSamples = Object.values(driftSummary).reduce((a, b) => a + b, 0)
   const totalUnrealized = positions.reduce((s, p) => s + p.unrealized_usdt, 0)
 
-  if (loading) return (
+  if (loading && !data.limits && positions.length === 0) return (
     <div className="flex items-center justify-center mt-32 gap-3 text-gray-500">
       <span className="animate-spin text-red-400">⚡</span>
       <span>Loading risk data...</span>

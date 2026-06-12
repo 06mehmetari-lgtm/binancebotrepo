@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 export const dynamic = 'force-dynamic'
 import { createRedis } from '../_redis'
 import { discoverSymbols, scanKeys } from '@/lib/universe'
+import { HEARTBEAT_STALE_SEC, PIPELINE_HEARTBEATS, parseHeartbeatAge } from '@/lib/stale'
 
 function safeJson(raw: string | null): unknown {
   if (!raw) return null
@@ -44,6 +45,9 @@ export async function GET() {
     for (const key of genomeKeys) {
       pipeline.get(key)
     }
+    for (const hb of PIPELINE_HEARTBEATS) {
+      pipeline.get(hb.key)
+    }
     const results = await pipeline.exec()
 
     const wsStatus = safeJson(results?.[0]?.[1] as string | null)
@@ -85,6 +89,20 @@ export async function GET() {
 
     // Find best genome fitness across all NEAT keys
     const genomeOffset = staticOffset + symbols.length
+    const hbOffset = genomeOffset + genomeKeys.length
+    const pipelineHealth = PIPELINE_HEARTBEATS.map((hb, i) => {
+      const raw = results?.[hbOffset + i]?.[1] as string | null
+      const ageSec = parseHeartbeatAge(raw)
+      return {
+        service: hb.label,
+        age_sec: ageSec,
+        stale: ageSec == null || ageSec > HEARTBEAT_STALE_SEC,
+        ok: ageSec != null && ageSec <= HEARTBEAT_STALE_SEC,
+      }
+    })
+    const pipelineOk = pipelineHealth.filter(h => h.ok).length
+    const pipelineTotal = pipelineHealth.length
+
     let bestGenomeFitness: number | null = null
     for (let i = 0; i < genomeKeys.length; i++) {
       const raw = results?.[genomeOffset + i]?.[1] as string | null
@@ -113,6 +131,10 @@ export async function GET() {
       oms_open: Number(portfolioState?.oms_open ?? 0),
       avg_confidence: avgConfidence,
       best_genome_fitness: bestGenomeFitness,
+      pipeline_health: pipelineHealth,
+      pipeline_ok: pipelineOk,
+      pipeline_total: pipelineTotal,
+      pipeline_ready: pipelineOk >= 5,
     })
   } catch (e) {
     return NextResponse.json({ error: String(e) }, { status: 500 })

@@ -3,6 +3,7 @@
 .env.local
 .env.*.local
 scripts/_remote_*.py
+scripts/.deploy.secrets
 
 # Python
 __pycache__/

@@ -104,6 +104,12 @@ export async function GET(req: Request) {
         avoid_hint: learn.avoid_hint,
         trade_action: s.trade_action,
         is_valid: s.is_valid,
+        reject_reason: s.reject_reason,
+        win_probability: (s.ensemble as Record<string, unknown> | undefined)?.outcome
+          ? ((s.ensemble as { outcome?: { win_probability?: number } }).outcome?.win_probability)
+          : undefined,
+        risk_score: (s.risk as { risk_score?: number } | undefined)?.risk_score,
+        stop_loss_pct: s.stop_loss_pct,
         sharpe,
         win_rate: winRate,
       })

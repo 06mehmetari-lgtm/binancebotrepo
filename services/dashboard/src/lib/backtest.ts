@@ -23,6 +23,8 @@ export type NormalizedSymbol = {
   avg_bars_held: number
   exit_reasons: Record<string, number>
   monthly_returns: { month: string; return_pct: number; capital: number }[]
+  walk_forward?: boolean
+  folds?: number
 }
 
 export type NormalizedSummary = {
@@ -116,6 +118,8 @@ function normalizeSymbolRow(row: unknown, symbolHint?: string): NormalizedSymbol
     avg_bars_held: safeNum(r.avg_bars_held),
     exit_reasons,
     monthly_returns,
+    walk_forward: Boolean(r.walk_forward),
+    folds: safeNum(r.folds) || undefined,
   }
 }
 

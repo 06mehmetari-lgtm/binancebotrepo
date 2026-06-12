@@ -18,6 +18,9 @@ type Row = {
   learn_stage: string
   trade_action?: string
   avoid_hint?: string
+  win_probability?: number
+  risk_score?: number
+  is_valid?: boolean
 }
 
 export default function AnalizPage() {
@@ -65,6 +68,7 @@ export default function AnalizPage() {
               <th>Conf</th>
               <th>Depth</th>
               <th>AI</th>
+              <th>P(win)</th>
               <th>L</th>
             </tr>
           </thead>
@@ -86,6 +90,9 @@ export default function AnalizPage() {
                 <td className="p-2 text-cyan-600">{r.depth_label}</td>
                 <td className="p-2 text-gray-400">
                   {r.ai_verdict} {Math.round((r.ai_confidence ?? 0) * 100)}%
+                </td>
+                <td className={`p-2 font-mono ${(r.win_probability ?? 0) >= 0.55 ? 'text-green-400' : 'text-gray-500'}`}>
+                  {r.win_probability != null ? `${Math.round(r.win_probability * 100)}%` : '—'}
                 </td>
                 <td className="p-2 text-purple-400">{r.learn_stage}</td>
               </tr>

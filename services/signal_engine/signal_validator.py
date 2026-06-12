@@ -32,4 +32,16 @@ class SignalValidator:
             return False, "SHOCK drift: no trading"
         if signal.get("direction") == "flat":
             return False, "flat signal"
+
+        regime = str(context.get("regime") or signal.get("regime") or "")
+        if regime == "manipulation" and not paper:
+            return False, "manipulation regime — no entry"
+
+        atr_pct = float(signal.get("atr_pct") or 0)
+        if atr_pct <= 0:
+            atr_pct = float(context.get("atr_pct") or 0)
+        max_atr = float(os.getenv("RISK_MAX_ATR_PCT", "5.0"))
+        if atr_pct > max_atr and not paper:
+            return False, f"ATR {atr_pct:.1f}% too high"
+
         return True, "ok"

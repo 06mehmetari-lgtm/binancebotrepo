@@ -24,10 +24,12 @@ export default function LlmHealthBanner() {
 
   if (!health || dismissed) return null
 
+  const openrouterOk = health.providers?.openrouter?.ok
   const critical =
     health.alert_level === 'critical' ||
-    (health.needs_key_update && health.cloud_blocked && !health.any_cloud_ok)
-  const warning = health.alert_level === 'warning' || health.needs_key_update
+    (health.needs_key_update && health.cloud_blocked && !health.any_cloud_ok && !openrouterOk)
+  const warning =
+    (health.alert_level === 'warning' || health.needs_key_update) && !openrouterOk
 
   if (!critical && !warning) return null
 
@@ -41,11 +43,15 @@ export default function LlmHealthBanner() {
         <span className="text-lg shrink-0">{critical ? '🚨' : '⚠️'}</span>
         <div className="min-w-0">
           <p className="font-semibold">
-            {critical ? 'LLM erişim sorunu — Groq/Cerebras 403 (VPS IP engeli)' : 'LLM uyarısı'}
+            {critical
+              ? 'LLM erişim sorunu — Groq/Cerebras 403 (VPS IP engeli)'
+              : 'LLM uyarısı'}
           </p>
           <p className="text-xs opacity-90 mt-0.5">
-            {health.alert_message ||
-              'Yapay zeka anahtarlarını güncelleyin veya Google Gemini / Ollama kullanın.'}
+            {openrouterOk
+              ? 'OpenRouter aktif — agent analizi çalışıyor.'
+              : health.alert_message ||
+                'OpenRouter anahtarı ekleyin veya Google Gemini / Ollama kullanın.'}
           </p>
         </div>
       </div>

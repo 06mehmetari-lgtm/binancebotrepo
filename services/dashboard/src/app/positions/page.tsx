@@ -26,6 +26,7 @@ interface PortfolioData {
   curve: CurvePoint[]
   stats: {
     start_equity: number; current_equity: number; realized_equity?: number; unrealized_usdt?: number
+    portfolio_try?: number | null; usd_try_rate?: number | null; fee_per_side_pct?: number | null
     total_pnl: number; total_pnl_pct: number
     daily_pnl: number; total_trades: number; win_rate: number; avg_win_usdt: number
     avg_loss_usdt: number; profit_factor: number | null; max_drawdown_pct: number
@@ -84,7 +85,7 @@ function EmptyState() {
       <div className="flex flex-wrap justify-center gap-2 mt-4 text-xs text-gray-600">
         <span className="bg-gray-800 px-2 py-1 rounded">Min confidence: 60%</span>
         <span className="bg-gray-800 px-2 py-1 rounded">Max 3 concurrent positions</span>
-        <span className="bg-gray-800 px-2 py-1 rounded">Max size: 5% portfolio</span>
+        <span className="bg-gray-800 px-2 py-1 rounded">10.000 TL cap · %0,10 komisyon/yön</span>
       </div>
     </div>
   )
@@ -345,6 +346,15 @@ export default function PositionsPage() {
           <h2 className="text-blue-400 font-semibold text-sm uppercase tracking-wider">📈 Equity Curve (canlı)</h2>
           {stats && (
             <div className="flex items-center gap-4 text-xs flex-wrap">
+              {stats.portfolio_try != null && (
+                <span className="text-violet-400/90">
+                  {stats.portfolio_try.toLocaleString('tr-TR')} TL
+                  {stats.usd_try_rate ? ` · kur ${stats.usd_try_rate.toFixed(2)}` : ''}
+                  {stats.fee_per_side_pct != null
+                    ? ` · komisyon %${(stats.fee_per_side_pct * 100).toFixed(2)}/yön`
+                    : ''}
+                </span>
+              )}
               <span className="text-gray-500">
                 Başlangıç: <span className="text-gray-300 font-mono">${stats.start_equity.toLocaleString()}</span>
               </span>

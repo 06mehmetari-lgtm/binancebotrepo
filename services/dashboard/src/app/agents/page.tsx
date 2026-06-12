@@ -6,6 +6,7 @@ import { useStreamInvalidate } from '@/hooks/useStream'
 interface Vote { agent: string; signal: string; confidence: number; reasoning?: string }
 interface Verdict {
   direction: string; confidence: number
+  buy_votes?: number; sell_votes?: number; vote_count?: number
   consensus_reasoning?: string; dissent_risk?: string
 }
 interface Genome { fitness: number; generation: number; nodes: number; connections: number; status?: string }
@@ -44,6 +45,10 @@ const AGENT_META: Record<string, { emoji: string; role: string; desc: string; gr
   bear_agent:      { emoji: '🐻', role: 'Directional', desc: 'Seeks bearish setups: downtrends, negative divergence, supply signals', group: 'directional' },
   neutral_agent:   { emoji: '⚖️', role: 'Directional', desc: 'Balanced perspective; anchors debate against extremes', group: 'directional' },
   technical_agent: { emoji: '📊', role: 'Analysis', desc: 'RSI, MACD, Bollinger, ADX, Stoch — pure price/indicator synthesis', group: 'analysis' },
+  trend_agent:     { emoji: '📈', role: 'Analysis', desc: 'EMA spread, breakout, ADX — trend-following setups only', group: 'analysis' },
+  mean_reversion_agent: { emoji: '🔄', role: 'Analysis', desc: 'RSI/Stoch extremes, Bollinger bands — fade overbought/oversold', group: 'analysis' },
+  whale_agent:     { emoji: '🐋', role: 'Analysis', desc: 'Order book imbalance, spoof detection, bid/ask depth', group: 'analysis' },
+  momentum_agent:  { emoji: '⚡', role: 'Analysis', desc: 'Volume spike + price acceleration + order flow', group: 'analysis' },
   news_agent:      { emoji: '📰', role: 'Analysis', desc: 'NLP sentiment from headlines, Reddit, CryptoPanic feed', group: 'analysis' },
   macro_agent:     { emoji: '🌐', role: 'Analysis', desc: 'VIX, DXY, Fed policy, BTC dominance, macro correlation', group: 'analysis' },
   onchain_agent:   { emoji: '⛓️', role: 'Analysis', desc: 'Exchange flows, whale activity, funding rates, OI trends', group: 'analysis' },
@@ -475,6 +480,14 @@ function AgentsContent() {
                         <span className="text-yellow-700">60% threshold</span>
                         <span>100%</span>
                       </div>
+                      {(verdict.buy_votes != null || verdict.sell_votes != null) && (
+                        <p className="text-[10px] text-gray-500 mt-2">
+                          Oylar: <span className="text-green-400">▲ {verdict.buy_votes ?? 0}</span>
+                          {' · '}
+                          <span className="text-red-400">▼ {verdict.sell_votes ?? 0}</span>
+                          {verdict.vote_count != null && ` / ${verdict.vote_count} agent`}
+                        </p>
+                      )}
                     </div>
                   </div>
                   {verdict.consensus_reasoning && (

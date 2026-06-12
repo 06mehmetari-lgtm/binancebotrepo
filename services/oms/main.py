@@ -30,6 +30,19 @@ def _portfolio_cap() -> float:
     return _portfolio_usd
 
 
+def _entry_reason_text(signal: dict) -> str:
+    if signal.get("consensus_reasoning"):
+        return str(signal["consensus_reasoning"])[:500]
+    reasons = signal.get("decision_reasons") or []
+    if reasons:
+        return ", ".join(str(r) for r in reasons)[:500]
+    det = (signal.get("ensemble") or {}).get("signal_detector") or {}
+    det_reasons = det.get("reasons") or []
+    if det_reasons:
+        return ", ".join(str(r) for r in det_reasons)[:500]
+    return str(signal.get("source", ""))[:500]
+
+
 async def refresh_portfolio_cap(redis: aioredis.Redis) -> float:
     """10.000 TL → USD (USDT/TRY); üst limit aşılamaz."""
     global _portfolio_usd
@@ -438,8 +451,18 @@ async def process_signal(redis: aioredis.Redis, symbol: str):
             log.error(f"[LIVE] Order failed — position not opened for {symbol}")
             return
 
-    tp_pct = float(os.getenv("PAPER_TAKE_PROFIT_PCT", "0.5"))
-    sl_pct = float(os.getenv("PAPER_STOP_LOSS_PCT", "1.5"))
+    decision = signal.get("decision") or {}
+    tp_tiers = (
+        decision.get("take_profit_tiers_pct")
+        or signal.get("take_profit_tiers")
+        or []
+    )
+    tp_pct = float(tp_tiers[0] if tp_tiers else os.getenv("PAPER_TAKE_PROFIT_PCT", "0.5"))
+    sl_pct = float(
+        decision.get("stop_loss_pct")
+        or signal.get("stop_loss_pct")
+        or os.getenv("PAPER_STOP_LOSS_PCT", "1.5")
+    )
     # Track the paper/live position
     await redis.set(f"oms:position:{symbol}", json.dumps({
         "symbol": symbol, "direction": direction,
@@ -451,7 +474,7 @@ async def process_signal(redis: aioredis.Redis, symbol: str):
             "take_profit_pct": tp_pct,
             "stop_loss_pct": sl_pct,
             "entry_confidence": confidence,
-            "entry_reason": (signal.get("consensus_reasoning") or "")[:500],
+            "entry_reason": _entry_reason_text(signal),
         },
         "fills": [{
             "tier": 1,

@@ -24,6 +24,7 @@ BACKTEST_TOTAL = int(os.getenv("BACKTEST_TOTAL_SYMBOLS", "500"))
 BACKTEST_CHUNK = int(os.getenv("BACKTEST_CHUNK_SIZE", "20"))
 BACKTEST_DAYS = int(os.getenv("BACKTEST_DAYS", "365"))
 BACKTEST_DAYS_2 = int(os.getenv("BACKTEST_DAYS_EXTENDED", "0"))  # optional 2nd pass years
+BACKTEST_WALK_FORWARD = os.getenv("BACKTEST_WALK_FORWARD", "true").lower() in ("1", "true", "yes")
 CHUNK_PAUSE_SEC = float(os.getenv("BACKTEST_CHUNK_PAUSE_SEC", "3"))
 STATE_KEY = "backtest:queue:state"
 INDEX_KEY = "backtest:symbols:index"
@@ -80,7 +81,10 @@ async def persist_symbol_result(
 ) -> dict | None:
     if len(klines) < 250:
         return None
-    result = engine.run(symbol, klines)
+    if BACKTEST_WALK_FORWARD:
+        result = engine.run_walk_forward(symbol, klines)
+    else:
+        result = engine.run(symbol, klines)
     if not result or result.get("total_trades", 0) < 5:
         return None
 

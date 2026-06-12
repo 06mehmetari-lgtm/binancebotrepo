@@ -272,6 +272,30 @@ export async function GET() {
     const positionLong = portfolioState.long_positions
     const positionShort = portfolioState.short_positions
 
+    const neatKeys = await scanKeys(redis, 'neat:best_genome:*')
+    const neatSample: { symbol: string; fitness: number }[] = []
+    let bestFitness = 0
+    let fitnessSum = 0
+    let fitnessCount = 0
+    if (neatKeys.length) {
+      const neatPipe = redis.pipeline()
+      for (const k of neatKeys.slice(0, 50)) neatPipe.get(k)
+      const neatRes = await neatPipe.exec()
+      for (let i = 0; i < neatKeys.length && i < 50; i++) {
+        const g = safeJson(neatRes?.[i]?.[1] as string | null) as { fitness?: number; symbol?: string } | null
+        if (!g) continue
+        const fit = Number(g.fitness ?? 0)
+        const sym = String(g.symbol ?? neatKeys[i].split(':').pop() ?? '')
+        if (fit > 0) {
+          fitnessSum += fit
+          fitnessCount++
+          if (fit > bestFitness) bestFitness = fit
+        }
+        neatSample.push({ symbol: sym, fitness: fit })
+      }
+      neatSample.sort((a, b) => b.fitness - a.fitness)
+    }
+
     return NextResponse.json({
       activity,
       active_signals: mergedActive.slice(0, 25),
@@ -306,7 +330,13 @@ export async function GET() {
         .sort((a, b) => (b[1].wins + b[1].losses) - (a[1].wins + a[1].losses))
         .slice(0, 10)
         .map(([sym, stats]) => ({ symbol: sym, ...stats })),
-      genomes: { count: learnProfileKeys.length, best_fitness: 0, avg_fitness: 0, sample: [] },
+      genomes: {
+        count: neatKeys.length,
+        learn_profiles: learnProfileKeys.length,
+        best_fitness: +bestFitness.toFixed(4),
+        avg_fitness: fitnessCount ? +(fitnessSum / fitnessCount).toFixed(4) : 0,
+        sample: neatSample.slice(0, 12),
+      },
       current_state: {
         direction_dist: directionCounts,
         regime_dist: regimeCounts,

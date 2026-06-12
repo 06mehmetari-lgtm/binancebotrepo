@@ -376,6 +376,73 @@ class BacktestEngine:
 
         return self._calculate_metrics(symbol, trades, equity, monthly_equity)
 
+    def run_walk_forward(
+        self,
+        symbol: str,
+        klines: list,
+        *,
+        train_ratio: float = 0.7,
+        n_folds: int = 3,
+    ) -> dict:
+        """
+        Walk-forward validation — train params implicit in engine; test on OOS slices.
+        Avoids single-period overfit (no future leakage within each fold).
+        """
+        if len(klines) < 400:
+            return self.run(symbol, klines)
+
+        fold_results: list[dict] = []
+        n = len(klines)
+        fold_size = max(200, n // max(n_folds, 1))
+
+        for fold in range(n_folds):
+            start = fold * fold_size
+            end = min(n, start + fold_size)
+            if end - start < 250:
+                continue
+            slice_kl = klines[start:end]
+            split = int(len(slice_kl) * train_ratio)
+            test_kl = slice_kl[split:]
+            if len(test_kl) < 120:
+                continue
+            res = self.run(symbol, test_kl)
+            if res and res.get("total_trades", 0) >= 3:
+                res["fold"] = fold + 1
+                res["oos_bars"] = len(test_kl)
+                fold_results.append(res)
+
+        if not fold_results:
+            return self.run(symbol, klines)
+
+        avg_wr = float(np.mean([r["win_rate"] for r in fold_results]))
+        avg_sharpe = float(np.mean([r["sharpe_ratio"] for r in fold_results]))
+        avg_ret = float(np.mean([r["total_return_pct"] for r in fold_results]))
+        avg_dd = float(np.mean([r["max_drawdown_pct"] for r in fold_results]))
+        total_trades = sum(r["total_trades"] for r in fold_results)
+
+        base = dict(fold_results[-1])
+        base.update({
+            "symbol": symbol,
+            "walk_forward": True,
+            "folds": len(fold_results),
+            "total_trades": total_trades,
+            "win_rate": round(avg_wr, 4),
+            "win_rate_pct": round(avg_wr * 100, 2),
+            "sharpe_ratio": round(avg_sharpe, 3),
+            "total_return_pct": round(avg_ret, 2),
+            "max_drawdown_pct": round(avg_dd, 2),
+            "fold_results": [
+                {
+                    "fold": r.get("fold"),
+                    "win_rate_pct": r.get("win_rate_pct"),
+                    "sharpe_ratio": r.get("sharpe_ratio"),
+                    "total_trades": r.get("total_trades"),
+                }
+                for r in fold_results
+            ],
+        })
+        return base
+
     def _calculate_metrics(
         self,
         symbol: str,

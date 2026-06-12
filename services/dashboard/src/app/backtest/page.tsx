@@ -222,7 +222,7 @@ export default function BacktestPage() {
         <div>
           <h1 className="text-white font-bold text-base">Sürekli Evren Backtest — Binance USDM</h1>
           <p className="text-gray-500 text-xs mt-0.5">
-            500 coin parça parça 7/24 · 1y kline · rejim dersleri → AI Memory · arka planda durmaz
+            500 coin parça parça 7/24 · walk-forward OOS · rejim dersleri → Memory · arka planda durmaz
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -494,6 +494,11 @@ export default function BacktestPage() {
                           <td className="px-3 py-2.5">
                             <span className="font-bold text-white">{r.symbol}</span>
                             {idx === 0 && <span className="ml-1 text-yellow-400 text-[10px]">★</span>}
+                            {r.walk_forward && (
+                              <span className="ml-1 text-[9px] px-1 py-0.5 rounded bg-blue-900/30 text-blue-400 border border-blue-800/40" title={`${r.folds ?? '?'} fold OOS`}>
+                                WF
+                              </span>
+                            )}
                           </td>
                           <td className={`px-3 py-2.5 font-mono font-bold ${r.win_rate_pct >= 60 ? 'text-green-400' : r.win_rate_pct >= 52 ? 'text-orange-400' : 'text-red-400'}`}>
                             {r.win_rate_pct.toFixed(1)}%

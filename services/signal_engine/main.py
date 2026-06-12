@@ -193,6 +193,20 @@ async def generate_signal(redis: aioredis.Redis, symbol: str) -> dict | None:
     if learn_note:
         ensemble_diag["learn_adjust"] = learn_note
 
+    decision_reasons: list[str] = []
+    try:
+        from signal_detector import detect_signal
+
+        det = detect_signal(features, context)
+        ensemble_diag["signal_detector"] = det
+        if det.get("signal") == final_dir and final_dir in ("long", "short"):
+            final_conf = min(0.95, final_conf * (1.0 + det.get("confidence", 0) * 0.12))
+            decision_reasons.extend(det.get("reasons") or [])
+        elif det.get("signal") != "flat" and det.get("signal") != final_dir:
+            final_conf = max(0.0, final_conf * 0.9)
+    except ImportError:
+        pass
+
     try:
         from outcome_predictor import predict_outcome
 
@@ -236,9 +250,75 @@ async def generate_signal(redis: aioredis.Redis, symbol: str) -> dict | None:
         "rsi": round(float(features.get("rsi_14", 50) or 50), 1),
         "macd_hist": round(float(features.get("macd_hist", 0) or 0), 4),
         "volume_ratio": round(float(features.get("volume_ratio", 1) or 1), 2),
+        "atr_pct": round(float(features.get("atr_pct", features.get("atr_14", 0)) or 0), 3),
+        "bb_position": round(float(features.get("bb_position", 0.5) or 0.5), 3),
     }
 
     is_valid, reason = validator.validate(signal_dict, context)
+
+    try:
+        from risk_model import evaluate_risk
+
+        cap_usd = None
+        exposure = 0.0
+        open_positions: list[dict] = []
+        daily_pnl_pct = None
+        try_cap = await redis.get("portfolio:try:v1")
+        if try_cap:
+            tc = json.loads(try_cap)
+            cap_usd = float(tc.get("usd_cap", 0) or 0) or None
+        daily_raw = await redis.get("oms:daily_pnl")
+        if daily_raw and cap_usd:
+            try:
+                daily_pnl_pct = float(daily_raw) / cap_usd
+            except (TypeError, ValueError):
+                pass
+        keys = await redis.keys("oms:position:*")
+        for k in keys:
+            raw = await redis.get(k)
+            if raw:
+                try:
+                    pos = json.loads(raw)
+                    exposure += float(pos.get("size_usd", 0) or 0)
+                    open_positions.append(pos)
+                except (json.JSONDecodeError, TypeError, ValueError):
+                    pass
+        risk = evaluate_risk(
+            final_dir,
+            final_conf,
+            signal.kelly_fraction,
+            context,
+            features,
+            portfolio_usd=cap_usd,
+            open_exposure_usd=exposure,
+            learn_raw=learn_raw,
+            open_positions=open_positions,
+            daily_pnl_pct=daily_pnl_pct,
+            symbol=symbol,
+        )
+        signal_dict["risk"] = risk
+        signal_dict["stop_loss_pct"] = risk.get("stop_loss_pct")
+        signal_dict["take_profit_tiers"] = risk.get("take_profit_tiers")
+        if is_valid and final_dir in ("long", "short") and not risk.get("approved"):
+            is_valid = False
+            reason = f"risk:{','.join(risk.get('reasons', []))}"
+        elif is_valid and risk.get("position_size_pct"):
+            signal_dict["kelly_fraction"] = min(
+                signal_dict["kelly_fraction"],
+                float(risk["position_size_pct"]),
+            )
+        decision_reasons.extend(risk.get("reasons") or [])
+    except ImportError:
+        pass
+
+    if context.get("regime"):
+        decision_reasons.append(str(context["regime"]))
+    regime_strength = context.get("regime_strength")
+    if isinstance(regime_strength, (int, float)) and regime_strength >= 0.55:
+        decision_reasons.append("regime_support")
+
+    signal_dict["decision_reasons"] = list(dict.fromkeys(decision_reasons))[:8]
+    signal_dict["regime_strength"] = context.get("regime_strength")
     signal_dict["is_valid"] = is_valid
     signal_dict["reject_reason"] = "" if is_valid else reason
     signal_dict["trade_action"] = "none"
@@ -297,6 +377,30 @@ async def generate_signal(redis: aioredis.Redis, symbol: str) -> dict | None:
     sym_stats = STATS.get(symbol, {})
     if sym_stats.get("wins", 0) + sym_stats.get("losses", 0) >= 5:
         signal_dict["live_win_rate"] = round(sym_stats.get("win_rate", 0) * 100, 1)
+
+    price = 0.0
+    if features:
+        price = float(features.get("close") or features.get("last_price") or 0)
+    if price <= 0:
+        ticker_raw = await redis.get(f"binance:ticker:{symbol.lower()}")
+        if ticker_raw:
+            try:
+                td = json.loads(ticker_raw)
+                d = td.get("data", td)
+                bid = float(d.get("b", 0) or 0)
+                ask = float(d.get("a", bid) or bid)
+                price = (bid + ask) / 2 if bid else 0
+            except (json.JSONDecodeError, TypeError, ValueError):
+                pass
+
+    try:
+        from decision_payload import build_trading_decision
+
+        signal_dict["decision"] = build_trading_decision(symbol, signal_dict, price=price)
+        if signal_dict["decision"].get("entry"):
+            signal_dict["entry_price"] = signal_dict["decision"]["entry"]
+    except ImportError:
+        pass
 
     return signal_dict
 

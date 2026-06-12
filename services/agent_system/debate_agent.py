@@ -41,9 +41,9 @@ class DebateAgent:
     """
 
     DEFAULT_WEIGHTS = {
-        "technical": 1.0, "onchain": 1.2, "sentiment": 0.8,
-        "macro": 0.9, "news": 0.8, "bull": 1.0, "bear": 1.0,
-        "neutral": 0.7, "risk": 1.1,
+        "technical": 1.0, "trend": 1.15, "mean_reversion": 0.95, "whale": 1.1,
+        "onchain": 1.2, "sentiment": 0.8, "macro": 0.9, "news": 0.85, "momentum": 1.05,
+        "bull": 1.0, "bear": 1.0, "neutral": 0.7, "risk": 1.1,
     }
 
     def __init__(self):
@@ -57,9 +57,14 @@ class DebateAgent:
     ) -> DebateResult:
         votes = await asyncio.gather(
             self._technical_vote(features),
+            self._trend_vote(features, context),
+            self._mean_reversion_vote(features),
+            self._whale_vote(features),
             self._onchain_vote(context),
             self._sentiment_vote(context),
             self._macro_vote(context),
+            self._news_vote(context),
+            self._momentum_vote(features),
             self._bull_vote(features, context),
             self._bear_vote(features, context),
             self._neutral_vote(features),
@@ -219,6 +224,51 @@ class DebateAgent:
             },
         )
 
+    async def _trend_vote(self, f: dict, ctx: dict) -> AgentVote:
+        """EMA/breakout trend agent."""
+        ema_fast = float(f.get("ema_9", f.get("close", 0)) or 0)
+        ema_slow = float(f.get("ema_21", f.get("close", 0)) or 0)
+        close = float(f.get("close", f.get("last_price", 0)) or 0)
+        adx = float(f.get("adx", f.get("adx_14", 0)) or 0)
+        mom5 = float(f.get("mom_5", 0) or 0)
+        regime = str(ctx.get("regime", ""))
+        if close <= 0:
+            return AgentVote("trend", "flat", 0.3, {"reason": "no_price"})
+        spread = (ema_fast - ema_slow) / close if ema_slow else 0
+        score = spread * 40 + mom5 / 100 + (0.15 if regime == "trending_up" else -0.1 if regime == "trending_down" else 0)
+        if adx > 0.25:
+            score *= 1.15
+        signal = "long" if score > 0.12 else ("short" if score < -0.12 else "flat")
+        return AgentVote("trend", signal, min(abs(score) * 1.5, 0.9), {"spread": spread, "adx": adx})
+
+    async def _mean_reversion_vote(self, f: dict) -> AgentVote:
+        """RSI extreme mean-reversion agent."""
+        rsi = float(f.get("rsi_14", 50) or 50)
+        stoch = float(f.get("stoch_k", 50) or 50)
+        bb = float(f.get("bb_position", 0.5) or 0.5)
+        if rsi < 28 and stoch < 25:
+            return AgentVote("mean_reversion", "long", min(0.85, (30 - rsi) / 30), {"rsi": rsi, "mode": "oversold"})
+        if rsi > 72 and stoch > 75:
+            return AgentVote("mean_reversion", "short", min(0.85, (rsi - 70) / 30), {"rsi": rsi, "mode": "overbought"})
+        if bb < 0.1:
+            return AgentVote("mean_reversion", "long", 0.55, {"bb": bb})
+        if bb > 0.9:
+            return AgentVote("mean_reversion", "short", 0.55, {"bb": bb})
+        return AgentVote("mean_reversion", "flat", 0.25, {"rsi": rsi})
+
+    async def _whale_vote(self, f: dict) -> AgentVote:
+        """Order book whale / spoof detection agent."""
+        imb1 = float(f.get("imbalance_1", 0) or 0)
+        imb20 = float(f.get("imbalance_20", 0) or 0)
+        spoof = float(f.get("spoof_score", 0) or 0)
+        bid_lv = int(f.get("bid_levels_active", 0) or 0)
+        ask_lv = int(f.get("ask_levels_active", 0) or 0)
+        if spoof > 0.5:
+            return AgentVote("whale", "flat", 0.7, {"spoof": spoof, "reason": "manipulation"})
+        score = imb1 * 0.5 + imb20 * 0.3 + (0.1 if bid_lv > ask_lv + 3 else -0.1 if ask_lv > bid_lv + 3 else 0)
+        signal = "long" if score > 0.2 else ("short" if score < -0.2 else "flat")
+        return AgentVote("whale", signal, min(abs(score) * 1.2, 0.88), {"imb1": imb1, "imb20": imb20})
+
     async def _onchain_vote(self, ctx: dict) -> AgentVote:
         funding = float(ctx.get("funding_rate", 0))
         ls = float(ctx.get("ls_ratio", 0))
@@ -243,6 +293,29 @@ class DebateAgent:
         score = -(vix - 20) / 40 - dxy * 2
         signal = "long" if score > 0.1 else ("short" if score < -0.1 else "flat")
         return AgentVote("macro", signal, min(abs(score), 1.0), {"vix": vix, "dxy": dxy})
+
+    async def _news_vote(self, ctx: dict) -> AgentVote:
+        """News / headline sentiment from context (NLP pipeline or proxy)."""
+        news = float(ctx.get("news_sentiment", ctx.get("headline_sentiment", 0)) or 0)
+        panic = float(ctx.get("news_panic_score", 0) or 0)
+        score = news * 0.7 - panic * 0.5
+        if abs(score) < 0.08:
+            return AgentVote("news", "flat", 0.35, {"news_sentiment": news, "panic": panic})
+        signal = "long" if score > 0.12 else "short"
+        return AgentVote("news", signal, min(abs(score) * 1.4, 0.85), {"news_sentiment": news})
+
+    async def _momentum_vote(self, f: dict) -> AgentVote:
+        """Volume + price acceleration + order book whale pressure."""
+        vol = float(f.get("volume_ratio", 1) or 1)
+        macd = float(f.get("macd_hist", 0) or 0)
+        imb = float(f.get("imbalance_5", f.get("ob_imbalance_1", 0)) or 0)
+        spoof = float(f.get("spoof_score", 0) or 0)
+        score = (vol - 1.0) * 0.4 + macd * 8 + imb * 0.5 - spoof * 0.6
+        signal = "long" if score > 0.25 else ("short" if score < -0.25 else "flat")
+        return AgentVote(
+            "momentum", signal, min(abs(score), 1.0),
+            {"volume_ratio": vol, "imbalance_5": imb, "spoof": spoof},
+        )
 
     async def _bull_vote(self, f: dict, ctx: dict) -> AgentVote:
         bull = 0
