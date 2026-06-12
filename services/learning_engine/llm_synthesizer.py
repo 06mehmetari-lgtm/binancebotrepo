@@ -67,18 +67,32 @@ def synthesize_coin_insight(symbol: str, profile: dict) -> dict | None:
     return None
 
 
-def synthesize_position_track(symbol: str, mismatch: dict, tick: dict) -> dict | None:
-    """Ollama/yerel LLM — açık pozisyon plan sapması dersi (kâr odaklı)."""
+def synthesize_position_track(symbol: str, payload: dict) -> dict | None:
+    """Ollama/yerel LLM — 3 grafik (blueprint/canlı/analiz) dersi, kâr odaklı."""
+    mismatch = payload.get("mismatch") or {}
+    tick = payload.get("tick") or {}
     sev = mismatch.get("severity", "ok")
-    if sev not in ("warn", "critical"):
+    consensus = payload.get("consensus") or {}
+    if sev not in ("warn", "critical", "drift") and consensus.get("action") == "hold":
         return None
 
+    blueprint = payload.get("blueprint") or {}
+    rolling = payload.get("rolling") or {}
+    why_move = payload.get("why_move") or rolling.get("narrative") or ""
+
     prompt = (
-        f"Sen kripto pozisyon izleme koçusun. {symbol} açık pozisyonda plan-canlı sapma var.\n"
-        f"Sapma: {mismatch.get('pct', 0):.2f}% | vs plan: {mismatch.get('vs_planned', 0):+.3f}% | "
-        f"PnL: {tick.get('upnl_pct', 0):+.2f}% | canlı: {tick.get('price')} plan: {tick.get('planned_price')}\n"
-        "Kâr koruma ve zarar minimize odaklı Türkçe 2 cümle + tek aksiyon (tut/kısmi sat/sıkı stop).\n"
-        'Yanıt JSON: {"lesson":"...","action":"hold|tighten_stop|take_partial|close","profit_focus":"..."}'
+        f"Sen kripto grafik beyni koçusun. {symbol} açık pozisyon — 3 katman birlikte değerlendir:\n"
+        f"1) AL BLUEPRINT (donmuş plan): {blueprint.get('narrative', '')[:200]}\n"
+        f"   Nedenler: {blueprint.get('reasons', [])}\n"
+        f"2) CANLI GRAFİK: fiyat {tick.get('price')} PnL {tick.get('upnl_pct', 0):+.2f}% "
+        f"RSI bağlam | hacim {tick.get('volume_ratio', 1)}\n"
+        f"3) SÜREKLİ ANALİZ: {rolling.get('narrative', '')[:180]}\n"
+        f"Neden hareket: {why_move[:200]}\n"
+        f"Sapma: {mismatch.get('pct', 0):.2f}% ({mismatch.get('why', '')}) | "
+        f"Konsensüs: {consensus.get('action')} — {consensus.get('reasons', [])}\n"
+        "GÖREV: Neden düşüyor/çıkıyor açıkla. Kâr koru, zarar kes. Türkçe 2-3 cümle.\n"
+        'JSON: {"lesson":"...","why_up_down":"...","action":"hold|tighten_stop|take_partial|close",'
+        '"profit_focus":"...","chart_pattern":"false_breakout|plan_aligned|momentum_fade|..."}'
     )
     raw, provider = chat_completion(
         prompt,

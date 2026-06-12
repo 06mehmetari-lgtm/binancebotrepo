@@ -3,10 +3,10 @@ export const dynamic = 'force-dynamic'
 import { createRedis } from '../../../_redis'
 import type { ChartPoint, PositionChartPayload } from '@/lib/position-charts'
 
-function safeJson(raw: string | null): Record<string, unknown> | null {
+function safeJson(raw: string | null): unknown {
   if (!raw) return null
   try {
-    return JSON.parse(raw) as Record<string, unknown>
+    return JSON.parse(raw)
   } catch {
     return null
   }
@@ -23,66 +23,6 @@ function tickerMid(raw: string | null): number {
   } catch {
     return 0
   }
-}
-
-function priceAtPct(entry: number, direction: string, pct: number): number {
-  if (entry <= 0) return 0
-  return direction === 'long' ? entry * (1 + pct / 100) : entry * (1 - pct / 100)
-}
-
-function plannedNow(
-  tradePlan: Record<string, unknown> | null,
-  entryTs: number,
-  entry: number,
-  direction: string,
-): number {
-  if (!tradePlan) return entry
-  const elapsed = Math.max(0, Date.now() / 1000 - entryTs)
-  const curve = (tradePlan.planned_curve as { elapsed_sec?: number; price?: number }[]) || []
-  if (curve.length) {
-    let best = curve[0]
-    for (const pt of curve) {
-      if ((pt.elapsed_sec ?? 0) <= elapsed) best = pt
-      else break
-    }
-    return Number(best.price ?? entry)
-  }
-  const horizon = Number(tradePlan.horizon_sec ?? 3600)
-  const tp0 = Number((tradePlan.take_profit_tiers_pct as number[])?.[0] ?? 0.5)
-  const prog = Math.min(1, elapsed / horizon)
-  return priceAtPct(entry, direction, tp0 * prog ** 0.65)
-}
-
-function buildForecast(
-  current: number,
-  direction: string,
-  signal: Record<string, unknown> | null,
-): ChartPoint[] {
-  if (current <= 0) return []
-  const decision = (signal?.decision as Record<string, unknown>) || {}
-  const outcome =
-    ((signal?.ensemble as Record<string, unknown>)?.outcome as Record<string, unknown>) || {}
-  const expRet = Number(outcome.expected_return_pct ?? decision.expected_return_pct ?? 0.8)
-  const winP = Number(outcome.win_probability ?? 0.55)
-  const risk = Number(outcome.max_drawdown_risk ?? decision.risk_score ?? 0.3)
-  const regimeStrength = Number(signal?.regime_strength ?? 0.5)
-  let targetPct = expRet * winP * (1 - Math.min(risk, 0.5))
-  targetPct *= 0.7 + 0.3 * regimeStrength
-
-  const now = Date.now() / 1000
-  const points = 48
-  const step = 30
-  const out: ChartPoint[] = []
-  for (let i = 0; i < points; i++) {
-    const prog = i / Math.max(points - 1, 1)
-    const move = targetPct * prog ** 0.85
-    const p =
-      direction === 'long'
-        ? current * (1 + move / 100)
-        : current * (1 - move / 100)
-    out.push({ ts: now + i * step, price: p, pnl_pct: move, kind: 'forecast' })
-  }
-  return out
 }
 
 function mismatchSeverity(pct: number): PositionChartPayload['mismatch']['severity'] {
@@ -103,34 +43,35 @@ export async function GET(
   }
 
   try {
-    const [posRaw, ticksRaw, tickerRaw, featRaw, sigRaw] = await Promise.all([
+    const [posRaw, ticksRaw, tickerRaw, featRaw, brainRaw, lessonRaw] = await Promise.all([
       redis.get(`oms:position:${symbol}`),
-      redis.lrange(`oms:ticks:${symbol}`, 0, 599),
+      redis.lrange(`oms:ticks:${symbol}`, 0, 399),
       redis.get(`binance:ticker:${symbol.toLowerCase()}`),
       redis.get(`features:latest:${symbol}`),
-      redis.get(`signal:latest:${symbol}`),
+      redis.get(`oms:chart:brain:${symbol}`),
+      redis.lindex(`trade:lessons:${symbol}`, 0),
     ])
 
-    const pos = safeJson(posRaw)
+    const pos = safeJson(posRaw) as Record<string, unknown> | null
     if (!pos) {
       return NextResponse.json({ error: 'no open position' }, { status: 404 })
     }
 
+    const brain = safeJson(brainRaw) as Record<string, unknown> | null
     const direction = String(pos.direction ?? 'long')
     const entry = Number(pos.entry_price ?? 0)
     const entryTs = Number(pos.entry_time ?? 0)
     let current = tickerMid(tickerRaw)
     if (current <= 0) {
-      const f = safeJson(featRaw)
+      const f = safeJson(featRaw) as Record<string, unknown> | null
       current = Number(f?.close ?? f?.last_price ?? 0)
     }
 
-    const signal = safeJson(sigRaw)
-    const tradePlan = (pos.trade_plan as Record<string, unknown>) || null
-    const ladder = (pos.ladder as Record<string, unknown>) || {}
+    const blueprint = (pos.entry_blueprint ?? pos.trade_plan) as Record<string, unknown> | null
+    const tradePlan = (pos.trade_plan ?? blueprint) as Record<string, unknown> | null
 
     const live: ChartPoint[] = ticksRaw
-      .map(r => safeJson(r))
+      .map(r => safeJson(r) as Record<string, unknown> | null)
       .filter(Boolean)
       .map(t => ({
         ts: Number(t!.ts_ms ?? t!.ts ?? 0) / (Number(t!.ts_ms) > 1e12 ? 1000 : 1),
@@ -143,55 +84,74 @@ export async function GET(
 
     if (current > 0) {
       const now = Date.now() / 1000
-      live.push({
-        ts: now,
-        price: current,
-        pnl_pct:
-          entry > 0
-            ? direction === 'long'
-              ? ((current - entry) / entry) * 100
-              : ((entry - current) / entry) * 100
-            : 0,
-        kind: 'live',
-      })
+      const upnl =
+        entry > 0
+          ? direction === 'long'
+            ? ((current - entry) / entry) * 100
+            : ((entry - current) / entry) * 100
+          : 0
+      const last = live[live.length - 1]
+      if (!last || Math.abs(last.ts - now) > 0.05) {
+        live.push({ ts: now, price: current, pnl_pct: upnl, kind: 'live' })
+      } else {
+        live[live.length - 1] = { ...last, price: current, pnl_pct: upnl }
+      }
     }
 
-    const plannedCurve = (tradePlan?.planned_curve as ChartPoint[]) || []
-    const planned: ChartPoint[] = plannedCurve.map(p => ({
+    const blueprintCurve: ChartPoint[] = (
+      (blueprint?.blueprint_curve ?? tradePlan?.planned_curve ?? []) as ChartPoint[]
+    ).map(p => ({
       ts: Number(p.ts),
       price: Number(p.price),
       pnl_pct: Number(p.pnl_pct ?? 0),
-      kind: 'planned',
+      kind: 'blueprint' as const,
     }))
 
-    const forecast = buildForecast(current, direction, signal)
+    const rolling = brain?.rolling as PositionChartPayload['rolling']
+    const analysis: ChartPoint[] = (rolling?.points ?? []).map(p => ({
+      ts: Number(p.ts),
+      price: Number(p.price),
+      pnl_pct: Number(p.upnl_pct ?? 0),
+      delta_pct: Number(p.delta_pct ?? 0),
+      blueprint_price: Number(p.blueprint_price ?? 0),
+      kind: 'analysis' as const,
+    }))
 
-    const plannedPrice = plannedNow(tradePlan, entryTs, entry, direction)
-    const forecastNow = forecast[0]?.price ?? current
-    const vsPlanned = plannedPrice > 0 ? ((current - plannedPrice) / plannedPrice) * 100 : 0
-    const vsForecast = forecastNow > 0 ? ((current - forecastNow) / forecastNow) * 100 : 0
-    const mismatchPct = Math.abs(vsPlanned)
+    const forecastRaw = (brain?.forecast as ChartPoint[]) ?? []
+    const forecast: ChartPoint[] = forecastRaw.map(p => ({
+      ts: Number(p.ts),
+      price: Number(p.price),
+      pnl_pct: Number(p.pnl_pct ?? 0),
+      kind: 'forecast' as const,
+    }))
+
+    const mmFromBrain = brain?.mismatch as PositionChartPayload['mismatch'] | undefined
+    const tick = brain?.tick as Record<string, unknown> | undefined
+    const plannedPrice = Number(tick?.blueprint_price ?? tick?.planned_price ?? entry)
+    const vsPlanned = mmFromBrain?.vs_planned ?? (
+      plannedPrice > 0 ? ((current - plannedPrice) / plannedPrice) * 100 : 0
+    )
+    const mismatchPct = mmFromBrain?.pct ?? Math.abs(vsPlanned)
 
     const delta: ChartPoint[] = live.map(lp => {
-      const elapsed = lp.ts - entryTs
-      let planPt = plannedPrice
-      for (const pp of planned) {
-        if (pp.ts - entryTs <= elapsed) planPt = pp.price
-      }
+      const bp = Number(
+        analysis.find(a => Math.abs(a.ts - lp.ts) < 2)?.blueprint_price ?? plannedPrice,
+      )
       return {
         ts: lp.ts,
-        price: lp.price - planPt,
-        pnl_pct: planPt > 0 ? ((lp.price - planPt) / planPt) * 100 : 0,
+        price: lp.price - bp,
+        pnl_pct: bp > 0 ? ((lp.price - bp) / bp) * 100 : 0,
         kind: 'delta',
       }
     })
 
-    const unrealizedPct =
-      entry > 0 && current > 0
-        ? direction === 'long'
-          ? ((current - entry) / entry) * 100
-          : ((entry - current) / entry) * 100
-        : 0
+    const unrealizedPct = Number(tick?.upnl_pct ?? live[live.length - 1]?.pnl_pct ?? 0)
+
+    let llmLesson: string | null = null
+    const lesson = safeJson(lessonRaw as string | null) as { text?: string; source?: string } | null
+    if (lesson?.text && (lesson.source === 'chart_brain' || lesson.source === 'position_track_llm')) {
+      llmLesson = lesson.text
+    }
 
     const payload: PositionChartPayload = {
       symbol,
@@ -200,21 +160,39 @@ export async function GET(
       entry_ts: entryTs,
       current_price: current,
       unrealized_pct: +unrealizedPct.toFixed(4),
-      mismatch: {
+      mismatch: mmFromBrain ?? {
         pct: +mismatchPct.toFixed(4),
-        severity: mismatchSeverity(mismatchPct),
+        severity: mismatchSeverity(Math.abs(mismatchPct)),
         vs_planned: +vsPlanned.toFixed(4),
-        vs_forecast: +vsForecast.toFixed(4),
+        vs_forecast: 0,
+        why: 'hesaplanıyor',
       },
-      stop_loss: Number(tradePlan?.stop_loss ?? 0) || null,
-      take_profit_prices: (tradePlan?.take_profit_prices as number[]) || [],
-      tiers_pct: (tradePlan?.take_profit_tiers_pct as number[]) || [],
-      fills: (pos.fills as PositionChartPayload['fills']) || [],
+      consensus: brain?.consensus as PositionChartPayload['consensus'],
+      rolling,
+      blueprint: blueprint
+        ? {
+            frozen_at: Number(blueprint.frozen_at ?? entryTs),
+            narrative: String(blueprint.narrative ?? ''),
+            reasons: (blueprint.reasons as string[]) ?? [],
+            action: String(blueprint.action ?? ''),
+            confidence: Number(blueprint.confidence ?? 0),
+            regime: String(blueprint.regime ?? ''),
+            blueprint_curve: blueprintCurve,
+          }
+        : undefined,
+      why_move: String((brain as { why_move?: string })?.why_move ?? rolling?.trend ?? ''),
+      llm_lesson: llmLesson,
+      stop_loss: Number(tradePlan?.stop_loss ?? blueprint?.stop_loss ?? 0) || null,
+      take_profit_prices: (tradePlan?.take_profit_prices as number[]) ?? (blueprint?.take_profit_prices as number[]) ?? [],
+      tiers_pct: (tradePlan?.take_profit_tiers_pct as number[]) ?? (blueprint?.take_profit_tiers_pct as number[]) ?? [],
+      fills: (pos.fills as PositionChartPayload['fills']) ?? [],
       live,
-      planned,
+      blueprint_curve: blueprintCurve,
+      planned: blueprintCurve,
       forecast,
       delta,
-      updated_at: Date.now() / 1000,
+      analysis,
+      updated_at: Number(brain?.updated_at ?? Date.now() / 1000),
     }
 
     return NextResponse.json(payload)

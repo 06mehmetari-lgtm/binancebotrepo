@@ -190,15 +190,20 @@ class LearningEngine:
         throttle_key = f"position:llm:throttle:{symbol}"
         if await redis.get(throttle_key):
             return
-        await redis.set(throttle_key, "1", ex=120)
+        await redis.set(throttle_key, "1", ex=90)
 
-        insight = synthesize_position_track(symbol, mismatch, tick)
-        lesson_text = (
-            f"Plan sapması {mismatch.get('pct', 0):.2f}% — "
+        insight = synthesize_position_track(symbol, payload)
+        lesson_text = payload.get("why_move") or (
+            f"Blueprint sapma {mismatch.get('pct', 0):.2f}% — "
             f"canlı {tick.get('price')} vs plan {tick.get('planned_price')}"
         )
         if insight:
-            lesson_text = f"{insight.get('lesson', lesson_text)} | Aksiyon: {insight.get('action', 'hold')}"
+            lesson_text = (
+                f"{insight.get('lesson', lesson_text)} | "
+                f"Neden: {insight.get('why_up_down', '')} | "
+                f"Aksiyon: {insight.get('action', 'hold')} | "
+                f"Pattern: {insight.get('chart_pattern', '')}"
+            )
         await redis.lpush(
             f"trade:lessons:{symbol}",
             json.dumps({"text": lesson_text, "ts": time.time(), "source": "position_track_llm"}),
@@ -209,6 +214,10 @@ class LearningEngine:
             try:
                 profile = json.loads(profile_raw)
                 profile["position_track_insight"] = insight
+                profile["chart_patterns"] = profile.get("chart_patterns") or []
+                pat = insight.get("chart_pattern")
+                if pat and pat not in profile["chart_patterns"][-5:]:
+                    profile["chart_patterns"] = (profile["chart_patterns"] + [pat])[-10:]
                 await persist_profile(redis, profile, [lesson_text])
             except (json.JSONDecodeError, TypeError):
                 pass

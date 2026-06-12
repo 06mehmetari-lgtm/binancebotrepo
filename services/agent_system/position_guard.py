@@ -340,39 +340,51 @@ async def _record_position_tick(
     features: dict,
     signal: dict | None,
     dec: GuardDecision,
-) -> None:
-    """Salise tick + plan uyumsuzluk — dashboard 3'lü grafik + Ollama öğrenme."""
+) -> dict | None:
+    """Grafik beyni — blueprint / canlı / sürekli analiz / konsensüs + Ollama."""
     try:
         from position_plan import (
+            build_entry_blueprint,
             build_forecast_curve,
+            chart_consensus,
             mismatch_score,
             planned_price_now,
+            rolling_analysis,
         )
     except ImportError:
-        return
+        return None
 
     entry = float(pos.get("entry_price") or 0)
     entry_ts = float(pos.get("entry_time") or 0)
     direction = str(pos.get("direction") or "long")
     price = float(features.get("close") or features.get("last_price") or 0)
     if price <= 0 or entry <= 0:
-        return
+        return None
 
-    trade_plan = pos.get("trade_plan") or {}
-    if not trade_plan and pos.get("entry_signal"):
+    blueprint = pos.get("entry_blueprint") or pos.get("trade_plan") or {}
+    if not blueprint and pos.get("entry_signal"):
         try:
-            from position_plan import build_entry_plan
-
-            trade_plan = build_entry_plan(entry, direction, pos["entry_signal"])
-            pos["trade_plan"] = trade_plan
+            blueprint = build_entry_blueprint(entry, direction, pos["entry_signal"])
+            pos["entry_blueprint"] = blueprint
+            if not pos.get("trade_plan"):
+                from position_plan import build_entry_plan
+                pos["trade_plan"] = build_entry_plan(entry, direction, pos["entry_signal"])
             await redis.set(f"oms:position:{symbol}", json.dumps(pos), ex=86400)
         except Exception:
-            trade_plan = {}
+            blueprint = {}
 
-    planned_p = planned_price_now(trade_plan, entry_ts, direction, entry)
+    planned_p = planned_price_now(blueprint, entry_ts, direction, entry)
     forecast = build_forecast_curve(price, direction, signal)
     forecast_p = float(forecast[0]["price"]) if forecast else price
-    mm = mismatch_score(price, planned_p, forecast_p)
+    mm = mismatch_score(price, planned_p, forecast_p, direction=direction)
+
+    raw_ticks = await redis.lrange(f"oms:ticks:{symbol}", 0, 119)
+    tick_history = []
+    for r in raw_ticks:
+        try:
+            tick_history.append(json.loads(r))
+        except json.JSONDecodeError:
+            pass
 
     tick = {
         "ts_ms": int(time.time() * 1000),
@@ -380,30 +392,98 @@ async def _record_position_tick(
         "price": price,
         "upnl_pct": dec.unrealized_pct,
         "planned_price": planned_p,
+        "blueprint_price": planned_p,
         "forecast_price": forecast_p,
         "mismatch": mm,
+        "rsi": float(features.get("rsi_14") or 0),
+        "volume_ratio": float(features.get("volume_ratio") or 1),
     }
+    tick_history.insert(0, tick)
+
+    rolling = rolling_analysis(tick_history, blueprint, entry, entry_ts, direction, signal)
+    consensus = chart_consensus(rolling, dec.unrealized_pct, signal)
+
+    why_move = _explain_price_move(direction, mm, rolling, features)
+    brain = {
+        "symbol": symbol,
+        "updated_at": time.time(),
+        "tick": tick,
+        "mismatch": mm,
+        "rolling": rolling,
+        "consensus": consensus,
+        "why_move": why_move,
+        "blueprint_narrative": (blueprint.get("narrative") or "")[:400],
+        "forecast": forecast[:12],
+    }
+
     pipe = redis.pipeline()
     pipe.lpush(f"oms:ticks:{symbol}", json.dumps(tick))
-    pipe.ltrim(f"oms:ticks:{symbol}", 0, 599)
-    pipe.set(
-        f"oms:position:track:{symbol}",
-        json.dumps({**tick, "severity": mm["severity"], "symbol": symbol}),
-        ex=300,
-    )
+    pipe.ltrim(f"oms:ticks:{symbol}", 0, 1199)
+    pipe.set(f"oms:position:track:{symbol}", json.dumps({**tick, "severity": mm["severity"]}), ex=300)
+    pipe.set(f"oms:chart:brain:{symbol}", json.dumps(brain), ex=120)
     await pipe.execute()
 
-    if mm["severity"] in ("warn", "critical"):
+    publish_llm = mm["severity"] in ("warn", "critical") or consensus.get("action") in (
+        "close", "take_partial", "tighten_stop",
+    )
+    if publish_llm:
+        payload = {
+            "symbol": symbol,
+            "mismatch": mm,
+            "tick": tick,
+            "rolling": {"narrative": rolling.get("narrative"), "trend": rolling.get("trend")},
+            "consensus": consensus,
+            "blueprint": {
+                "narrative": blueprint.get("narrative"),
+                "reasons": blueprint.get("reasons"),
+                "direction": direction,
+            },
+            "why_move": why_move,
+        }
+        await redis.publish("ch:position_track", json.dumps(payload, ensure_ascii=False))
         lesson = (
-            f"{symbol} plan sapması {mm['pct']:.2f}% — canlı {price:.6f} "
-            f"plan {planned_p:.6f} — {dec.reason[:100]}"
+            f"[grafik] {why_move} | Konsensüs: {consensus.get('action')} "
+            f"({', '.join(consensus.get('reasons') or [])})"
         )
-        await redis.lpush(f"trade:lessons:{symbol}", json.dumps({"text": lesson, "ts": time.time()}))
+        await redis.lpush(
+            f"trade:lessons:{symbol}",
+            json.dumps({"text": lesson, "ts": time.time(), "source": "chart_brain"}),
+        )
         await redis.ltrim(f"trade:lessons:{symbol}", 0, 49)
-        await redis.publish(
-            "ch:position_track",
-            json.dumps({"symbol": symbol, "mismatch": mm, "tick": tick}),
-        )
+
+    return brain
+
+
+def _explain_price_move(
+    direction: str,
+    mm: dict,
+    rolling: dict,
+    features: dict,
+) -> str:
+    """Neden düşüyor/çıkıyor — LLM ve dashboard için kısa açıklama."""
+    parts = [rolling.get("trend") or mm.get("why", "")]
+    vs = float(mm.get("vs_planned") or 0)
+    if direction == "long":
+        if vs < -0.3:
+            parts.append("fiyat planın altında — long baskı altında")
+        elif vs > 0.3:
+            parts.append("fiyat planın üstünde — long lehine")
+    else:
+        if vs > 0.3:
+            parts.append("fiyat planın üstünde — short baskı altında")
+        elif vs < -0.3:
+            parts.append("fiyat planın altında — short lehine")
+    rsi = float(features.get("rsi_14") or 50)
+    if rsi > 68:
+        parts.append(f"RSI aşırı alım {rsi:.0f}")
+    elif rsi < 32:
+        parts.append(f"RSI aşırı satım {rsi:.0f}")
+    vol = float(features.get("volume_ratio") or 1)
+    if vol > 1.5:
+        parts.append(f"hacim artışı x{vol:.1f}")
+    elif vol < 0.7:
+        parts.append("düşük hacim — zayıf hareket")
+    return " · ".join(p for p in parts if p)[:320]
 
 
 async def list_open_positions(redis: aioredis.Redis) -> list[dict]:
@@ -488,7 +568,46 @@ async def run_guard_cycle(
         dec = evaluate_position(symbol, pos, features, context, signal, verdict, learn)
 
         if pos.get("source") == "oms":
-            await _record_position_tick(redis, symbol, pos, features, signal, dec)
+            brain = await _record_position_tick(redis, symbol, pos, features, signal, dec)
+            if brain:
+                consensus = brain.get("consensus") or {}
+                c_action = consensus.get("action")
+                c_urgency = consensus.get("urgency", "low")
+                if c_action in ("close", "take_partial", "tighten_stop") and c_urgency in (
+                    "critical", "high", "medium",
+                ):
+                    if dec.action == "hold":
+                        if c_action == "close" and dec.unrealized_pct < -0.2:
+                            dec = GuardDecision(
+                                symbol, dec.source, dec.direction,
+                                "close", c_urgency,
+                                f"Grafik konsensüs (close): "
+                                f"{'; '.join(consensus.get('reasons') or [])} | {dec.reason}",
+                                dec.unrealized_pct, dec.ai_confidence, dec.trade_action,
+                                {**(dec.checks or {}), "chart_brain": True},
+                                time.time(), dec.shadow_id,
+                            )
+                        elif c_action == "take_partial" and dec.unrealized_pct >= 0.15:
+                            dec = GuardDecision(
+                                symbol, dec.source, dec.direction,
+                                "close", "high",
+                                f"Grafik konsensüs (kısmi sat): "
+                                f"{'; '.join(consensus.get('reasons') or [])} | {dec.reason}",
+                                dec.unrealized_pct, dec.ai_confidence, dec.trade_action,
+                                {**(dec.checks or {}), "chart_brain": True, "partial": True},
+                                time.time(), dec.shadow_id,
+                            )
+                        elif c_action == "tighten_stop" and dec.unrealized_pct < 0:
+                            dec = GuardDecision(
+                                symbol, dec.source, dec.direction,
+                                "close" if dec.unrealized_pct < -0.5 else "hold",
+                                c_urgency,
+                                f"Grafik konsensüs (stop sıkı): "
+                                f"{'; '.join(consensus.get('reasons') or [])} | {dec.reason}",
+                                dec.unrealized_pct, dec.ai_confidence, dec.trade_action,
+                                {**(dec.checks or {}), "chart_brain": True},
+                                time.time(), dec.shadow_id,
+                            )
 
         ladder = pos.get("ladder") or {}
         peak = float(ladder.get("peak_upnl_pct") or 0)
