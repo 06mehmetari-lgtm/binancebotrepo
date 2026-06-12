@@ -27,6 +27,7 @@ export default function LlmKeysPage() {
   const [groqKeys, setGroqKeys] = useState<string[]>(['', '', ''])
   const [cerebrasKeys, setCerebrasKeys] = useState<string[]>(['', ''])
   const [googleKey, setGoogleKey] = useState('')
+  const [openrouterKey, setOpenrouterKey] = useState('')
   const [saving, setSaving] = useState(false)
   const [result, setResult] = useState<SaveResult | null>(null)
   const [forceSave, setForceSave] = useState(false)
@@ -65,6 +66,7 @@ export default function LlmKeysPage() {
           groq_keys: groqKeys.filter(k => k.trim()),
           cerebras_keys: cerebrasKeys.filter(k => k.trim()),
           google_keys: googleKey.trim() ? [googleKey.trim()] : [],
+          openrouter_keys: openrouterKey.trim() ? [openrouterKey.trim()] : [],
           test_before_save: true,
           force_save: forceSave,
         }),
@@ -75,6 +77,7 @@ export default function LlmKeysPage() {
         setGroqKeys(['', '', ''])
         setCerebrasKeys(['', ''])
         setGoogleKey('')
+        setOpenrouterKey('')
         setForceSave(false)
         await load()
       } else if (data.blocked) {
@@ -180,6 +183,23 @@ export default function LlmKeysPage() {
       )}
 
       <form onSubmit={handleSave} className="space-y-6 bg-gray-900 border border-gray-800 rounded-xl p-6">
+        <section className="space-y-2 border border-violet-800/50 rounded-lg p-4 bg-violet-950/20">
+          <h2 className="text-violet-300 font-bold">OpenRouter (VPS için önerilen)</h2>
+          <input
+            type="password"
+            autoComplete="off"
+            placeholder="sk-or-v1-..."
+            value={openrouterKey}
+            onChange={e => setOpenrouterKey(e.target.value)}
+            className="w-full bg-gray-950 border border-violet-800/60 rounded-lg px-3 py-2 text-sm text-white font-mono"
+          />
+          <p className="text-gray-500 text-xs">
+            <a href="https://openrouter.ai/keys" target="_blank" rel="noreferrer" className="text-violet-400 underline">
+              openrouter.ai/keys
+            </a>
+            — Groq/Cerebras 403 olduğunda birincil LLM
+          </p>
+        </section>
         <section className="space-y-3">
           <h2 className="text-orange-400 font-bold">Groq anahtarları</h2>
           <p className="text-gray-500 text-xs">gsk_… — birden fazla key rate-limit için rotasyon</p>

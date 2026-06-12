@@ -71,6 +71,21 @@ export function probeGoogleKey(key: string): Promise<ProbeResult> {
   )
 }
 
+const OPENROUTER_MODEL =
+  process.env.OPENROUTER_MODEL || 'google/gemma-2-9b-it:free'
+
+export function probeOpenRouterKey(key: string): Promise<ProbeResult> {
+  return openAiProbe(
+    'https://openrouter.ai/api/v1',
+    key,
+    OPENROUTER_MODEL,
+    {
+      'HTTP-Referer': process.env.OPENROUTER_REFERER || 'https://prometheus.local',
+      'X-Title': 'Prometheus Trading',
+    },
+  )
+}
+
 export function maskKey(key: string): string {
   const k = key.trim()
   if (k.length <= 8) return '***'

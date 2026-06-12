@@ -78,6 +78,7 @@ def overrides_payload(
     groq: list[str] | None = None,
     cerebras: list[str] | None = None,
     google: list[str] | None = None,
+    openrouter: list[str] | None = None,
     *,
     updated_by: str = "dashboard",
     probe_results: dict[str, Any] | None = None,
@@ -92,6 +93,8 @@ def overrides_payload(
         payload["cerebras"] = cerebras
     if google:
         payload["google"] = google
+    if openrouter:
+        payload["openrouter"] = openrouter
     if probe_results:
         payload["probe_results"] = probe_results
     return payload

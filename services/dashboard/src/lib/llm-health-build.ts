@@ -1,5 +1,5 @@
 import { collectKeysFromEnv } from '@/lib/llm-key-env'
-import { probeCerebrasKey, probeGoogleKey, probeGroqKey } from '@/lib/llm-probe'
+import { probeCerebrasKey, probeGoogleKey, probeGroqKey, probeOpenRouterKey } from '@/lib/llm-probe'
 import type { LlmHealthPayload } from '@/lib/llm-health-types'
 
 async function ollamaQuick(): Promise<LlmHealthPayload['providers']['ollama']> {
@@ -30,6 +30,7 @@ export async function buildLlmHealthPayload(overrideRaw?: string | null): Promis
   let groqKeys = collectKeysFromEnv('GROQ_API_KEY')
   let cerebrasKeys = collectKeysFromEnv('CEREBRAS_API_KEY')
   let googleKeys = collectKeysFromEnv('GOOGLE_AI_API_KEY', 'GEMINI_API_KEY')
+  let openrouterKeys = collectKeysFromEnv('OPENROUTER_API_KEY')
 
   if (overrideRaw) {
     try {
@@ -37,15 +38,17 @@ export async function buildLlmHealthPayload(overrideRaw?: string | null): Promis
       if (Array.isArray(o.groq) && o.groq.length) groqKeys = o.groq
       if (Array.isArray(o.cerebras) && o.cerebras.length) cerebrasKeys = o.cerebras
       if (Array.isArray(o.google) && o.google.length) googleKeys = o.google
+      if (Array.isArray(o.openrouter) && o.openrouter.length) openrouterKeys = o.openrouter
     } catch {
       /* keep env */
     }
   }
 
-  const [groqProbe, cerebrasProbe, googleProbe, ollama] = await Promise.all([
+  const [groqProbe, cerebrasProbe, googleProbe, openrouterProbe, ollama] = await Promise.all([
     groqKeys[0] ? probeGroqKey(groqKeys[0]) : Promise.resolve(null),
     cerebrasKeys[0] ? probeCerebrasKey(cerebrasKeys[0]) : Promise.resolve(null),
     googleKeys[0] ? probeGoogleKey(googleKeys[0]) : Promise.resolve(null),
+    openrouterKeys[0] ? probeOpenRouterKey(openrouterKeys[0]) : Promise.resolve(null),
     ollamaQuick(),
   ])
 
@@ -85,7 +88,19 @@ export async function buildLlmHealthPayload(overrideRaw?: string | null): Promis
       }
     : { id: 'google', status: 'no_keys', ok: false, message: 'Anahtar yok' }
 
-  const anyCloudOk = Boolean(groq.ok || cerebras.ok || google.ok)
+  const openrouter = openrouterKeys.length
+    ? {
+        id: 'openrouter',
+        status: openrouterProbe?.ok ? 'ok' : 'error',
+        ok: openrouterProbe?.ok,
+        http_code: openrouterProbe?.http_code ?? null,
+        message: openrouterProbe?.message ?? '',
+        ip_blocked: openrouterProbe?.ip_blocked ?? false,
+        key_source: overrideRaw ? 'runtime' : 'env',
+      }
+    : { id: 'openrouter', status: 'no_keys', ok: false, message: 'Anahtar yok' }
+
+  const anyCloudOk = Boolean(groq.ok || cerebras.ok || google.ok || openrouter.ok)
   const cloudBlocked = Boolean(
     (groq.status === 'blocked' || cerebras.status === 'blocked') && !anyCloudOk,
   )
@@ -104,7 +119,7 @@ export async function buildLlmHealthPayload(overrideRaw?: string | null): Promis
 
   return {
     updated_at: Date.now() / 1000,
-    providers: { groq, cerebras, google, ollama },
+    providers: { groq, cerebras, google, openrouter, ollama },
     any_cloud_ok: anyCloudOk,
     cloud_blocked: cloudBlocked,
     needs_key_update: needsKeyUpdate,

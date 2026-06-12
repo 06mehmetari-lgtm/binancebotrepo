@@ -21,6 +21,69 @@ log = logging.getLogger(__name__)
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379")
 PORTFOLIO_VALUE = float(os.getenv("PORTFOLIO_VALUE", "10000"))
 SYMBOL_REFRESH_INTERVAL = 300
+RECOVERY_DCA_MAX_TIERS = int(os.getenv("RECOVERY_DCA_MAX_TIERS", "3"))
+RECOVERY_MAX_SYMBOL_PCT = float(os.getenv("RECOVERY_MAX_SYMBOL_PCT", "0.15"))
+_portfolio_usd = PORTFOLIO_VALUE
+
+
+def _portfolio_cap() -> float:
+    return _portfolio_usd
+
+
+async def refresh_portfolio_cap(redis: aioredis.Redis) -> float:
+    """10.000 TL → USD (USDT/TRY); üst limit aşılamaz."""
+    global _portfolio_usd
+    try:
+        from portfolio_try import (
+            fetch_usd_try_rate,
+            portfolio_try_amount,
+            portfolio_value_usd,
+            round_trip_fee_pct,
+        )
+
+        _portfolio_usd = portfolio_value_usd()
+        await redis.set(
+            "portfolio:try:v1",
+            json.dumps({
+                "try_amount": portfolio_try_amount(),
+                "usd_try": fetch_usd_try_rate(),
+                "portfolio_usd": _portfolio_usd,
+                "fee_round_trip_pct": round_trip_fee_pct(),
+                "updated_at": time.time(),
+            }),
+            ex=600,
+        )
+    except Exception as e:
+        log.warning(f"portfolio TRY→USD refresh: {e}")
+    return _portfolio_usd
+
+
+async def _total_open_exposure(redis: aioredis.Redis) -> float:
+    total = 0.0
+    cursor = 0
+    while True:
+        cursor, keys = await redis.scan(cursor, match="oms:position:*", count=100)
+        for key in keys:
+            raw = await redis.get(key)
+            if not raw:
+                continue
+            try:
+                total += float(json.loads(raw).get("size_usd", 0) or 0)
+            except (json.JSONDecodeError, TypeError, ValueError):
+                pass
+        if cursor == 0:
+            break
+    return total
+
+
+def _unrealized_pct(pos: dict, price: float) -> float:
+    entry = float(pos.get("entry_price", 0) or 0)
+    if entry <= 0 or price <= 0:
+        return 0.0
+    direction = pos.get("direction", "long")
+    if direction == "long":
+        return (price - entry) / entry
+    return (entry - price) / entry
 
 # Running daily P&L (reset at UTC midnight)
 _daily_pnl = 0.0
@@ -44,7 +107,7 @@ async def request_immunity_approval(redis: aioredis.Redis, order_dict: dict) -> 
     """Send order to immunity system queue and wait for response."""
     request_id = str(uuid.uuid4())[:8]
     order_dict["request_id"] = request_id
-    order_dict["portfolio_value"] = PORTFOLIO_VALUE
+    order_dict["portfolio_value"] = _portfolio_cap()
     order_dict["daily_pnl"] = _daily_pnl
 
     await redis.rpush("immunity:requests", json.dumps(order_dict))
@@ -89,32 +152,43 @@ async def close_position(
             return
 
     if entry_price > 0 and size_usd > 0:
-        if direction == "long":
-            pnl_pct = (current_price - entry_price) / entry_price
-        else:
-            pnl_pct = (entry_price - current_price) / entry_price
-        pnl_pct -= 0.001  # 0.10% round-trip fee
-        pnl_usdt = size_usd * pnl_pct
+        from portfolio_try import compute_net_pnl
+
+        pnl = compute_net_pnl(entry_price, current_price, direction, size_usd)
+        pnl_pct = pnl["net_pnl_pct"]
+        pnl_usdt = pnl["net_pnl_usd"]
         _daily_pnl += pnl_usdt
         await redis.set("oms:daily_pnl", str(round(_daily_pnl, 4)))
         meta = exit_meta or {}
         hold_s = time.time() - pos.get("entry_time", time.time())
+        ladder = pos.get("ladder") or {}
+        entry_reason = str(ladder.get("entry_reason") or "")[:500]
         trade = {
             "symbol": symbol, "direction": direction,
             "action": "close",
             "entry_price": entry_price, "exit_price": current_price,
-            "pnl_pct": round(pnl_pct, 6), "pnl_usdt": round(pnl_usdt, 4),
+            "pnl_pct": pnl_pct,
+            "pnl_usdt": pnl_usdt,
+            "gross_pnl_pct": pnl["gross_pnl_pct"],
+            "gross_pnl_usd": pnl["gross_pnl_usd"],
+            "fee_entry_usd": pnl["fee_entry_usd"],
+            "fee_exit_usd": pnl["fee_exit_usd"],
+            "fee_total_usd": pnl["fee_total_usd"],
+            "fee_total_pct": pnl["fee_total_pct"],
             "size_usd": size_usd, "source": "oms",
             "timestamp": int(time.time() * 1000),
             "closed_at": time.time(),
             "hold_seconds": hold_s,
             "entry_signal": pos.get("entry_signal"),
-            "ladder": pos.get("ladder"),
+            "ladder": ladder,
+            "entry_reason": entry_reason,
             "exit_reason": str(meta.get("reason", meta.get("close_reason", "")))[:500],
             "exit_urgency": str(meta.get("urgency", "")),
             "exit_action": str(meta.get("action", "close")),
             "unrealized_pct_at_close": meta.get("unrealized_pct"),
-            "peak_upnl_pct": (pos.get("ladder") or {}).get("peak_upnl_pct"),
+            "peak_upnl_pct": ladder.get("peak_upnl_pct"),
+            "dca_tier": ladder.get("tier", 1),
+            "fills": pos.get("fills", []),
         }
         await redis.lpush("oms:trade_history", json.dumps(trade))
         await redis.ltrim("oms:trade_history", 0, 4999)
@@ -228,13 +302,58 @@ async def process_signal(redis: aioredis.Redis, symbol: str):
     if not signal.get("is_valid"):
         return
 
-    # If we have a position in the opposite direction, close it first
+    cap = _portfolio_cap()
+    price = await get_price(redis, symbol)
+
+    # Aynı yönde açık pozisyon — zararda kademeli ekleme (DCA recovery)
     if pos_raw:
         pos = json.loads(pos_raw)
-        if pos.get("direction") == direction:
-            return  # Already positioned correctly
-        price = await get_price(redis, symbol)
-        if price > 0:
+        if pos.get("direction") == direction and price > 0:
+            upnl = _unrealized_pct(pos, price)
+            ladder = pos.get("ladder") or {}
+            tier = int(ladder.get("tier", 1) or 1)
+            initial = float(ladder.get("initial_size_usd", pos.get("size_usd", 0)) or 0)
+            sym_cap = cap * RECOVERY_MAX_SYMBOL_PCT
+            if (
+                tier < RECOVERY_DCA_MAX_TIERS
+                and -0.08 < upnl < -0.003
+                and signal.get("is_valid")
+                and float(pos.get("size_usd", 0)) < sym_cap
+            ):
+                add_usd = min(initial * 0.35, sym_cap - float(pos.get("size_usd", 0)))
+                if add_usd >= 5.0:
+                    old_sz = float(pos["size_usd"])
+                    old_ep = float(pos["entry_price"])
+                    new_sz = old_sz + add_usd
+                    new_ep = (old_ep * old_sz + price * add_usd) / new_sz
+                    fills = list(pos.get("fills") or [])
+                    fills.append({
+                        "tier": tier + 1,
+                        "price": price,
+                        "size_usd": add_usd,
+                        "reason": "recovery_dca",
+                        "upnl_before": round(upnl * 100, 3),
+                        "ts": time.time(),
+                    })
+                    ladder.update({
+                        "tier": tier + 1,
+                        "initial_size_usd": initial or old_sz,
+                        "last_dca_reason": "Zararda kademeli alış — ortalama maliyet düşürme",
+                    })
+                    pos.update({
+                        "size_usd": new_sz,
+                        "entry_price": new_ep,
+                        "fills": fills,
+                        "ladder": ladder,
+                    })
+                    await redis.set(f"oms:position:{symbol}", json.dumps(pos), ex=86400)
+                    log.info(
+                        f"[DCA] {symbol} tier={tier + 1} +${add_usd:.0f} "
+                        f"avg={new_ep:.4f} upnl={upnl:.2%}"
+                    )
+                    await publish_portfolio_state(redis)
+            return
+        if pos.get("direction") != direction and price > 0:
             await close_position(redis, symbol, pos, price)
 
     confidence = float(signal.get("confidence", 0))
@@ -242,23 +361,30 @@ async def process_signal(redis: aioredis.Redis, symbol: str):
     try:
         from risk_limits import get_active_limits, is_paper_unlimited
         lim = get_active_limits()
-        max_pos_pct = lim.max_position_pct
+        max_pos_pct = min(lim.max_position_pct, RECOVERY_MAX_SYMBOL_PCT * 100) / 100.0
+        if lim.max_position_pct > 1:
+            max_pos_pct = RECOVERY_MAX_SYMBOL_PCT
         paper = is_paper_unlimited()
     except Exception:
-        max_pos_pct = 0.05
+        max_pos_pct = RECOVERY_MAX_SYMBOL_PCT
         paper = DRY_RUN
+
+    open_exposure = await _total_open_exposure(redis)
+    room = max(0.0, cap - open_exposure)
     size_usd = min(
-        PORTFOLIO_VALUE * kelly * confidence,
-        PORTFOLIO_VALUE * max_pos_pct,
+        cap * kelly * confidence,
+        cap * max_pos_pct,
+        room,
     )
     if paper:
-        size_usd = max(size_usd, PORTFOLIO_VALUE * 0.003)
+        size_usd = max(size_usd, cap * 0.003)
 
     min_notional = 5.0 if paper else 10.0
     if size_usd < min_notional:
         return
 
-    price = await get_price(redis, symbol)
+    if price <= 0:
+        price = await get_price(redis, symbol)
     if price <= 0:
         return
 
@@ -307,11 +433,19 @@ async def process_signal(redis: aioredis.Redis, symbol: str):
         "entry_time": time.time(), "entry_signal": signal,
         "ladder": {
             "tier": 1,
+            "initial_size_usd": size_usd,
             "take_profit_pct": tp_pct,
             "stop_loss_pct": sl_pct,
             "entry_confidence": confidence,
             "entry_reason": (signal.get("consensus_reasoning") or "")[:500],
         },
+        "fills": [{
+            "tier": 1,
+            "price": price,
+            "size_usd": size_usd,
+            "reason": "entry",
+            "ts": time.time(),
+        }],
     }), ex=86400)
     await publish_portfolio_state(redis)
 
@@ -328,7 +462,7 @@ async def snapshot_portfolio(redis: aioredis.Redis):
                 except Exception:
                     pass
             trades.sort(key=lambda t: t.get("closed_at", 0))
-            equity = PORTFOLIO_VALUE
+            equity = _portfolio_cap()
             for t in trades:
                 equity += t.get("pnl_usdt", 0)
             snapshot = {
@@ -345,8 +479,9 @@ async def snapshot_portfolio(redis: aioredis.Redis):
 
 async def main():
     mode = "DRY_RUN" if DRY_RUN else "LIVE"
-    log.info(f"OMS starting — {mode} mode — portfolio=${PORTFOLIO_VALUE:.0f}")
     redis = await aioredis.from_url(REDIS_URL)
+    await refresh_portfolio_cap(redis)
+    log.info(f"OMS starting — {mode} mode — portfolio=${_portfolio_cap():.2f} (TRY cap)")
 
     symbols: list[str] = []
     last_refresh = 0.0
@@ -358,6 +493,11 @@ async def main():
             except Exception as e:
                 log.debug(f"portfolio sync: {e}")
             await asyncio.sleep(5)
+
+    async def try_refresh_loop():
+        while True:
+            await refresh_portfolio_cap(redis)
+            await asyncio.sleep(300)
 
     async def signal_loop():
         nonlocal symbols, last_refresh
@@ -404,6 +544,7 @@ async def main():
     await asyncio.gather(
         signal_loop(),
         portfolio_sync_loop(),
+        try_refresh_loop(),
         snapshot_portfolio(redis),
         emergency_listener(redis_em),
         guard_listener(redis_guard, apply_guard_close),

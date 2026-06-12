@@ -8,9 +8,13 @@ type Trade = {
   closed_at: number
   hold_seconds?: number
   exit_reason?: string
+  entry_reason?: string
   peak_upnl_pct?: number
   entry_price?: number
   exit_price?: number
+  fee_total_usd?: number
+  gross_pnl_usd?: number
+  dca_tier?: number
 }
 
 function timeAgo(ts: number) {
@@ -69,17 +73,26 @@ export function RecentTradesFeed({ trades, max = 8 }: { trades: Trade[]; max?: n
                 </span>
               </div>
             </div>
-            {(label || t.peak_upnl_pct != null) && (
-              <div className="flex flex-wrap gap-2 pl-6 text-[10px]">
-                {label && <span className={label.cls}>{label.text}</span>}
-                {t.peak_upnl_pct != null && Number(t.peak_upnl_pct) > 0 && (
-                  <span className="text-gray-500">zirve +{Number(t.peak_upnl_pct).toFixed(2)}%</span>
-                )}
-                {t.exit_reason && !label && (
-                  <span className="text-gray-500 line-clamp-1">{t.exit_reason}</span>
-                )}
-              </div>
-            )}
+            <div className="flex flex-wrap gap-2 pl-6 text-[10px]">
+              {label && <span className={label.cls}>{label.text}</span>}
+              {t.fee_total_usd != null && t.fee_total_usd > 0 && (
+                <span className="text-gray-500">komisyon ${t.fee_total_usd.toFixed(2)}</span>
+              )}
+              {t.dca_tier != null && t.dca_tier > 1 && (
+                <span className="text-purple-400">DCA kademe {t.dca_tier}</span>
+              )}
+              {t.peak_upnl_pct != null && Number(t.peak_upnl_pct) > 0 && (
+                <span className="text-gray-500">zirve +{Number(t.peak_upnl_pct).toFixed(2)}%</span>
+              )}
+              {t.entry_reason && (
+                <span className="text-gray-600 line-clamp-1" title={t.entry_reason}>
+                  giriş: {t.entry_reason.slice(0, 48)}…
+                </span>
+              )}
+              {t.exit_reason && !label && (
+                <span className="text-gray-500 line-clamp-1">{t.exit_reason}</span>
+              )}
+            </div>
           </div>
         )
       })}

@@ -1,7 +1,13 @@
 import { NextResponse } from 'next/server'
 import { createRedis } from '../../_redis'
 import { cleanKeyList, collectKeysFromEnv } from '@/lib/llm-key-env'
-import { maskKey, probeCerebrasKey, probeGoogleKey, probeGroqKey } from '@/lib/llm-probe'
+import {
+  maskKey,
+  probeCerebrasKey,
+  probeGoogleKey,
+  probeGroqKey,
+  probeOpenRouterKey,
+} from '@/lib/llm-probe'
 import type { KeyOverridesMeta, ProbeSummary } from '@/lib/llm-health-types'
 import { buildLlmHealthPayload } from '@/lib/llm-health-build'
 
@@ -23,14 +29,17 @@ function metaFromOverrides(data: Record<string, unknown> | null, envFallback: bo
   let groq = cleanKeyList(data?.groq)
   let cerebras = cleanKeyList(data?.cerebras)
   let google = cleanKeyList(data?.google)
+  let openrouter = cleanKeyList(data?.openrouter)
 
   if (!groq.length && envFallback) groq = collectKeysFromEnv('GROQ_API_KEY')
   if (!cerebras.length && envFallback) cerebras = collectKeysFromEnv('CEREBRAS_API_KEY')
   if (!google.length && envFallback) google = collectKeysFromEnv('GOOGLE_AI_API_KEY', 'GEMINI_API_KEY')
+  if (!openrouter.length && envFallback) openrouter = collectKeysFromEnv('OPENROUTER_API_KEY')
 
   const runtimeGroq = cleanKeyList(data?.groq)
   const runtimeCerebras = cleanKeyList(data?.cerebras)
   const runtimeGoogle = cleanKeyList(data?.google)
+  const runtimeOpenrouter = cleanKeyList(data?.openrouter)
 
   return {
     updated_at: typeof data?.updated_at === 'number' ? data.updated_at : undefined,
@@ -38,12 +47,14 @@ function metaFromOverrides(data: Record<string, unknown> | null, envFallback: bo
     groq_count: groq.length,
     cerebras_count: cerebras.length,
     google_count: google.length,
+    openrouter_count: openrouter.length,
     runtime_keys_active: Boolean(
-      runtimeGroq.length || runtimeCerebras.length || runtimeGoogle.length,
+      runtimeGroq.length || runtimeCerebras.length || runtimeGoogle.length || runtimeOpenrouter.length,
     ),
     groq_masked: groq.map(maskKey),
     cerebras_masked: cerebras.map(maskKey),
     google_masked: google.map(maskKey),
+    openrouter_masked: openrouter.map(maskKey),
     probe_results: (data?.probe_results as Record<string, ProbeSummary>) ?? undefined,
   }
 }
@@ -67,10 +78,17 @@ export async function POST(req: Request) {
   const groqKeys = cleanKeyList(body.groq_keys, 32)
   const cerebrasKeys = cleanKeyList(body.cerebras_keys, 16)
   const googleKeys = cleanKeyList(body.google_keys ?? (body.google_key ? [body.google_key] : []), 4)
+  const openrouterKeys = cleanKeyList(
+    body.openrouter_keys ?? (body.openrouter_key ? [body.openrouter_key] : []),
+    4,
+  )
   const testBeforeSave = body.test_before_save !== false
 
-  if (!groqKeys.length && !cerebrasKeys.length && !googleKeys.length) {
-    return NextResponse.json({ error: 'En az bir anahtar girin (Groq, Cerebras veya Google).' }, { status: 400 })
+  if (!groqKeys.length && !cerebrasKeys.length && !googleKeys.length && !openrouterKeys.length) {
+    return NextResponse.json(
+      { error: 'En az bir anahtar girin (OpenRouter, Groq, Cerebras veya Google).' },
+      { status: 400 },
+    )
   }
 
   const probeResults: Record<string, ProbeSummary> = {}
@@ -92,15 +110,21 @@ export async function POST(req: Request) {
       probeResults.google = p
       if (p.ok) anyOk = true
     }
+    if (openrouterKeys[0]) {
+      const p = await probeOpenRouterKey(openrouterKeys[0])
+      probeResults.openrouter = p
+      if (p.ok) anyOk = true
+    }
 
     const allBlocked =
       groqKeys.length > 0 &&
       cerebrasKeys.length > 0 &&
       probeResults.groq?.ip_blocked &&
       probeResults.cerebras?.ip_blocked &&
-      !probeResults.google?.ok
+      !probeResults.google?.ok &&
+      !probeResults.openrouter?.ok
 
-    if (!anyOk && allBlocked && body.force_save !== true) {
+    if (!anyOk && allBlocked && !openrouterKeys.length && body.force_save !== true) {
       return NextResponse.json(
         {
           error:
@@ -121,6 +145,7 @@ export async function POST(req: Request) {
   if (groqKeys.length) payload.groq = groqKeys
   if (cerebrasKeys.length) payload.cerebras = cerebrasKeys
   if (googleKeys.length) payload.google = googleKeys
+  if (openrouterKeys.length) payload.openrouter = openrouterKeys
 
   const redis = createRedis()
   try {
