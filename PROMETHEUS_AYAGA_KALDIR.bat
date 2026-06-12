@@ -61,35 +61,54 @@ if not exist "%SECRETS%" (
     echo.
 )
 
-REM ── Git: once pull, sonra commit+push (otomatik) ───────────
+REM ── Git: bilgisayardaki kod ONCE GitHub'a (deploy oncesi zorunlu) ─
+set "GIT_OK=1"
 where git >nul 2>&1
-if !errorlevel! equ 0 (
-    echo.
-    echo [GIT] GitHub ile senkron — pull + push...
-    git pull origin master
-    if !errorlevel! neq 0 (
-        echo [UYARI] git pull basarisiz — devam ediliyor.
-    ) else (
-        echo [OK] git pull tamam.
-    )
+if !errorlevel! neq 0 (
+    echo [UYARI] git yok — VPS eski GitHub kodu ile devam eder.
+    set "GIT_OK=0"
+)
 
+if "!GIT_OK!"=="1" (
+    echo.
+    echo [GIT 1/4] Bilgisayardaki tum degisiklikler hazirlaniyor...
+    git add -A
     set "GIT_DIRTY=0"
     for /f "delims=" %%L in ('git status --porcelain 2^>nul') do set "GIT_DIRTY=1"
     if "!GIT_DIRTY!"=="1" (
-        echo [GIT] Commit edilmemis degisiklik — otomatik commit...
-        git add -A
-        git commit -m "deploy: auto sync before VPS"
+        echo [GIT 2/4] Commit edilmemis dosya var — otomatik commit...
+        for /f "tokens=1-3 delims=/ " %%a in ("%date%") do set "TODAY=%%c-%%b-%%a"
+        for /f "tokens=1-2 delims=: " %%h in ("%time%") do set "NOW=%%h%%i"
+        git commit -m "deploy: PC sync !TODAY! !NOW!"
         if !errorlevel! neq 0 (
-            echo [UYARI] git commit basarisiz.
+            echo [HATA] git commit basarisiz — deploy DURDURULDU.
+            pause
+            exit /b 1
         )
+        echo [OK] Commit tamam.
+    ) else (
+        echo [OK] Commit gerekmiyor — zaten guncel.
     )
 
+    echo [GIT 3/4] GitHub'dan pull (uzak degisiklikler birlestiriliyor)...
+    git pull origin master --no-edit
+    if !errorlevel! neq 0 (
+        echo [HATA] git pull basarisiz — catisma olabilir. Cozun, tekrar deneyin.
+        echo        deploy DURDURULDU — sunucuya eski kod gitmez.
+        pause
+        exit /b 1
+    )
+    echo [OK] git pull tamam.
+
+    echo [GIT 4/4] GitHub'a push (sunucu bunu cekecek)...
     git push origin master
     if !errorlevel! neq 0 (
-        echo [UYARI] git push basarisiz — sunucu mevcut GitHub master ile devam eder.
-    ) else (
-        echo [OK] git push tamam.
+        echo [HATA] git push basarisiz — deploy DURDURULDU.
+        echo        GitHub giris / token kontrol edin.
+        pause
+        exit /b 1
     )
+    echo [OK] git push tamam — sunucu bu commit ile deploy edilecek:
     git log -1 --oneline 2>nul
     echo.
 )
