@@ -61,27 +61,37 @@ if not exist "%SECRETS%" (
     echo.
 )
 
-REM ── Git durumu (errorlevel bug fix: !errorlevel! / for-f loop) ─
-set "GIT_DIRTY=0"
+REM ── Git: once pull, sonra commit+push (otomatik) ───────────
 where git >nul 2>&1
 if !errorlevel! equ 0 (
+    echo.
+    echo [GIT] GitHub ile senkron — pull + push...
+    git pull origin master
+    if !errorlevel! neq 0 (
+        echo [UYARI] git pull basarisiz — devam ediliyor.
+    ) else (
+        echo [OK] git pull tamam.
+    )
+
+    set "GIT_DIRTY=0"
     for /f "delims=" %%L in ('git status --porcelain 2^>nul') do set "GIT_DIRTY=1"
     if "!GIT_DIRTY!"=="1" (
-        echo [UYARI] Yerelde commit edilmemis degisiklik var.
-        echo         Sunucu GitHub master ceker — once push yapmaniz onerilir:
-        echo           git add -A ^&^& git commit -m "deploy" ^&^& git push origin master
-        echo.
-        choice /C YN /M "Yine de deploy devam etsin mi"
-        if errorlevel 2 (
-            echo Iptal.
-            pause
-            exit /b 0
+        echo [GIT] Commit edilmemis degisiklik — otomatik commit...
+        git add -A
+        git commit -m "deploy: auto sync before VPS"
+        if !errorlevel! neq 0 (
+            echo [UYARI] git commit basarisiz.
         )
-    ) else (
-        echo [OK] Yerel git temiz — sunucu origin/master pull yapacak.
-        git rev-parse --abbrev-ref HEAD 2>nul
-        git log -1 --oneline 2>nul
     )
+
+    git push origin master
+    if !errorlevel! neq 0 (
+        echo [UYARI] git push basarisiz — sunucu mevcut GitHub master ile devam eder.
+    ) else (
+        echo [OK] git push tamam.
+    )
+    git log -1 --oneline 2>nul
+    echo.
 )
 
 REM ── Deploy calistir ─────────────────────────────────────────
