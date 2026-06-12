@@ -121,11 +121,14 @@ def build_health_payload() -> dict:
     groq = _probe_openai("groq")
     cerebras = _probe_openai("cerebras")
     google = _probe_openai("google")
+    openrouter = _probe_openai("openrouter")
     ollama = _probe_ollama()
 
     groq_blocked = groq.get("status") == "blocked" or groq.get("ip_blocked")
     cerebras_blocked = cerebras.get("status") == "blocked" or cerebras.get("ip_blocked")
-    any_cloud_ok = bool(groq.get("ok") or cerebras.get("ok") or google.get("ok"))
+    any_cloud_ok = bool(
+        groq.get("ok") or cerebras.get("ok") or google.get("ok") or openrouter.get("ok")
+    )
     needs_key_update = bool(
         (groq_blocked or cerebras_blocked)
         and groq.get("status") != "no_keys"
@@ -136,7 +139,7 @@ def build_health_payload() -> dict:
         alert_level = "critical"
         alert_message = (
             "Groq ve Cerebras bu sunucudan 403 (VPS IP engeli). "
-            "Yeni anahtar deneyin veya Google Gemini / Ollama kullanın."
+            "OpenRouter anahtarı ekleyin veya Google Gemini / Ollama kullanın."
         )
     elif needs_key_update:
         alert_level = "warning"
@@ -161,6 +164,7 @@ def build_health_payload() -> dict:
             "groq": groq,
             "cerebras": cerebras,
             "google": google,
+            "openrouter": openrouter,
             "ollama": ollama,
         },
         "any_cloud_ok": any_cloud_ok,
