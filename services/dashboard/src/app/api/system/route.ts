@@ -13,17 +13,20 @@ function safeJson(raw: string | null): unknown {
   }
 }
 
-const HB_SERVICES: { name: string; key: string | null; redis_probe?: string }[] = [
-  { name: 'data_ingestion', key: null, redis_probe: 'ws:status' },
+const HB_SERVICES: { name: string; key: string }[] = [
+  { name: 'data_ingestion', key: 'system:heartbeat:data_ingestion' },
   { name: 'feature_engine', key: 'system:heartbeat:feature_engine' },
   { name: 'context_engine', key: 'system:heartbeat:context_engine' },
   { name: 'learning_engine', key: 'system:heartbeat:learning_engine' },
   { name: 'agent_system', key: 'system:heartbeat:agent_system' },
   { name: 'signal_engine', key: 'system:heartbeat:signal_engine' },
-  { name: 'shadow_system', key: 'shadow:leaderboard' },
-  { name: 'immunity_system', key: 'immunity:status' },
-  { name: 'oms', key: 'portfolio:state:v1' },
+  { name: 'shadow_system', key: 'system:heartbeat:shadow_system' },
+  { name: 'immunity_system', key: 'system:heartbeat:immunity_system' },
+  { name: 'oms', key: 'system:heartbeat:oms' },
 ]
+
+const HB_ALIVE_SEC = 120
+const HB_BOOTSTRAP_SEC = 300 // feature_engine ilk bootstrap
 
 export async function GET() {
   const redis = createRedis()
@@ -59,33 +62,24 @@ export async function GET() {
 
     const hbChecks: Record<string, string | null> = {}
     for (const s of HB_SERVICES) {
-      const k = s.redis_probe ?? s.key
-      if (k) hbChecks[s.name] = await redis.get(k)
+      hbChecks[s.name] = await redis.get(s.key)
     }
 
     const services = HB_SERVICES.map(s => {
       const raw = hbChecks[s.name]
       let alive = false
       let age_sec: number | null = null
-      if (s.name === 'data_ingestion' && raw) {
-        const ws = safeJson(raw) as { status?: string } | null
-        alive = ws?.status === 'CONNECTED'
-      } else if (s.name === 'feature_engine' && featCount > 20) {
-        // Nabız döngü sonunda yazılıyordu; çok sembolde >90s gecikme olabiliyor
-        if (raw) {
-          const ts = parseFloat(raw)
-          age_sec = Math.round(now - ts)
-          alive = now - ts < 300
-        } else {
-          alive = true
-          age_sec = null
-        }
-      } else if (s.key?.includes('heartbeat') && raw) {
+      if (raw) {
         const ts = parseFloat(raw)
-        age_sec = Math.round(now - ts)
-        alive = now - ts < 90
-      } else if (raw) {
+        if (Number.isFinite(ts) && ts > 0) {
+          age_sec = Math.round(now - ts)
+          const limit = s.name === 'feature_engine' ? HB_BOOTSTRAP_SEC : HB_ALIVE_SEC
+          alive = now - ts < limit
+        }
+      }
+      if (!alive && s.name === 'feature_engine' && featCount > 50) {
         alive = true
+        age_sec = age_sec ?? null
       }
       return { name: s.name, alive, age_sec, critical: true }
     })

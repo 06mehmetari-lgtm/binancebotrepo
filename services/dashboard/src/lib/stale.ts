@@ -27,5 +27,7 @@ export const PIPELINE_HEARTBEATS = [
   { key: 'system:heartbeat:agent_system', label: 'agent_system' },
   { key: 'system:heartbeat:signal_engine', label: 'signal_engine' },
   { key: 'system:heartbeat:learning_engine', label: 'learning_engine' },
+  { key: 'system:heartbeat:shadow_system', label: 'shadow_system' },
+  { key: 'system:heartbeat:immunity_system', label: 'immunity_system' },
   { key: 'system:heartbeat:oms', label: 'oms' },
 ] as const

@@ -497,6 +497,7 @@ async def report_loop(redis: aioredis.Redis):
     while True:
         leaderboard = trader.leaderboard()
         await redis.set("shadow:leaderboard", json.dumps(leaderboard), ex=300)
+        await redis.set("system:heartbeat:shadow_system", str(time.time()), ex=120)
 
         ready = [e for e in leaderboard if e.get("promotion_ready")]
         best = ready[0] if ready else (leaderboard[0] if leaderboard else None)
@@ -548,12 +549,19 @@ async def capital_refresh_loop(redis: aioredis.Redis):
         await asyncio.sleep(300)
 
 
+async def heartbeat_loop(redis: aioredis.Redis) -> None:
+    while True:
+        await redis.set("system:heartbeat:shadow_system", str(time.time()), ex=120)
+        await asyncio.sleep(20)
+
+
 async def main():
     log.info(
         f"shadow_system starting — open_ids={SHADOW_OPEN_IDS} "
         f"one_per_symbol={SHADOW_ONE_PER_SYMBOL}"
     )
     redis = await aioredis.from_url(REDIS_URL)
+    await redis.set("system:heartbeat:shadow_system", str(time.time()), ex=120)
     await _sync_shadow_capital(redis)
     n = await dedupe_shadow_positions(redis)
     if n:
@@ -572,6 +580,7 @@ async def main():
             log.warning("risk_limits module missing — using defaults in simulate_tick")
 
     await asyncio.gather(
+        heartbeat_loop(redis),
         _trading_loop(redis),
         report_loop(redis),
         emergency_listener(redis_em),
@@ -591,6 +600,7 @@ async def _trading_loop(redis: aioredis.Redis):
             symbols = await discover_symbols(redis)
             last_refresh = now
             log.info(f"shadow_system tracking {len(symbols)} symbols")
+            await redis.set("system:heartbeat:shadow_system", str(time.time()), ex=120)
 
         try:
             await _enforce_hard_stops(redis)

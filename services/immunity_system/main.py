@@ -174,6 +174,7 @@ async def status_writer_loop(redis: aioredis.Redis):
     while True:
         try:
             await write_immunity_status(redis)
+            await redis.set("system:heartbeat:immunity_system", str(time.time()), ex=120)
         except Exception as e:
             log.error(f"Status writer error: {e}")
         await asyncio.sleep(5)
@@ -190,6 +191,7 @@ async def main():
     await bootstrap_limits(redis)
     immunity.reevaluate_halt()
     await write_immunity_status(redis)
+    await redis.set("system:heartbeat:immunity_system", str(time.time()), ex=120)
     await asyncio.gather(
         order_approval_loop(redis),
         status_writer_loop(redis),

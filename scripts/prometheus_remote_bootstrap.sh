@@ -122,7 +122,7 @@ BUILD_SERVICES_FULL=(
   dashboard backtest autopsy rag_memory neat_evolution rl_agent scenario_engine
 )
 BUILD_SERVICES_QUICK=(
-  context_engine feature_engine signal_engine agent_system learning_engine
+  data_ingestion context_engine feature_engine signal_engine agent_system learning_engine
   shadow_system oms immunity_system dashboard
 )
 

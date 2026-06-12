@@ -90,17 +90,19 @@ def _fetch_klines_sync(symbol: str, limit: int = 300) -> list:
         return []
 
 
-async def bootstrap_klines(symbols: list[str]):
+async def bootstrap_klines(symbols: list[str], redis: aioredis.Redis | None = None):
     loop = asyncio.get_event_loop()
-    for symbol in symbols:
+    for i, symbol in enumerate(symbols):
         if len(OHLCV_HISTORY.get(symbol, [])) >= 30:
-            continue  # already bootstrapped
+            continue
         candles = await loop.run_in_executor(None, _fetch_klines_sync, symbol)
         if candles:
             OHLCV_HISTORY[symbol] = candles
             log.info(f"Bootstrap: {symbol} loaded {len(candles)} klines")
         else:
             OHLCV_HISTORY.setdefault(symbol, [])
+        if redis and i % 15 == 14:
+            await heartbeat(redis)
 
 
 async def compute_features(redis: aioredis.Redis, symbol: str) -> dict | None:
@@ -208,7 +210,7 @@ async def main():
     log.info(f"feature_engine starting — {len(active_symbols)} symbols")
 
     log.info("Bootstrapping klines from Binance REST API...")
-    await bootstrap_klines(active_symbols)
+    await bootstrap_klines(active_symbols, redis)
     await heartbeat(redis)
 
     active_set: set[str] = set(active_symbols)
@@ -236,7 +238,7 @@ async def main():
                 added = set(new_symbols) - active_set
                 if added:
                     log.info(f"New symbols discovered: {len(added)}")
-                    await bootstrap_klines(list(added))
+                    await bootstrap_klines(list(added), redis)
                 active_set = set(new_symbols)
             last_refresh = time.time()
 

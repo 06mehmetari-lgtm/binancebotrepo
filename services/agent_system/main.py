@@ -389,6 +389,12 @@ async def _supervise(name: str, coro_fn):
             await asyncio.sleep(5)
 
 
+async def heartbeat_loop(redis) -> None:
+    while True:
+        await redis.set("system:heartbeat:agent_system", str(time.time()), ex=120)
+        await asyncio.sleep(20)
+
+
 async def _publish_llm_status(redis) -> None:
     try:
         import json
@@ -423,6 +429,7 @@ async def main():
                 await asyncio.sleep(5)
 
         await asyncio.gather(
+            _supervise("heartbeat", lambda: heartbeat_loop(redis)),
             _supervise("debate_loop", lambda: debate_loop(redis)),
             _supervise(
                 "position_guard",

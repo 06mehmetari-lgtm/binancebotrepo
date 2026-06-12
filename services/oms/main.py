@@ -551,9 +551,16 @@ async def snapshot_portfolio(redis: aioredis.Redis):
         await asyncio.sleep(3600)  # hourly
 
 
+async def heartbeat_loop(redis: aioredis.Redis) -> None:
+    while True:
+        await redis.set("system:heartbeat:oms", str(time.time()), ex=120)
+        await asyncio.sleep(20)
+
+
 async def main():
     mode = "DRY_RUN" if DRY_RUN else "LIVE"
     redis = await aioredis.from_url(REDIS_URL)
+    await redis.set("system:heartbeat:oms", str(time.time()), ex=120)
     await refresh_portfolio_cap(redis)
     log.info(f"OMS starting — {mode} mode — portfolio=${_portfolio_cap():.2f} (TRY cap)")
 
@@ -564,6 +571,7 @@ async def main():
         while True:
             try:
                 await publish_portfolio_state(redis)
+                await redis.set("system:heartbeat:oms", str(time.time()), ex=120)
             except Exception as e:
                 log.debug(f"portfolio sync: {e}")
             await asyncio.sleep(5)
@@ -616,6 +624,7 @@ async def main():
             await asyncio.sleep(5)
 
     await asyncio.gather(
+        heartbeat_loop(redis),
         signal_loop(),
         portfolio_sync_loop(),
         try_refresh_loop(),

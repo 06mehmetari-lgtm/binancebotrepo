@@ -103,9 +103,19 @@ async def kline_cache_loop(redis: aioredis.Redis, symbols: list[str]):
             await asyncio.sleep(max(0, 900 - elapsed))  # target 15-minute refresh
 
 
+async def heartbeat_loop(redis: aioredis.Redis) -> None:
+    while True:
+        await redis.set("system:heartbeat:data_ingestion", str(time.time()), ex=120)
+        await asyncio.sleep(20)
+
+
 async def main():
     symbols = resolve_symbols()
     log.info(f"data_ingestion starting — {len(symbols)} symbols")
+
+    redis = await aioredis.from_url(REDIS_URL)
+    await redis.set("system:heartbeat:data_ingestion", str(time.time()), ex=120)
+    hb_task = asyncio.create_task(heartbeat_loop(redis))
 
     await init_order_books(symbols)
 
@@ -117,7 +127,6 @@ async def main():
     ]
     log.info(f"Starting {len(batches)} WebSocket connection(s) for {len(symbols)} symbols")
 
-    redis = await aioredis.from_url(REDIS_URL)
     await redis.set("ingestion:symbols", json.dumps({"count": len(symbols), "symbols": symbols, "time": time.time()}), ex=600)
 
     async def _refresh_symbol_manifest():
@@ -138,9 +147,11 @@ async def main():
     signals = CryptoSignalCollector(REDIS_URL, symbols)
     await asyncio.gather(
         *ws_tasks,
+        hb_task,
         signals.start(),
         ob_snapshot_loop(redis),
         kline_cache_loop(redis, symbols),
+        _refresh_symbol_manifest(),
     )
 
 
