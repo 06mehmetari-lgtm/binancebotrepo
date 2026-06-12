@@ -11,11 +11,32 @@ fi
 echo "=== 2) Git pull ==="
 git pull origin master
 
-echo "=== 3) Redis şifre kontrol ==="
+echo "=== 3) .env (git pull .env silmiş olabilir — stash'ten kurtar) ==="
 if [ ! -f .env ]; then
-  echo "HATA: .env yok — cp .env.example .env doldurun"
-  exit 1
+  restored=0
+  for i in $(seq 0 5); do
+    if git stash list | grep -q "stash@{$i}"; then
+      if git show "stash@{$i}:.env" > .env 2>/dev/null && [ -s .env ]; then
+        echo "OK: .env stash@{$i} içinden geri yüklendi"
+        restored=1
+        break
+      fi
+    fi
+  done
+  if [ "$restored" -eq 0 ] && [ -f .env.bak ]; then
+    cp .env.bak .env
+    echo "OK: .env .env.bak dosyasından geri yüklendi"
+    restored=1
+  fi
+  if [ "$restored" -eq 0 ]; then
+    cp .env.example .env
+    echo "UYARI: .env yoktu — .env.example kopyalandı"
+    echo "       BINANCE_API_KEY, REDIS_PASSWORD, POSTGRES_PASSWORD doldurun sonra tekrar çalıştırın"
+    exit 1
+  fi
 fi
+# Sonraki deploy için yedek
+cp .env .env.bak 2>/dev/null || true
 PW=$(grep '^REDIS_PASSWORD=' .env | cut -d= -f2- | tr -d '\r')
 if [ -z "$PW" ]; then
   echo "UYARI: REDIS_PASSWORD boş"
