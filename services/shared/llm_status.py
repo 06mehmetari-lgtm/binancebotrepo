@@ -46,6 +46,13 @@ def build_llm_status_payload() -> dict:
     any_ok = any(p["configured"] for p in providers)
     groq = next((p for p in providers if p["id"] == "groq"), None)
 
+    try:
+        from llm_runtime_keys import runtime_keys_active
+
+        runtime_active = runtime_keys_active()
+    except ImportError:
+        runtime_active = False
+
     return {
         "updated_at": time.time(),
         "providers": providers,
@@ -53,4 +60,5 @@ def build_llm_status_payload() -> dict:
         "any_configured": any_ok,
         "groq_configured": bool(groq and groq["configured"]),
         "groq_key_count": groq["key_count"] if groq else 0,
+        "runtime_keys_active": runtime_active,
     }

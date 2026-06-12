@@ -85,7 +85,12 @@ def collect_keys(prefix: str, alt_primary: str | None = None) -> list[str]:
         if k and k not in seen:
             seen.add(k)
             out.append(k)
-    return out
+    try:
+        from llm_runtime_keys import merge_with_env_keys
+
+        return merge_with_env_keys(prefix, out)
+    except ImportError:
+        return out
 
 
 def allow_groq_on_vps() -> bool:

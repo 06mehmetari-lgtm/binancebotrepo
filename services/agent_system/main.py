@@ -220,6 +220,41 @@ async def _handle_trade_closed(redis_cmd: aioredis.Redis, msg: dict) -> None:
     await redis_cmd.set("agents:weights", json.dumps(weights), ex=86400 * 7)
 
 
+async def _reload_runtime_llm_keys(redis_cmd: aioredis.Redis) -> None:
+    try:
+        from llm_runtime_keys import REDIS_KEY, load_overrides_from_redis
+
+        raw = await redis_cmd.get(REDIS_KEY)
+        load_overrides_from_redis(raw)
+    except Exception as e:
+        log.warning(f"runtime llm keys reload: {e}")
+
+
+async def _publish_llm_health(redis_cmd: aioredis.Redis) -> None:
+    try:
+        from llm_health import REDIS_KEY, build_health_payload
+
+        payload = await asyncio.get_event_loop().run_in_executor(None, build_health_payload)
+        await redis_cmd.set(REDIS_KEY, json.dumps(payload), ex=600)
+    except Exception:
+        log.warning("llm health publish failed", exc_info=True)
+
+
+async def llm_keys_refresh_loop(redis_cmd: aioredis.Redis):
+    await _reload_runtime_llm_keys(redis_cmd)
+    while True:
+        await asyncio.sleep(30)
+        await _reload_runtime_llm_keys(redis_cmd)
+
+
+async def llm_health_loop(redis_cmd: aioredis.Redis):
+    await _publish_llm_health(redis_cmd)
+    interval = float(os.getenv("LLM_HEALTH_PROBE_SEC", "120"))
+    while True:
+        await asyncio.sleep(interval)
+        await _publish_llm_health(redis_cmd)
+
+
 async def pubsub_listener(redis_cmd: aioredis.Redis):
     """
     Dedicated Redis connection for pub/sub only.
@@ -227,14 +262,22 @@ async def pubsub_listener(redis_cmd: aioredis.Redis):
     """
     redis_sub = await aioredis.from_url(REDIS_URL)
     pubsub = redis_sub.pubsub()
-    await pubsub.subscribe("ch:trade_closed")
+    await pubsub.subscribe("ch:trade_closed", "ch:llm:keys_updated")
     await pubsub.psubscribe("ch:learn:*")
-    log.info("agent_system: pubsub listener (trade_closed + learn)")
+    log.info("agent_system: pubsub listener (trade_closed + learn + llm keys)")
     try:
         async for msg in pubsub.listen():
             try:
                 mtype = msg.get("type")
                 if mtype == "message":
+                    ch = msg.get("channel", b"")
+                    if isinstance(ch, bytes):
+                        ch = ch.decode()
+                    if ch == "ch:llm:keys_updated":
+                        await _reload_runtime_llm_keys(redis_cmd)
+                        await _publish_llm_health(redis_cmd)
+                        await _publish_llm_status(redis_cmd)
+                        continue
                     await _handle_trade_closed(redis_cmd, msg)
                 elif mtype == "pmessage":
                     await _handle_learn_message(redis_cmd, msg)
@@ -363,7 +406,9 @@ async def _publish_llm_status(redis) -> None:
 async def main():
     log.info("agent_system starting — 9-agent debate team — dynamic symbols")
     redis = await aioredis.from_url(REDIS_URL)
+    await _reload_runtime_llm_keys(redis)
     await _publish_llm_status(redis)
+    await _publish_llm_health(redis)
     try:
         async def limits_refresh_loop():
             from risk_limits import bootstrap_limits
@@ -381,6 +426,8 @@ async def main():
             _supervise("weight_update", lambda: weight_update_loop(redis)),
             _supervise("pubsub", lambda: pubsub_listener(redis)),
             _supervise("risk_limits", limits_refresh_loop),
+            _supervise("llm_keys", lambda: llm_keys_refresh_loop(redis)),
+            _supervise("llm_health", lambda: llm_health_loop(redis)),
         )
     finally:
         await redis.aclose()

@@ -270,6 +270,23 @@ async def global_sync_loop(engine: LearningEngine, redis: aioredis.Redis):
         await asyncio.sleep(GLOBAL_SYNC_SEC)
 
 
+async def _reload_runtime_llm_keys(redis: aioredis.Redis) -> None:
+    try:
+        from llm_runtime_keys import REDIS_KEY, load_overrides_from_redis
+
+        raw = await redis.get(REDIS_KEY)
+        load_overrides_from_redis(raw)
+    except Exception as e:
+        log.warning(f"runtime llm keys reload: {e}")
+
+
+async def llm_keys_refresh_loop(redis: aioredis.Redis):
+    await _reload_runtime_llm_keys(redis)
+    while True:
+        await asyncio.sleep(30)
+        await _reload_runtime_llm_keys(redis)
+
+
 async def main():
     try:
         from llm_providers import any_cloud_llm_configured
@@ -282,12 +299,14 @@ async def main():
         f"Ollama={'on' if ollama else 'off'}"
     )
     redis = await aioredis.from_url(REDIS_URL)
+    await _reload_runtime_llm_keys(redis)
     engine = LearningEngine()
     await asyncio.gather(
         pubsub_listener(engine, redis),
         open_position_boost_loop(engine, redis),
         scan_loop(engine, redis),
         global_sync_loop(engine, redis),
+        llm_keys_refresh_loop(redis),
     )
 
 

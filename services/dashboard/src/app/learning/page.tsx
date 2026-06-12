@@ -584,6 +584,15 @@ export default function LearningPage() {
 
       {tab === 'llm' && (
         <section className="space-y-4">
+          <a
+            href="/llm-keys"
+            className="block rounded-xl border-2 border-red-800/60 bg-red-950/30 p-4 hover:border-red-600 transition-colors"
+          >
+            <p className="text-red-300 font-bold text-sm">🔑 Groq/Cerebras 403 sorunu mu var?</p>
+            <p className="text-red-200/70 text-xs mt-1">
+              Anahtar güncelleme sayfası — kırmızı uyarı + kaydet → anında runtime yükleme
+            </p>
+          </a>
           <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
             <h2 className="text-white font-bold mb-2">LLM durumu</h2>
             <p className={d.llm.any_configured ? 'text-green-400 text-sm' : 'text-red-400 text-sm'}>

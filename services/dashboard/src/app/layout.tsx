@@ -4,6 +4,7 @@ import { usePathname } from 'next/navigation'
 import { useState, useEffect, useRef, useCallback } from 'react'
 import SmartAlerts from './components/SmartAlerts'
 import AlertPanel from './components/AlertPanel'
+import LlmHealthBanner from './components/LlmHealthBanner'
 import { useStreamInvalidate } from '@/hooks/useStream'
 
 const NAV_LINKS = [
@@ -11,6 +12,7 @@ const NAV_LINKS = [
   { href: '/system', label: '🖥 Sistem' },
   { href: '/analiz', label: '🤖 AI Analiz' },
   { href: '/learning', label: '📈 AI Öğrenme' },
+  { href: '/llm-keys', label: '🔑 LLM Keys' },
   { href: '/chat', label: '💬 Chat' },
   { href: '/positions', label: '💼 Positions' },
   { href: '/autopsy', label: '🔬 Otopsi' },
@@ -315,6 +317,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       </head>
       <body className="min-h-screen bg-gray-950 text-gray-100 font-mono">
         <Nav />
+        <LlmHealthBanner />
         <main className="p-3 md:p-4 lg:p-6">{children}</main>
         <SmartAlerts />
         <AlertPanel />

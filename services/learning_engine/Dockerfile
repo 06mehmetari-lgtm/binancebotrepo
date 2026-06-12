@@ -6,5 +6,7 @@ COPY learning_engine/ ./
 COPY shared/llm_providers.py ./llm_providers.py
 COPY shared/groq_orchestrator.py ./groq_orchestrator.py
 COPY shared/llm_status.py ./llm_status.py
+COPY shared/llm_runtime_keys.py ./llm_runtime_keys.py
+COPY shared/llm_health.py ./llm_health.py
 COPY shared/proxy_pool.py ./proxy_pool.py
 CMD ["python", "main.py"]
