@@ -61,13 +61,14 @@ if not exist "%SECRETS%" (
     echo.
 )
 
-REM ── Opsiyonel: yerel degisiklikleri push et ─────────────────
+REM ── Git durumu (errorlevel bug fix: !errorlevel! / for-f loop) ─
+set "GIT_DIRTY=0"
 where git >nul 2>&1
-if %errorlevel%==0 (
-    git status --porcelain 2>nul | findstr /R "." >nul
-    if %errorlevel%==0 (
-        echo [BILGI] Yerelde commit edilmemis degisiklik var.
-        echo         Sunucu git pull ile master ceker — once push yapin:
+if !errorlevel! equ 0 (
+    for /f "delims=" %%L in ('git status --porcelain 2^>nul') do set "GIT_DIRTY=1"
+    if "!GIT_DIRTY!"=="1" (
+        echo [UYARI] Yerelde commit edilmemis degisiklik var.
+        echo         Sunucu GitHub master ceker — once push yapmaniz onerilir:
         echo           git add -A ^&^& git commit -m "deploy" ^&^& git push origin master
         echo.
         choice /C YN /M "Yine de deploy devam etsin mi"
@@ -77,12 +78,9 @@ if %errorlevel%==0 (
             exit /b 0
         )
     ) else (
-        echo [BILGI] Yerel temiz — sunucu master pull yapacak.
-        choice /C YN /M "Once git push origin master yapilsin mi"
-        if not errorlevel 2 (
-            git push origin master 2>nul
-            if !errorlevel! neq 0 echo [UYARI] git push basarisiz — sunucu mevcut master ile devam eder.
-        )
+        echo [OK] Yerel git temiz — sunucu origin/master pull yapacak.
+        git rev-parse --abbrev-ref HEAD 2>nul
+        git log -1 --oneline 2>nul
     )
 )
 
