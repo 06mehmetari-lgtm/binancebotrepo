@@ -31,7 +31,8 @@ DEFAULT_USER = "root"
 DEFAULT_DIR = "/root/prometheus"
 DEFAULT_REPO = "https://github.com/06mehmetari-lgtm/binancebotrepo.git"
 CONNECT_TIMEOUT = 45
-BOOTSTRAP_TIMEOUT = 3600  # 60 dk — full build
+TIMEOUT_BY_MODE = {"skip": 900, "quick": 3600, "full": 7200}
+DEFAULT_DEPLOY_MODE = "quick"
 
 
 def load_secrets() -> dict[str, str]:
@@ -97,7 +98,7 @@ def stream_command(client, cmd: str, timeout: int) -> tuple[int, str]:
                 last_data = time.time()
         else:
             # Uzun build adiminda heartbeat (takilmadi mesaji)
-            if time.time() - last_data > 90:
+            if time.time() - last_data > 180:
                 elapsed = int(time.time() - (deadline - timeout))
                 print(
                     f"\n... hala calisiyor ({elapsed}s) — Docker build uzun surebilir, bekleyin ...\n",
@@ -130,7 +131,7 @@ def upload_bootstrap(client) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Prometheus VPS tam deploy")
-    parser.add_argument("--mode", choices=("full", "quick"), default=None)
+    parser.add_argument("--mode", choices=("full", "quick", "skip"), default=None)
     parser.add_argument("--no-cache", action="store_true")
     parser.add_argument("--host", default=None)
     parser.add_argument("--dir", default=None)
@@ -142,7 +143,10 @@ def main() -> int:
     password = secrets.get("VPS_PASS", "")
     or_key = secrets.get("OPENROUTER_API_KEY", "")
     prom_dir = args.dir or secrets.get("VPS_PROJECT_DIR", DEFAULT_DIR)
-    mode = args.mode or secrets.get("DEPLOY_MODE", "full")
+    mode = args.mode or secrets.get("DEPLOY_MODE", DEFAULT_DEPLOY_MODE)
+    if mode not in TIMEOUT_BY_MODE:
+        mode = DEFAULT_DEPLOY_MODE
+    bootstrap_timeout = TIMEOUT_BY_MODE[mode]
     no_cache = "1" if args.no_cache or secrets.get("BUILD_NO_CACHE") == "1" else "0"
 
     if not password:
@@ -169,7 +173,8 @@ def main() -> int:
     print(" PROMETHEUS — TAM VPS DEPLOY")
     print(f" Sunucu : {user}@{host}")
     print(f" Dizin  : {prom_dir}")
-    print(f" Mod    : {mode} (full=tüm servis, quick=hızlı)")
+    print(f" Mod    : {mode} (skip=~3dk | quick=~10dk | full=~25dk paralel)")
+    print(f" Timeout: {bootstrap_timeout}s")
     print("=" * 60)
 
     client = paramiko.SSHClient()
@@ -239,7 +244,7 @@ def main() -> int:
 
     cmd = f"set -a && source {remote_env} && set +a && bash {BOOTSTRAP_REMOTE}"
     try:
-        code, out = stream_command(client, cmd, BOOTSTRAP_TIMEOUT)
+        code, out = stream_command(client, cmd, bootstrap_timeout)
     except TimeoutError as exc:
         print(f"\nZAMAN AŞIMI: {exc}")
         print("Sunucuda log: /tmp/prometheus_bootstrap.log")

@@ -6,7 +6,7 @@ set -euo pipefail
 PROM_DIR="${PROMETHEUS_DIR:-/root/prometheus}"
 LOG="/tmp/prometheus_bootstrap.log"
 BUILD_LOG="/tmp/prometheus_build.log"
-MODE="${DEPLOY_MODE:-full}"          # full | quick
+MODE="${DEPLOY_MODE:-quick}"          # quick | full | skip
 NO_CACHE="${BUILD_NO_CACHE:-0}"      # 1 = docker build --no-cache
 
 exec > >(tee -a "$LOG") 2>&1
@@ -115,7 +115,7 @@ docker compose up -d redis postgres timescaledb qdrant ollama 2>&1 | tail -15
 sleep 8
 docker compose exec -T redis redis-cli -a "$REDIS_PW" --no-auth-warning PING
 
-# ── 4) Build (servis servis — canli cikti, takilmis gibi gorunmez) ─
+# ── 4) Build (PARALEL — skip modunda atlanir) ─
 BUILD_SERVICES_FULL=(
   data_ingestion sentiment macro feature_engine context_engine
   agent_system signal_engine learning_engine shadow_system oms immunity_system
@@ -126,43 +126,39 @@ BUILD_SERVICES_QUICK=(
   shadow_system oms immunity_system dashboard
 )
 
-if [ "$MODE" = "quick" ]; then
-  BUILD_LIST=("${BUILD_SERVICES_QUICK[@]}")
-else
-  BUILD_LIST=("${BUILD_SERVICES_FULL[@]}")
-fi
-
 CACHE_FLAG=""
 [ "$NO_CACHE" = "1" ] && CACHE_FLAG="--no-cache"
 
-TOTAL=${#BUILD_LIST[@]}
-echo "=== [4/10] Docker build: $TOTAL servis (servis basina 2-5 dk, TOPLAM ~15-45 dk) ==="
-echo "build start $(date -Iseconds)" > "$BUILD_LOG"
-echo "Mod=$MODE servisler=${BUILD_LIST[*]}" >> "$BUILD_LOG"
-
+echo "build start $(date -Iseconds) mode=$MODE" > "$BUILD_LOG"
 BUILD_EXIT=0
-IDX=0
-for svc in "${BUILD_LIST[@]}"; do
-  IDX=$((IDX + 1))
-  echo ""
-  echo ">>> BUILD $IDX/$TOTAL: $svc — $(date +%H:%M:%S)"
-  echo ">>> BUILD $IDX/$TOTAL: $svc" >> "$BUILD_LOG"
-  set +e
-  # tee: hem ekrana hem loga (SSH uzerinden canli gorunur)
-  docker compose build --progress=plain $CACHE_FLAG "$svc" 2>&1 | tee -a "$BUILD_LOG"
-  SVC_EXIT=${PIPESTATUS[0]}
-  set -e
-  if [ "$SVC_EXIT" -ne 0 ]; then
-    echo "UYARI: $svc build exit $SVC_EXIT"
-    echo "SVC_FAIL:$svc:$SVC_EXIT" >> "$BUILD_LOG"
-    BUILD_EXIT=$SVC_EXIT
+
+if [ "$MODE" = "skip" ]; then
+  echo "=== [4/10] BUILD ATLANDI (skip) — mevcut image + git pull ==="
+  echo "SKIP_BUILD" >> "$BUILD_LOG"
+else
+  if [ "$MODE" = "quick" ]; then
+    BUILD_LIST=("${BUILD_SERVICES_QUICK[@]}")
   else
-    echo "OK: $svc build tamam ($IDX/$TOTAL)"
+    BUILD_LIST=("${BUILD_SERVICES_FULL[@]}")
   fi
-done
-echo "BUILD_EXIT:$BUILD_EXIT" >> "$BUILD_LOG"
-if [ "$BUILD_EXIT" -ne 0 ]; then
-  echo "UYARI: bazi servisler build edilemedi — mevcut image ile devam"
+  TOTAL=${#BUILD_LIST[@]}
+  echo "=== [4/10] Docker PARALEL build: $TOTAL servis (tek komut, ~8-20 dk) ==="
+  echo "Mod=$MODE servisler=${BUILD_LIST[*]}" >> "$BUILD_LOG"
+  set +e
+  # Paralel build — sirayla 17x yerine tek seferde (cok daha hizli)
+  docker compose build --parallel --progress=plain $CACHE_FLAG "${BUILD_LIST[@]}" 2>&1 | tee -a "$BUILD_LOG"
+  BUILD_EXIT=${PIPESTATUS[0]}
+  set -e
+  if [ "$BUILD_EXIT" -ne 0 ]; then
+    echo "UYARI: paralel build exit $BUILD_EXIT — kritik servisler tek tek deneniyor..."
+    for svc in "${BUILD_LIST[@]}"; do
+      echo ">>> retry $svc"
+      docker compose build $CACHE_FLAG "$svc" 2>&1 | tail -5 >> "$BUILD_LOG" || true
+    done
+  else
+    echo "OK: paralel build tamam ($TOTAL servis)"
+  fi
+  echo "BUILD_EXIT:$BUILD_EXIT" >> "$BUILD_LOG"
 fi
 
 # ── 5) Paper / risk scriptleri ─────────────────
