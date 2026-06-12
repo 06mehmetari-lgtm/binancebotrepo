@@ -22,16 +22,47 @@ type SysData = {
 
 export default function SystemPage() {
   const [data, setData] = useState<SysData | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    const load = () => fetch('/api/system').then(r => r.json()).then(setData).catch(() => {})
+    const load = () =>
+      fetch('/api/system')
+        .then(r => {
+          if (!r.ok) throw new Error(`HTTP ${r.status}`)
+          return r.json()
+        })
+        .then(d => {
+          setData(d)
+          setError(null)
+          setLoading(false)
+        })
+        .catch(e => {
+          setError(e instanceof Error ? e.message : 'Bağlantı hatası')
+          setLoading(false)
+        })
     load()
     const t = setInterval(load, 5000)
     return () => clearInterval(t)
   }, [])
 
-  if (!data) {
+  if (loading && !data) {
     return <p className="text-gray-500 text-center mt-20">Sistem durumu yükleniyor…</p>
+  }
+
+  if (!data) {
+    return (
+      <div className="text-center mt-20 space-y-3">
+        <p className="text-red-400">Sistem durumu alınamadı: {error ?? 'bilinmeyen hata'}</p>
+        <button
+          type="button"
+          onClick={() => window.location.reload()}
+          className="text-orange-400 text-sm underline"
+        >
+          Yeniden dene
+        </button>
+      </div>
+    )
   }
 
   return (

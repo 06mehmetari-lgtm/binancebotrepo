@@ -154,6 +154,12 @@ export default function LlmKeysPage() {
             </p>
           </div>
           <div>
+            <span className="text-gray-500">OpenRouter</span>
+            <p className={health.providers?.openrouter?.ok ? 'text-green-400' : 'text-violet-400'}>
+              {health.providers?.openrouter?.message || health.providers?.openrouter?.status || '—'}
+            </p>
+          </div>
+          <div>
             <span className="text-gray-500">Google Gemini</span>
             <p className={health.providers?.google?.ok ? 'text-green-400' : 'text-gray-400'}>
               {health.providers?.google?.message || health.providers?.google?.status || '—'}
@@ -170,7 +176,8 @@ export default function LlmKeysPage() {
 
       {meta && (
         <div className="text-xs text-gray-500 border border-gray-800 rounded-lg p-3 bg-gray-900/50">
-          Aktif: Groq {meta.groq_count} · Cerebras {meta.cerebras_count} · Google {meta.google_count}
+          Aktif: OpenRouter {meta.openrouter_count ?? 0} · Groq {meta.groq_count} · Cerebras{' '}
+          {meta.cerebras_count} · Google {meta.google_count}
           {meta.runtime_keys_active && (
             <span className="text-orange-400 ml-2">(dashboard runtime override)</span>
           )}

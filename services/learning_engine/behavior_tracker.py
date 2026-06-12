@@ -178,6 +178,16 @@ class SymbolLearner:
                 self._pat("bid_pressure_up").hits += 1
         if funding is not None and abs(funding) > 0.0004:
             lessons.append(f"funding={funding*100:.3f}% kapanış anı")
+        if not won and pnl_pct < -0.003:
+            rc = self._pat("recovery_dca_candidate")
+            rc.misses += 1
+            lessons.append(
+                f"Zarar {pnl_pct:+.2%} — kademeli alış sadece güçlü sinyal+immunity onayı ile; "
+                f"tüm bakiyeyi tek coine yatırma (max %15)"
+            )
+            if "recovery_dca" in source or "DCA" in (exit_reason or ""):
+                self._pat("recovery_dca_result").misses += 1
+                lessons.append("DCA sonrası zarar — sinyal gücü veya tier sınırını gözden geçir")
         return lessons
 
     def observe(self, sample: TickSample) -> list[str]:

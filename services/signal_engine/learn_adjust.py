@@ -67,3 +67,34 @@ def adjust_confidence(
         confidence *= 0.96
 
     return round(confidence, 4), note
+
+
+def check_learn_veto(direction: str, learn_raw: str | None) -> tuple[bool, str]:
+    """Hard block new entries when L2+ profile strongly opposes direction."""
+    if not learn_raw or direction not in ("long", "short"):
+        return False, ""
+
+    try:
+        profile = json.loads(learn_raw)
+    except json.JSONDecodeError:
+        return False, ""
+
+    stage = str(profile.get("learning_stage", "L0"))
+    if stage not in ("L2", "L3"):
+        return False, ""
+
+    drivers = profile.get("drivers") or []
+    if not drivers:
+        return False, ""
+
+    top = drivers[0]
+    effect = top.get("effect", "")
+    wr = float(top.get("win_rate", 0) or 0)
+    opposed = (
+        (direction == "long" and effect in ("short_edge", "down"))
+        or (direction == "short" and effect in ("long_edge", "up"))
+    )
+    if opposed and wr >= 0.55:
+        return True, f"learn_veto_{top.get('factor', 'pattern')}_wr{int(wr * 100)}"
+
+    return False, ""

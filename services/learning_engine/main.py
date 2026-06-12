@@ -143,6 +143,12 @@ class LearningEngine:
             peak_upnl_pct=trade.get("peak_upnl_pct"),
             hold_seconds=float(trade.get("hold_seconds", 0) or 0),
         )
+        fee_usd = trade.get("fee_total_usd")
+        if fee_usd is not None:
+            lessons.append(f"Komisyon ${float(fee_usd):.2f} — net kâr hesabında düşüldü")
+        entry_r = str(trade.get("entry_reason", "") or "")[:120]
+        if entry_r:
+            lessons.append(f"Giriş nedeni: {entry_r}")
         await persist_profile(redis, learner.build_profile(), lessons)
         log.info(f"[learn] trade_closed {symbol} {direction} pnl={pnl:+.2%} lessons={len(lessons)}")
 

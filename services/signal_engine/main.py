@@ -193,6 +193,33 @@ async def generate_signal(redis: aioredis.Redis, symbol: str) -> dict | None:
     if learn_note:
         ensemble_diag["learn_adjust"] = learn_note
 
+    try:
+        from outcome_predictor import predict_outcome
+
+        outcome = predict_outcome(final_dir, learn_raw, features, context)
+        ensemble_diag["outcome"] = outcome
+        if outcome.get("veto") and final_dir in ("long", "short"):
+            final_dir = "flat"
+            learn_note = (learn_note + "|outcome_veto").lstrip("|")
+        elif final_dir in ("long", "short"):
+            wp = float(outcome.get("win_probability", 0.5))
+            if wp >= 0.58:
+                final_conf = min(0.95, final_conf * (1.0 + (wp - 0.5) * 0.25))
+            elif wp < 0.45:
+                final_conf = max(0.0, final_conf * 0.82)
+    except ImportError:
+        pass
+
+    try:
+        from learn_adjust import check_learn_veto
+
+        veto, veto_reason = check_learn_veto(final_dir, learn_raw)
+        if veto:
+            final_dir = "flat"
+            learn_note = (learn_note + f"|{veto_reason}").lstrip("|")
+    except ImportError:
+        pass
+
     signal_dict = {
         "symbol": symbol,
         "direction": final_dir,

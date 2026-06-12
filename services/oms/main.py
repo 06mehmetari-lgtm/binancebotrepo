@@ -321,7 +321,21 @@ async def process_signal(redis: aioredis.Redis, symbol: str):
                 and float(pos.get("size_usd", 0)) < sym_cap
             ):
                 add_usd = min(initial * 0.35, sym_cap - float(pos.get("size_usd", 0)))
-                if add_usd >= 5.0:
+                conf_ok = float(signal.get("confidence", 0)) >= 0.55
+                if add_usd >= 5.0 and conf_ok:
+                    dca_order = {
+                        "symbol": symbol,
+                        "side": "BUY" if direction == "long" else "SELL",
+                        "size_usd": add_usd,
+                        "leverage": 1.0,
+                        "confidence": float(signal.get("confidence", 0)),
+                        "signal_source": "recovery_dca",
+                        "crisis_level": signal.get("crisis_level", 0),
+                        "drift_status": signal.get("drift_status", "STABLE"),
+                    }
+                    if not await request_immunity_approval(redis, dca_order):
+                        log.info(f"[DCA] {symbol} rejected by immunity")
+                        return
                     old_sz = float(pos["size_usd"])
                     old_ep = float(pos["entry_price"])
                     new_sz = old_sz + add_usd

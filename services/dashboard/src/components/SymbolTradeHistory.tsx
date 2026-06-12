@@ -9,7 +9,16 @@ interface TradeRow {
   exit_price?: number
   pnl_pct?: number
   pnl_usdt?: number
+  gross_pnl_usd?: number
+  fee_entry_usd?: number
+  fee_exit_usd?: number
+  fee_total_usd?: number
+  fee_total_pct?: number
+  net_pnl_usd?: number
   size_usd?: number
+  dca_tier?: number
+  exit_reason?: string
+  entry_reason?: string
   timestamp?: number
   closed_at?: number
   ladder?: {
@@ -18,7 +27,9 @@ interface TradeRow {
     stop_loss_pct?: number
     entry_confidence?: number
     entry_reason?: string
+    last_dca_reason?: string
   }
+  fills?: { tier?: number; reason?: string; size_usd?: number }[]
   entry_signal?: { consensus_reasoning?: string; source?: string }
 }
 
@@ -109,29 +120,48 @@ export function SymbolTradeHistory({ symbol }: { symbol: string }) {
                 <th className="text-left py-1 pr-2">Yön</th>
                 <th className="text-left py-1 pr-2">Giriş</th>
                 <th className="text-left py-1 pr-2">Çıkış</th>
-                <th className="text-right py-1 pr-2">PnL</th>
-                <th className="text-left py-1">Dayanak</th>
+                <th className="text-right py-1 pr-2">Net PnL</th>
+                <th className="text-right py-1 pr-2">Komisyon</th>
+                <th className="text-left py-1">Giriş / Çıkış</th>
               </tr>
             </thead>
             <tbody>
               {trades.slice(0, 30).map((t, i) => {
                 const pnl = Number(t.pnl_pct ?? 0) * 100
-                const reason =
+                const entryWhy =
+                  t.entry_reason ||
                   t.ladder?.entry_reason ||
                   t.entry_signal?.consensus_reasoning ||
-                  t.entry_signal?.source ||
-                  '—'
+                  ''
+                const exitWhy = t.exit_reason || '—'
+                const fee = Number(t.fee_total_usd ?? 0)
+                const tier = t.dca_tier ?? t.ladder?.tier
                 return (
                   <tr key={i} className="border-t border-gray-800/50">
                     <td className={`py-1.5 pr-2 font-bold ${t.direction === 'long' ? 'text-green-400' : 'text-red-400'}`}>
                       {String(t.direction ?? '').toUpperCase()}
+                      {tier != null && tier > 1 ? (
+                        <span className="text-violet-400 text-[9px] ml-1">DCA{tier}</span>
+                      ) : null}
                     </td>
                     <td className="py-1.5 pr-2 font-mono text-gray-300">{fmtPrice(Number(t.entry_price ?? 0))}</td>
                     <td className="py-1.5 pr-2 font-mono text-gray-300">{fmtPrice(Number(t.exit_price ?? 0))}</td>
                     <td className={`py-1.5 pr-2 text-right font-mono ${pnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                       {pnl >= 0 ? '+' : ''}{pnl.toFixed(2)}%
                     </td>
-                    <td className="py-1.5 text-gray-500 line-clamp-2 max-w-[200px]">{reason}</td>
+                    <td className="py-1.5 pr-2 text-right font-mono text-gray-500">
+                      {fee > 0 ? `$${fee.toFixed(2)}` : '—'}
+                    </td>
+                    <td className="py-1.5 text-gray-500 max-w-[240px]">
+                      {entryWhy && (
+                        <p className="line-clamp-1 text-cyan-600/80" title={entryWhy}>
+                          Al: {entryWhy}
+                        </p>
+                      )}
+                      <p className="line-clamp-1" title={exitWhy}>
+                        Sat: {exitWhy}
+                      </p>
+                    </td>
                   </tr>
                 )
               })}

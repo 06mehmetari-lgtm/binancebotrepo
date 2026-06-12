@@ -7,12 +7,31 @@ import { buildEquityCurve, PORTFOLIO_START } from '@/lib/build-equity-curve'
 export async function GET() {
   const redis = createRedis()
   try {
-    const [tradeHistRaw, dailyPnlRaw, snapshotsRaw, posData] = await Promise.all([
+    const [tradeHistRaw, dailyPnlRaw, snapshotsRaw, posData, tryCapRaw] = await Promise.all([
       redis.lrange('oms:trade_history', 0, 499),
       redis.get('oms:daily_pnl'),
       redis.lrange('portfolio:pnl:snapshots', 0, 719),
       fetchOpenPositions(redis),
+      redis.get('portfolio:try:v1'),
     ])
+
+    let portfolioCap: {
+      try_amount?: number
+      usd_cap?: number
+      usd_try_rate?: number
+      fee_per_side_pct?: number
+    } | null = null
+    if (tryCapRaw) {
+      try {
+        portfolioCap = JSON.parse(tryCapRaw)
+      } catch {
+        portfolioCap = null
+      }
+    }
+    const startEquity =
+      typeof portfolioCap?.usd_cap === 'number' && portfolioCap.usd_cap > 0
+        ? portfolioCap.usd_cap
+        : PORTFOLIO_START
 
     const trades = tradeHistRaw
       .map(r => { try { return JSON.parse(r) } catch { return null } })
@@ -31,6 +50,7 @@ export async function GET() {
       trades,
       snapshots,
       unrealizedUsdt,
+      startEquity,
     })
 
     const winTrades = trades.filter(t => (t.pnl_pct ?? 0) > 0)
@@ -51,7 +71,7 @@ export async function GET() {
       if (dd > maxDrawdown) maxDrawdown = dd
     }
 
-    const totalPnl = liveEquity - PORTFOLIO_START
+    const totalPnl = liveEquity - startEquity
     const recentTrades = [...trades].reverse().slice(0, 15)
 
     return NextResponse.json({
@@ -59,12 +79,15 @@ export async function GET() {
       snapshots,
       recent_trades: recentTrades,
       stats: {
-        start_equity: PORTFOLIO_START,
+        start_equity: startEquity,
+        portfolio_try: portfolioCap?.try_amount ?? null,
+        usd_try_rate: portfolioCap?.usd_try_rate ?? null,
+        fee_per_side_pct: portfolioCap?.fee_per_side_pct ?? null,
         current_equity: liveEquity,
         realized_equity: realizedEquity,
         unrealized_usdt: +unrealizedUsdt.toFixed(2),
         total_pnl: +totalPnl.toFixed(2),
-        total_pnl_pct: +(totalPnl / PORTFOLIO_START * 100).toFixed(2),
+        total_pnl_pct: +(totalPnl / startEquity * 100).toFixed(2),
         daily_pnl: dailyPnlRaw ? parseFloat(dailyPnlRaw) : 0,
         total_trades: trades.length,
         win_rate: +winRate.toFixed(1),

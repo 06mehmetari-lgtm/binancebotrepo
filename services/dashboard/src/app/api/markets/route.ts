@@ -2,6 +2,11 @@ export const dynamic = 'force-dynamic'
 import { discoverSymbols } from '@/lib/universe'
 import { withRedisCache } from '@/lib/api-handler'
 
+function contextCrisis(features: Record<string, unknown>): number {
+  const v = features.crisis_level
+  return typeof v === 'number' && Number.isFinite(v) ? v : 0
+}
+
 function safeJson(raw: string | null): Record<string, unknown> | null {
   if (!raw) return null
   try {
@@ -41,6 +46,10 @@ export async function GET() {
       markets.push({
         symbol: symbols[i],
         ...features,
+        direction: signal?.direction ?? 'flat',
+        confidence: typeof signal?.confidence === 'number' ? signal.confidence : 0,
+        kelly_fraction: signal?.kelly_fraction ?? features.kelly_fraction,
+        crisis_level: signal?.crisis_level ?? contextCrisis(features),
         signal: signal ?? null,
       })
     }

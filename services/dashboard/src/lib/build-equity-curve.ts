@@ -16,17 +16,19 @@ export function buildEquityCurve(input: {
   snapshots: { ts?: number; equity?: number }[]
   unrealizedUsdt: number
   nowTs?: number
+  startEquity?: number
 }): { curve: EquityPoint[]; realizedEquity: number; liveEquity: number } {
+  const start = input.startEquity ?? PORTFOLIO_START
   const now = input.nowTs ?? Math.floor(Date.now() / 1000)
   const sortedTrades = [...input.trades].sort(
     (a, b) => (a.closed_at ?? 0) - (b.closed_at ?? 0)
   )
 
   const points: EquityPoint[] = [
-    { ts: sortedTrades[0]?.closed_at ? sortedTrades[0].closed_at - 1 : now - 86400, equity: PORTFOLIO_START, kind: 'start' },
+    { ts: sortedTrades[0]?.closed_at ? sortedTrades[0].closed_at - 1 : now - 86400, equity: start, kind: 'start' },
   ]
 
-  let realized = PORTFOLIO_START
+  let realized = start
   let lastTradeTs = 0
   for (const t of sortedTrades) {
     realized += t.pnl_usdt ?? 0

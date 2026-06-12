@@ -115,8 +115,9 @@ class PaperTrader:
             else:
                 pnl_pct = (pos["entry_price"] - price) / pos["entry_price"]
 
-            # Apply round-trip fee (0.10%)
-            pnl_pct -= 0.001
+            # Round-trip fee: 0.10% per side (0.20% total) — matches OMS portfolio_try
+            fee_rt = float(__import__("os").getenv("TRADE_FEE_PCT_PER_SIDE", "0.001")) * 2
+            pnl_pct -= fee_rt
             exit_value = pos["entry_capital"] * (1 + pnl_pct)
             p.capital += exit_value
             trade = {

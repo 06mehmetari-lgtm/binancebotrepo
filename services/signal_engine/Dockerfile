@@ -5,5 +5,6 @@ RUN pip install --no-cache-dir psycopg2-binary==2.9.9 \
     && pip install --no-cache-dir -r requirements.txt
 COPY signal_engine/ ./
 COPY shared/risk_limits.py ./risk_limits.py
+COPY shared/outcome_predictor.py ./outcome_predictor.py
 EXPOSE 8008
 CMD ["python", "main.py"]
