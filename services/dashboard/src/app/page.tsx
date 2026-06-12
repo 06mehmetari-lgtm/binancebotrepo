@@ -1,5 +1,8 @@
 'use client'
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
+import { LiveEquityChart, type CurvePoint } from '@/components/LiveEquityChart'
+import { RecentTradesFeed } from '@/components/RecentTradesFeed'
+import { useStreamInvalidate } from '@/hooks/useStream'
 
 interface Market { symbol: string; rsi_14: number; direction: string; confidence: number; regime: string; crisis_level: number; kelly_fraction: number; drift_status: string }
 interface Signal { symbol: string; direction: string; confidence: number; regime: string; crisis_level: number; drift_status: string; kelly_fraction: number; rsi?: number }
@@ -127,35 +130,64 @@ function WinRateBadge({ wr }: { wr: number }) {
   )
 }
 
+interface PortfolioSummary {
+  curve: CurvePoint[]
+  recent_trades: {
+    symbol: string; direction: string; pnl_pct: number; pnl_usdt: number; closed_at: number
+    exit_reason?: string; hold_seconds?: number; peak_upnl_pct?: number
+  }[]
+  stats: {
+    start_equity: number
+    current_equity: number
+    total_pnl: number
+    total_pnl_pct: number
+    daily_pnl: number
+    win_rate: number
+    total_trades: number
+    open_positions?: number
+  }
+}
+
 export default function Home() {
   const [markets, setMarkets] = useState<Market[]>([])
   const [signals, setSignals] = useState<Signal[]>([])
   const [shadow, setShadow] = useState<Shadow[]>([])
   const [status, setStatus] = useState<Partial<Status>>({})
   const [backtest, setBacktest] = useState<Record<string, SymbolResult> | null>(null)
+  const [portfolio, setPortfolio] = useState<PortfolioSummary | null>(null)
   const [loading, setLoading] = useState(true)
   const [lastUpdate, setLastUpdate] = useState('')
+  const [streamLive, setStreamLive] = useState(false)
 
-  const fetchAll = async () => {
+  const fetchAll = useCallback(async () => {
     try {
-      const [m, s, sh, st, bt] = await Promise.all([
+      const [m, s, sh, st, bt, pf] = await Promise.all([
         fetch('/api/markets').then(r => r.json()),
         fetch('/api/signals').then(r => r.json()),
         fetch('/api/shadow').then(r => r.json()),
         fetch('/api/status').then(r => r.json()),
         fetch('/api/backtest').then(r => r.json()),
+        fetch('/api/portfolio').then(r => r.json()),
       ])
       setMarkets(Array.isArray(m) ? m : [])
       setSignals((Array.isArray(s) ? s : []) as Signal[])
-      setShadow(Array.isArray(sh) ? sh : [])
+      setShadow(Array.isArray(sh) ? sh : (sh?.leaderboard ?? []))
       setStatus(st || {})
       const btMap = backtestBySymbol(bt)
       if (btMap) setBacktest(btMap)
+      if (pf && !pf.error) setPortfolio(pf as PortfolioSummary)
       setLastUpdate(new Date().toLocaleTimeString())
     } catch { /* retry on next tick */ } finally { setLoading(false) }
-  }
+  }, [])
 
-  useEffect(() => { fetchAll(); const t = setInterval(fetchAll, 5000); return () => clearInterval(t) }, [])
+  const { connected: sseConnected } = useStreamInvalidate({
+    hints: ['trade_closed', 'portfolio', 'signal', 'guard'],
+    onEvent: fetchAll,
+    debounceMs: 250,
+  })
+
+  useEffect(() => { setStreamLive(sseConnected) }, [sseConnected])
+  useEffect(() => { fetchAll(); const t = setInterval(fetchAll, 5000); return () => clearInterval(t) }, [fetchAll])
 
   if (loading) return (
     <div className="flex items-center justify-center mt-32 gap-3 text-gray-500">
@@ -205,9 +237,57 @@ export default function Home() {
   return (
     <div className="space-y-5">
       <div className="flex items-center justify-between">
-        <h1 className="text-white font-bold text-base">Overview</h1>
-        <span className="text-xs text-gray-600">{lastUpdate ? `Updated ${lastUpdate}` : ''} · 5s refresh</span>
+        <h1 className="text-white font-bold text-base">Overview — Canlı İzleme</h1>
+        <span className="text-xs text-gray-600 flex items-center gap-1.5">
+          <span className={`inline-block w-1.5 h-1.5 rounded-full ${streamLive ? 'bg-green-400 animate-pulse' : 'bg-gray-600'}`} />
+          {lastUpdate ? `Güncellendi ${lastUpdate}` : ''} · {streamLive ? 'SSE canlı' : '5s'}
+        </span>
       </div>
+
+      {/* ── Portfolio live panel ── */}
+      {portfolio?.stats && (
+        <div className="grid lg:grid-cols-3 gap-3">
+          <div className="lg:col-span-2 bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
+            <div className="px-4 py-3 border-b border-gray-800 flex items-center justify-between flex-wrap gap-2">
+              <h2 className="text-blue-400 font-semibold text-sm uppercase tracking-wider">📈 Portföy Equity (canlı)</h2>
+              <div className="flex items-center gap-3 text-xs">
+                <span className={portfolio.stats.total_pnl >= 0 ? 'text-green-400 font-bold' : 'text-red-400 font-bold'}>
+                  {portfolio.stats.total_pnl >= 0 ? '+' : ''}${portfolio.stats.total_pnl.toFixed(2)} ({portfolio.stats.total_pnl_pct >= 0 ? '+' : ''}{portfolio.stats.total_pnl_pct.toFixed(2)}%)
+                </span>
+                <a href="/positions" className="text-orange-400 hover:underline">Detay →</a>
+              </div>
+            </div>
+            <div className="p-3">
+              <LiveEquityChart curve={portfolio.curve ?? []} startEquity={portfolio.stats.start_equity} height={160} />
+            </div>
+          </div>
+          <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden flex flex-col">
+            <div className="px-4 py-3 border-b border-gray-800">
+              <h2 className="text-orange-400 font-semibold text-sm uppercase tracking-wider">⚡ Son İşlemler</h2>
+              <p className="text-xs text-gray-600 mt-0.5">Al/sat kapanışları · gerçek zamanlı</p>
+            </div>
+            <div className="flex-1 overflow-y-auto max-h-48">
+              <RecentTradesFeed trades={portfolio.recent_trades ?? []} />
+            </div>
+            <div className="px-4 py-2 border-t border-gray-800 grid grid-cols-3 gap-2 text-center text-xs">
+              <div>
+                <p className="text-gray-500">Bugün P&L</p>
+                <p className={`font-bold ${portfolio.stats.daily_pnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                  {portfolio.stats.daily_pnl >= 0 ? '+' : ''}${portfolio.stats.daily_pnl.toFixed(2)}
+                </p>
+              </div>
+              <div>
+                <p className="text-gray-500">Win Rate</p>
+                <p className="font-bold text-white">{portfolio.stats.win_rate.toFixed(1)}%</p>
+              </div>
+              <div>
+                <p className="text-gray-500">Toplam</p>
+                <p className="font-bold text-white">{portfolio.stats.total_trades}</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ── Stat Cards ── */}
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2.5">

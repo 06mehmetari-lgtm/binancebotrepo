@@ -1,5 +1,7 @@
 'use client'
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
+import { ShadowEquityChart, type ShadowCurve } from '@/components/ShadowEquityChart'
+import { useStreamInvalidate } from '@/hooks/useStream'
 
 interface Shadow {
   shadow_id: string
@@ -212,22 +214,34 @@ function ComparisonTable({ shadows }: { shadows: Shadow[] }) {
 
 export default function ShadowPage() {
   const [data, setData] = useState<Shadow[]>([])
+  const [equityCurves, setEquityCurves] = useState<Record<string, ShadowCurve[]>>({})
+  const [startEquity, setStartEquity] = useState(10000)
   const [loading, setLoading] = useState(true)
   const [lastUpdate, setLastUpdate] = useState('')
+  const [streamLive, setStreamLive] = useState(false)
 
-  const fetchData = () => {
+  const fetchData = useCallback(() => {
     fetch('/api/shadow')
       .then(r => r.json())
       .then(d => {
-        const arr = (Array.isArray(d) ? d : []) as Shadow[]
-        setData(arr.sort((a, b) => (b.sharpe ?? 0) - (a.sharpe ?? 0)))
+        const arr = (Array.isArray(d) ? d : d.leaderboard ?? []) as Shadow[]
+        setData([...arr].sort((a, b) => (b.sharpe ?? 0) - (a.sharpe ?? 0)))
+        if (d.equity_curves) setEquityCurves(d.equity_curves)
+        if (d.start_equity) setStartEquity(d.start_equity)
         setLastUpdate(new Date().toLocaleTimeString())
       })
       .catch(() => {})
       .finally(() => setLoading(false))
-  }
+  }, [])
 
-  useEffect(() => { fetchData(); const t = setInterval(fetchData, 10000); return () => clearInterval(t) }, [])
+  const { connected } = useStreamInvalidate({
+    hints: ['trade_closed', 'portfolio'],
+    onEvent: fetchData,
+    debounceMs: 300,
+  })
+
+  useEffect(() => { setStreamLive(connected) }, [connected])
+  useEffect(() => { fetchData(); const t = setInterval(fetchData, 10000); return () => clearInterval(t) }, [fetchData])
 
   const anyReady = data.some(s => s.promotion_ready)
   const bestSharpe = data[0]?.sharpe ?? 0
@@ -242,7 +256,10 @@ export default function ShadowPage() {
           </p>
         </div>
         <div className="text-right shrink-0">
-          <p className="text-xs text-gray-600">{lastUpdate ? `${lastUpdate} · 10s` : '10s refresh'}</p>
+          <p className="text-xs text-gray-600 flex items-center gap-1.5 justify-end">
+            <span className={`inline-block w-1.5 h-1.5 rounded-full ${streamLive ? 'bg-green-400 animate-pulse' : 'bg-gray-600'}`} />
+            {lastUpdate ? `${lastUpdate} · ${streamLive ? 'canlı' : '10s'}` : '10s refresh'}
+          </p>
           {anyReady && <p className="text-yellow-400 text-xs font-bold mt-0.5 animate-pulse">PROMOTION CANDIDATE DETECTED</p>}
         </div>
       </div>
@@ -261,6 +278,18 @@ export default function ShadowPage() {
           ))}
         </div>
       </div>
+
+      {!loading && Object.keys(equityCurves).some(k => (equityCurves[k]?.length ?? 0) > 1) && (
+        <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
+          <div className="px-4 py-3 border-b border-gray-800 flex items-center justify-between">
+            <h2 className="text-blue-400 font-semibold text-sm uppercase tracking-wider">📈 Shadow Equity (zaman serisi)</h2>
+            <span className="text-xs text-gray-600">SHADOW_A / B / C karşılaştırma</span>
+          </div>
+          <div className="p-4">
+            <ShadowEquityChart curves={equityCurves} startEquity={startEquity} />
+          </div>
+        </div>
+      )}
 
       {!loading && data.length > 0 && (
         <div className="grid grid-cols-2 md:grid-cols-4 gap-2.5">

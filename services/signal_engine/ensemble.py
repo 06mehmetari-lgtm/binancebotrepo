@@ -83,8 +83,29 @@ def fuse_sources(
     if len(unique_dirs) > 1:
         confidence *= 0.75
 
-    if confidence < get_min_confidence():
-        direction = "flat"
+    min_conf = get_min_confidence()
+    try:
+        from risk_limits import is_paper_unlimited
+        paper = is_paper_unlimited()
+    except Exception:
+        paper = False
+
+    if confidence < min_conf:
+        if paper:
+            sides = {k: fused[k] for k in ("long", "short") if fused[k] >= max(0.28, min_conf * 0.85)}
+            if sides:
+                direction = max(sides, key=sides.__getitem__)  # type: ignore[assignment]
+                confidence = sides[direction]
+            else:
+                direction = "flat"
+        else:
+            direction = "flat"
+
+    if paper and direction == "flat":
+        sides = {k: fused[k] for k in ("long", "short") if fused[k] > 0.25}
+        if sides:
+            direction = max(sides, key=sides.__getitem__)  # type: ignore[assignment]
+            confidence = max(confidence, sides[direction])
 
     source = "ensemble:" + "+".join(weights_used) if weights_used else "signal_engine"
     diagnostics = {

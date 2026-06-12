@@ -11,7 +11,8 @@ export function createRedis() {
     port: 6379,
     password: redisPassword(),
     lazyConnect: false,
-    connectTimeout: 3000,
-    maxRetriesPerRequest: 1,
+    connectTimeout: 5000,
+    commandTimeout: 8000,
+    maxRetriesPerRequest: 2,
   })
 }

@@ -11,6 +11,10 @@ volumes:
   prometheus_data:
   ollama_data:
 
+# Zombie PID fix on VPS — tini reaps child processes (Docker recommendation)
+x-app-init: &app-init
+  init: true
+
 services:
 
   # ═══════════════════════════════════════
@@ -97,6 +101,7 @@ services:
   # UYGULAMA SERVİSLERİ
   # ═══════════════════════════════════════
   data_ingestion:
+    <<: *app-init
     build: ./services/data_ingestion
     container_name: prometheus_data
     restart: unless-stopped
@@ -116,6 +121,7 @@ services:
       - prometheus_net
 
   sentiment:
+    <<: *app-init
     build: ./services/sentiment
     container_name: prometheus_sentiment
     restart: unless-stopped
@@ -132,6 +138,7 @@ services:
       - prometheus_net
 
   macro:
+    <<: *app-init
     build: ./services/macro
     container_name: prometheus_macro
     restart: unless-stopped
@@ -145,6 +152,7 @@ services:
       - prometheus_net
 
   feature_engine:
+    <<: *app-init
     build: ./services/feature_engine
     container_name: prometheus_features
     restart: unless-stopped
@@ -161,6 +169,7 @@ services:
       - prometheus_net
 
   context_engine:
+    <<: *app-init
     build: ./services/context_engine
     container_name: prometheus_context
     restart: unless-stopped
@@ -174,6 +183,7 @@ services:
       - prometheus_net
 
   learning_engine:
+    <<: *app-init
     build:
       context: ./services
       dockerfile: learning_engine/Dockerfile
@@ -226,6 +236,7 @@ services:
       - prometheus_net
 
   neat_evolution:
+    <<: *app-init
     build: ./services/neat_evolution
     container_name: prometheus_neat
     restart: unless-stopped
@@ -247,6 +258,7 @@ services:
       - prometheus_net
 
   rl_agent:
+    <<: *app-init
     build: ./services/rl_agent
     container_name: prometheus_rl
     restart: unless-stopped
@@ -265,6 +277,7 @@ services:
       - prometheus_net
 
   ollama:
+    <<: *app-init
     image: ollama/ollama:latest
     container_name: prometheus_ollama
     restart: unless-stopped
@@ -304,6 +317,7 @@ services:
       - prometheus_net
 
   agent_system:
+    <<: *app-init
     build:
       context: ./services
       dockerfile: agent_system/Dockerfile
@@ -338,6 +352,14 @@ services:
       - GUARD_EMERGENCY_LOSS_PCT=${GUARD_EMERGENCY_LOSS_PCT:-2.5}
       - GUARD_DEBATE_MAX_AGE=${GUARD_DEBATE_MAX_AGE:-8}
       - GUARD_DEBATE_CONCURRENCY=${GUARD_DEBATE_CONCURRENCY:-2}
+      - DRY_RUN=${DRY_RUN:-true}
+      - PAPER_UNLIMITED=${PAPER_UNLIMITED:-true}
+      - GUARD_TAKE_PROFIT_PCT=${GUARD_TAKE_PROFIT_PCT:-0.5}
+      - PAPER_MIN_HOLD_SEC=${PAPER_MIN_HOLD_SEC:-120}
+      - GUARD_PROFIT_TIERS=${GUARD_PROFIT_TIERS:-0.5,2,5,10,25}
+      - GUARD_TRAIL_MIN_PEAK=${GUARD_TRAIL_MIN_PEAK:-1.5}
+      - GUARD_TRAIL_GIVEBACK_PCT=${GUARD_TRAIL_GIVEBACK_PCT:-0.6}
+      - GUARD_PROFIT_PROTECT_PCT=${GUARD_PROFIT_PROTECT_PCT:-0.25}
       # API anahtarları yalnızca env_file: .env (boş ${VAR} env_file'i ezmesin diye burada yok)
       - LLM_KEY_SLOTS=${LLM_KEY_SLOTS:-32}
       - LLM_PROVIDER_ORDER=${LLM_PROVIDER_ORDER:-ollama}
@@ -368,6 +390,7 @@ services:
   # SIGNAL ENGINE
   # ═══════════════════════════════════════
   signal_engine:
+    <<: *app-init
     build:
       context: ./services
       dockerfile: signal_engine/Dockerfile
@@ -376,6 +399,8 @@ services:
     environment:
       - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379
       - POSTGRES_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/prometheus_trading
+      - DRY_RUN=${DRY_RUN:-true}
+      - PAPER_UNLIMITED=${PAPER_UNLIMITED:-true}
     depends_on:
       - redis
       - feature_engine
@@ -383,6 +408,7 @@ services:
       - prometheus_net
 
   immunity_system:
+    <<: *app-init
     build:
       context: ./services
       dockerfile: immunity_system/Dockerfile
@@ -391,10 +417,13 @@ services:
     environment:
       - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379
       - POSTGRES_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/prometheus_trading
+      - DRY_RUN=${DRY_RUN:-true}
+      - PAPER_UNLIMITED=${PAPER_UNLIMITED:-true}
     networks:
       - prometheus_net
 
   oms:
+    <<: *app-init
     build:
       context: ./services
       dockerfile: oms/Dockerfile
@@ -403,9 +432,15 @@ services:
     environment:
       - BINANCE_API_KEY=${BINANCE_API_KEY}
       - BINANCE_SECRET=${BINANCE_SECRET}
+      - BINANCE_TESTNET=${BINANCE_TESTNET:-true}
       - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379
       - POSTGRES_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/prometheus_trading
       - DRY_RUN=${DRY_RUN:-true}
+      - PAPER_UNLIMITED=${PAPER_UNLIMITED:-true}
+      - PAPER_TAKE_PROFIT_PCT=${PAPER_TAKE_PROFIT_PCT:-0.5}
+      - PAPER_STOP_LOSS_PCT=${PAPER_STOP_LOSS_PCT:-1.5}
+      - LIVE_TRADING_CONFIRMED=${LIVE_TRADING_CONFIRMED:-false}
+      - PORTFOLIO_VALUE=${PORTFOLIO_VALUE:-10000}
     depends_on:
       - immunity_system
       - redis
@@ -414,6 +449,7 @@ services:
       - prometheus_net
 
   shadow_system:
+    <<: *app-init
     build:
       context: ./services
       dockerfile: shadow_system/Dockerfile
@@ -423,7 +459,9 @@ services:
       - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379
       - POSTGRES_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/prometheus_trading
       - SHADOW_OPEN_IDS=${SHADOW_OPEN_IDS:-SHADOW_A}
-      - SHADOW_ONE_PER_SYMBOL=${SHADOW_ONE_PER_SYMBOL:-true}
+      - SHADOW_ONE_PER_SYMBOL=${SHADOW_ONE_PER_SYMBOL:-false}
+      - DRY_RUN=${DRY_RUN:-true}
+      - PAPER_UNLIMITED=${PAPER_UNLIMITED:-true}
     depends_on:
       - redis
       - postgres
@@ -431,6 +469,7 @@ services:
       - prometheus_net
 
   autopsy:
+    <<: *app-init
     build: ./services/autopsy
     container_name: prometheus_autopsy
     restart: unless-stopped
@@ -446,6 +485,7 @@ services:
       - prometheus_net
 
   rag_memory:
+    <<: *app-init
     build: ./services/rag_memory
     container_name: prometheus_rag
     restart: unless-stopped
@@ -459,6 +499,7 @@ services:
       - prometheus_net
 
   scenario_engine:
+    <<: *app-init
     build: ./services/scenario_engine
     container_name: prometheus_scenarios
     restart: unless-stopped
@@ -503,6 +544,7 @@ services:
   # DASHBOARD
   # ═══════════════════════════════════════
   dashboard:
+    <<: *app-init
     build: ./services/dashboard
     container_name: prometheus_dashboard
     restart: unless-stopped
@@ -535,6 +577,7 @@ services:
   # Fetches Binance Futures klines, computes metrics, saves to Redis
   # ═══════════════════════════════════════
   backtest:
+    <<: *app-init
     build: ./services/backtest
     container_name: prometheus_backtest
     restart: unless-stopped
@@ -556,6 +599,7 @@ services:
   # Run: docker compose run --rm backfill
   # ═══════════════════════════════════════
   backfill:
+    <<: *app-init
     build: ./services/backfill
     container_name: prometheus_backfill
     restart: "no"

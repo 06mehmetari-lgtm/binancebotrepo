@@ -224,17 +224,15 @@ async def generate_signal(redis: aioredis.Redis, symbol: str) -> dict | None:
         pos_dir = open_pos.get("direction", "long")
         signal_dict["has_position"] = True
         signal_dict["position_direction"] = pos_dir
-        if final_dir == "flat" or v_dir == "flat":
-            signal_dict["direction"] = "flat"
-            signal_dict["trade_action"] = "close"
-            signal_dict["is_valid"] = True
-            signal_dict["reject_reason"] = ""
-            signal_dict["close_reason"] = (
-                "ensemble_flat" if final_dir == "flat" else "verdict_flat"
-            )
-        elif final_dir == pos_dir:
+        try:
+            from risk_limits import is_paper_unlimited
+            paper_hold = is_paper_unlimited()
+        except Exception:
+            paper_hold = False
+
+        if final_dir in ("long", "short") and final_dir == pos_dir:
             signal_dict["trade_action"] = "hold"
-            if v_conf < 0.35:
+            if not paper_hold and v_conf < 0.35:
                 signal_dict["trade_action"] = "close"
                 signal_dict["close_reason"] = "low_ai_confidence"
                 signal_dict["direction"] = "flat"
@@ -242,6 +240,18 @@ async def generate_signal(redis: aioredis.Redis, symbol: str) -> dict | None:
                 signal_dict["reject_reason"] = ""
         elif final_dir in ("long", "short") and final_dir != pos_dir:
             signal_dict["trade_action"] = "reverse"
+        elif final_dir == "flat" or (v_dir == "flat" and not paper_hold):
+            if paper_hold and final_dir != "flat":
+                # Paper: ensemble yönde — düşük AI FLAT tek başına kapatmaz
+                signal_dict["trade_action"] = "hold"
+            else:
+                signal_dict["direction"] = "flat"
+                signal_dict["trade_action"] = "close"
+                signal_dict["is_valid"] = True
+                signal_dict["reject_reason"] = ""
+                signal_dict["close_reason"] = (
+                    "ensemble_flat" if final_dir == "flat" else "verdict_flat"
+                )
     elif (
         not is_valid
         and learn_raw

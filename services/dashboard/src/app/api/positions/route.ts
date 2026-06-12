@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 export const dynamic = 'force-dynamic'
+export const maxDuration = 25
 import { createRedis } from '../_redis'
 import { fetchOpenPositions } from '@/lib/positions'
 

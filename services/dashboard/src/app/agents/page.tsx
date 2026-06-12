@@ -1,6 +1,7 @@
 'use client'
-import { useEffect, useState, Suspense } from 'react'
+import { useCallback, useEffect, useState, Suspense } from 'react'
 import { useSearchParams } from 'next/navigation'
+import { useStreamInvalidate } from '@/hooks/useStream'
 
 interface Vote { agent: string; signal: string; confidence: number; reasoning?: string }
 interface Verdict {
@@ -14,7 +15,11 @@ interface AgentData {
   genome: Genome
   open_position?: OpenPosition | null
   portfolio?: { total_open: number; long_positions: number; short_positions: number } | null
-  live_signal?: { direction: string; confidence: number; trade_action?: string; has_position?: boolean } | null
+  live_signal?: {
+    direction: string; confidence: number; trade_action?: string; has_position?: boolean
+    crisis_level?: number; drift_status?: string; kelly_fraction?: number; regime?: string
+  } | null
+  risk_context?: { crisis_level: number; drift_status: string; kelly_fraction: number; max_position_pct: number }
   learn_profile?: {
     current_regime?: string
     best_entry_hint?: string
@@ -93,13 +98,25 @@ function AgentVoteRow({ v, index }: { v: Vote; index: number }) {
   )
 }
 
-function KellyBreakdown({ verdict, genome }: { verdict: Verdict; genome: Genome | null }) {
-  const crisis = 0  // would come from signal data; default normal
-  const drift = 'STABLE'
-  const baseKelly = (verdict.confidence ?? 0)
-  const driftAdj = DRIFT_MULT[drift] ?? 0.5
-  const crisisAdj = CRISIS_MULT[crisis] ?? 1.0
-  const maxPos = 0.05  // 5% hard cap (immunity system)
+function KellyBreakdown({
+  verdict,
+  crisis = 0,
+  drift = 'STABLE',
+  kellyFraction,
+  maxPositionPct = 0.05,
+}: {
+  verdict: Verdict
+  crisis?: number
+  drift?: string
+  kellyFraction?: number
+  maxPositionPct?: number
+}) {
+  const crisisLevel = Math.min(4, Math.max(0, crisis))
+  const driftKey = drift in DRIFT_MULT ? drift : 'STABLE'
+  const baseKelly = kellyFraction != null && kellyFraction > 0 ? kellyFraction : (verdict.confidence ?? 0)
+  const driftAdj = DRIFT_MULT[driftKey] ?? 0.5
+  const crisisAdj = CRISIS_MULT[crisisLevel] ?? 1.0
+  const maxPos = maxPositionPct
   const rawKelly = baseKelly * driftAdj * crisisAdj
   const finalPos = Math.min(maxPos, rawKelly) * 100
 
@@ -113,10 +130,10 @@ function KellyBreakdown({ verdict, genome }: { verdict: Verdict; genome: Genome 
         <div className="space-y-2 text-xs">
           {[
             { label: 'Base Kelly (confidence)', value: `${(baseKelly * 100).toFixed(1)}%`, color: 'text-white' },
-            { label: `Drift adj (${drift} = ${(driftAdj * 100).toFixed(0)}%)`, value: `× ${driftAdj.toFixed(2)}`, color: DRIFT_COLOR[drift] },
-            { label: `Crisis adj (L${crisis} = ${(crisisAdj * 100).toFixed(0)}% Kelly)`, value: `× ${crisisAdj.toFixed(2)}`, color: 'text-green-400' },
+            { label: `Drift adj (${driftKey} = ${(driftAdj * 100).toFixed(0)}%)`, value: `× ${driftAdj.toFixed(2)}`, color: DRIFT_COLOR[driftKey] ?? 'text-gray-400' },
+            { label: `Crisis adj (L${crisisLevel} = ${(crisisAdj * 100).toFixed(0)}% Kelly)`, value: `× ${crisisAdj.toFixed(2)}`, color: crisisLevel >= 3 ? 'text-red-400' : crisisLevel >= 2 ? 'text-orange-400' : 'text-green-400' },
             { label: 'Raw Kelly', value: `${(rawKelly * 100).toFixed(2)}%`, color: 'text-orange-400' },
-            { label: 'Hard cap (immunity)', value: '5.00%', color: 'text-red-400' },
+            { label: 'Hard cap (risk limit)', value: `${(maxPos * 100).toFixed(2)}%`, color: 'text-red-400' },
           ].map(row => (
             <div key={row.label} className="flex justify-between items-center">
               <span className="text-gray-500">{row.label}</span>
@@ -210,6 +227,7 @@ function AgentsContent() {
   const [loading, setLoading] = useState(true)
   const [lastUpdate, setLastUpdate] = useState('')
   const [portfolio, setPortfolio] = useState<{ total_open: number; long_positions: number; short_positions: number } | null>(null)
+  const [streamLive, setStreamLive] = useState(false)
 
   useEffect(() => {
     fetch('/api/portfolio/state').then(r => r.json()).then(p => {
@@ -238,18 +256,27 @@ function AgentsContent() {
     }).catch(() => {})
   }, [])
 
+  const fetchData = useCallback(async () => {
+    try {
+      const d = await fetch(`/api/agents?symbol=${symbol}`).then(r => r.json())
+      setData(d || {})
+      setLastUpdate(new Date().toLocaleTimeString())
+    } catch { /* retry */ } finally { setLoading(false) }
+  }, [symbol])
+
+  const { connected } = useStreamInvalidate({
+    hints: ['agents', 'signal', 'learn'],
+    onEvent: fetchData,
+    debounceMs: 300,
+  })
+
+  useEffect(() => { setStreamLive(connected) }, [connected])
+
   useEffect(() => {
-    const fetchData = async () => {
-      try {
-        const d = await fetch(`/api/agents?symbol=${symbol}`).then(r => r.json())
-        setData(d || {})
-        setLastUpdate(new Date().toLocaleTimeString())
-      } catch { } finally { setLoading(false) }
-    }
     fetchData()
     const t = setInterval(fetchData, 10000)
     return () => clearInterval(t)
-  }, [symbol])
+  }, [fetchData])
 
   const votes = data.votes ?? []
   const badge = consensusBadge(votes.filter(v => v.agent !== 'debate_agent'))
@@ -264,10 +291,13 @@ function AgentsContent() {
         <div>
           <h1 className="text-white font-bold text-base">9-Agent Debate System</h1>
           <p className="text-gray-500 text-xs mt-0.5">
-            Sürekli öğrenen AI (learning_engine) + 9 ajan · rejim/faktör tepkileri her 2sn güncellenir
+            Sürekli öğrenen AI + 9 ajan · Kelly canlı crisis/drift (signal:latest)
           </p>
         </div>
-        <span className="text-xs text-gray-600">{lastUpdate ? `${lastUpdate} · 10s` : '10s refresh'}</span>
+        <span className="text-xs text-gray-600 flex items-center gap-1.5">
+          <span className={`inline-block w-1.5 h-1.5 rounded-full ${streamLive ? 'bg-green-400 animate-pulse' : 'bg-gray-600'}`} />
+          {lastUpdate ? `${lastUpdate} · ${streamLive ? 'SSE' : '10s'}` : '10s refresh'}
+        </span>
       </div>
 
       {/* Symbol Selector with search */}
@@ -471,7 +501,15 @@ function AgentsContent() {
           <div className="space-y-4">
             <ConsensusWheel votes={votes} />
 
-            {verdict && <KellyBreakdown verdict={verdict} genome={genome} />}
+            {verdict && (
+              <KellyBreakdown
+                verdict={verdict}
+                crisis={data.risk_context?.crisis_level ?? data.live_signal?.crisis_level ?? 0}
+                drift={data.risk_context?.drift_status ?? data.live_signal?.drift_status ?? 'STABLE'}
+                kellyFraction={data.risk_context?.kelly_fraction ?? data.live_signal?.kelly_fraction}
+                maxPositionPct={data.risk_context?.max_position_pct ?? 0.05}
+              />
+            )}
 
             {genome && (
               <div className="bg-gray-900 rounded-lg border border-gray-800 overflow-hidden">

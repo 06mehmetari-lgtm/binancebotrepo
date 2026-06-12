@@ -8,11 +8,8 @@ from datetime import datetime, timezone
 
 import redis.asyncio as aioredis
 
-from order_manager import OrderManager
-from binance_executor import BinanceExecutor
-from position_tracker import PositionTracker
-from audit_logger import AuditLogger
 from promotion_gate import check_live_trading_allowed, DRY_RUN
+from live_execution import execute_market_order
 from trade_store import schedule_save
 from emergency import EMERGENCY_CHANNEL, is_trading_halted
 from portfolio_sync import publish_portfolio_state
@@ -66,12 +63,30 @@ async def request_immunity_approval(redis: aioredis.Redis, order_dict: dict) -> 
     return False
 
 
-async def close_position(redis: aioredis.Redis, symbol: str, pos: dict, current_price: float):
+async def close_position(
+    redis: aioredis.Redis,
+    symbol: str,
+    pos: dict,
+    current_price: float,
+    exit_meta: dict | None = None,
+):
     """Close an existing position and record P&L."""
     global _daily_pnl
     entry_price = pos.get("entry_price", current_price)
     direction = pos.get("direction", "long")
     size_usd = pos.get("size_usd", 0)
+
+    if not DRY_RUN and size_usd > 0 and current_price > 0:
+        live_ok, live_reason = await check_live_trading_allowed(redis)
+        if not live_ok:
+            log.warning(f"Live close blocked for {symbol}: {live_reason}")
+            return
+        close_result = await execute_market_order(
+            symbol, direction, size_usd, current_price, opening=False,
+        )
+        if not close_result:
+            log.error(f"Live close failed — keeping redis position for {symbol}")
+            return
 
     if entry_price > 0 and size_usd > 0:
         if direction == "long":
@@ -82,17 +97,27 @@ async def close_position(redis: aioredis.Redis, symbol: str, pos: dict, current_
         pnl_usdt = size_usd * pnl_pct
         _daily_pnl += pnl_usdt
         await redis.set("oms:daily_pnl", str(round(_daily_pnl, 4)))
+        meta = exit_meta or {}
+        hold_s = time.time() - pos.get("entry_time", time.time())
         trade = {
             "symbol": symbol, "direction": direction,
+            "action": "close",
             "entry_price": entry_price, "exit_price": current_price,
             "pnl_pct": round(pnl_pct, 6), "pnl_usdt": round(pnl_usdt, 4),
             "size_usd": size_usd, "source": "oms",
+            "timestamp": int(time.time() * 1000),
             "closed_at": time.time(),
-            "hold_seconds": time.time() - pos.get("entry_time", time.time()),
+            "hold_seconds": hold_s,
             "entry_signal": pos.get("entry_signal"),
+            "ladder": pos.get("ladder"),
+            "exit_reason": str(meta.get("reason", meta.get("close_reason", "")))[:500],
+            "exit_urgency": str(meta.get("urgency", "")),
+            "exit_action": str(meta.get("action", "close")),
+            "unrealized_pct_at_close": meta.get("unrealized_pct"),
+            "peak_upnl_pct": (pos.get("ladder") or {}).get("peak_upnl_pct"),
         }
         await redis.lpush("oms:trade_history", json.dumps(trade))
-        await redis.ltrim("oms:trade_history", 0, 999)
+        await redis.ltrim("oms:trade_history", 0, 4999)
         await redis.publish("ch:trade_closed", json.dumps(trade))
         schedule_save(trade)
         log.info(f"Position CLOSED: {symbol} {direction} pnl={pnl_pct:.2%} (${pnl_usdt:+.2f})")
@@ -190,7 +215,14 @@ async def process_signal(redis: aioredis.Redis, symbol: str):
             price = await get_price(redis, symbol)
             if price > 0:
                 log.info(f"[{symbol}] Closing position — signal={direction} action={trade_action}")
-                await close_position(redis, symbol, pos, price)
+                await close_position(
+                    redis, symbol, pos, price,
+                    exit_meta={
+                        "reason": signal.get("close_reason") or f"signal_{trade_action or direction}",
+                        "action": "close",
+                        "urgency": "medium",
+                    },
+                )
         return
 
     if not signal.get("is_valid"):
@@ -208,16 +240,22 @@ async def process_signal(redis: aioredis.Redis, symbol: str):
     confidence = float(signal.get("confidence", 0))
     kelly = float(signal.get("kelly_fraction", 0.01))
     try:
-        from risk_limits import get_active_limits
-        max_pos_pct = get_active_limits().max_position_pct
+        from risk_limits import get_active_limits, is_paper_unlimited
+        lim = get_active_limits()
+        max_pos_pct = lim.max_position_pct
+        paper = is_paper_unlimited()
     except Exception:
         max_pos_pct = 0.05
+        paper = DRY_RUN
     size_usd = min(
         PORTFOLIO_VALUE * kelly * confidence,
         PORTFOLIO_VALUE * max_pos_pct,
     )
+    if paper:
+        size_usd = max(size_usd, PORTFOLIO_VALUE * 0.003)
 
-    if size_usd < 10:
+    min_notional = 5.0 if paper else 10.0
+    if size_usd < min_notional:
         return
 
     price = await get_price(redis, symbol)
@@ -253,13 +291,27 @@ async def process_signal(redis: aioredis.Redis, symbol: str):
         log.info(f"[DRY_RUN] {symbol} {direction.upper()} size=${size_usd:.2f} @ {price:.4f}")
     else:
         log.info(f"[LIVE] Executing {symbol} {direction.upper()} size=${size_usd:.2f} @ {price:.4f}")
-        # BinanceExecutor wired when API keys + promotion gate both pass
+        live_result = await execute_market_order(
+            symbol, direction, size_usd, price, opening=True,
+        )
+        if not live_result:
+            log.error(f"[LIVE] Order failed — position not opened for {symbol}")
+            return
 
+    tp_pct = float(os.getenv("PAPER_TAKE_PROFIT_PCT", "0.5"))
+    sl_pct = float(os.getenv("PAPER_STOP_LOSS_PCT", "1.5"))
     # Track the paper/live position
     await redis.set(f"oms:position:{symbol}", json.dumps({
         "symbol": symbol, "direction": direction,
         "size_usd": size_usd, "entry_price": price,
         "entry_time": time.time(), "entry_signal": signal,
+        "ladder": {
+            "tier": 1,
+            "take_profit_pct": tp_pct,
+            "stop_loss_pct": sl_pct,
+            "entry_confidence": confidence,
+            "entry_reason": (signal.get("consensus_reasoning") or "")[:500],
+        },
     }), ex=86400)
     await publish_portfolio_state(redis)
 
@@ -326,7 +378,7 @@ async def main():
     async def apply_guard_close(redis_client: aioredis.Redis, symbol: str, pos: dict, dec: dict):
         price = await get_price(redis_client, symbol)
         if price > 0:
-            await close_position(redis_client, symbol, pos, price)
+            await close_position(redis_client, symbol, pos, price, exit_meta=dec)
             await redis_client.lpush(
                 "activity:feed",
                 json.dumps({

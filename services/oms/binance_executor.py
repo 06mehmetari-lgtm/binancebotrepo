@@ -1,13 +1,18 @@
-import ccxt, os
+import os
+
+import ccxt
+
 
 class BinanceExecutor:
     def __init__(self):
+        secret = os.getenv("BINANCE_API_SECRET") or os.getenv("BINANCE_SECRET") or ""
         self.exchange = ccxt.binanceusdm({
-            "apiKey": os.getenv("BINANCE_API_KEY"),
-            "secret": os.getenv("BINANCE_API_SECRET"),
+            "apiKey": os.getenv("BINANCE_API_KEY", ""),
+            "secret": secret,
             "options": {"defaultType": "future"},
+            "enableRateLimit": True,
         })
-        if os.getenv("BINANCE_TESTNET", "true").lower() == "true":
+        if os.getenv("BINANCE_TESTNET", "true").lower() in ("1", "true", "yes"):
             self.exchange.set_sandbox_mode(True)
 
     def market_order(self, symbol: str, side: str, amount: float) -> dict:

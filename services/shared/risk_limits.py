@@ -83,8 +83,31 @@ class RiskLimits:
 _active = RiskLimits()
 
 
+def is_paper_unlimited() -> bool:
+    """DRY_RUN / PAPER_UNLIMITED: sanal para — agresif öğrenme modu."""
+    if os.getenv("PAPER_UNLIMITED", "").lower() in ("1", "true", "yes"):
+        return True
+    return os.getenv("DRY_RUN", "true").lower() in ("1", "true", "yes")
+
+
+def apply_paper_overrides(lim: RiskLimits) -> RiskLimits:
+    if not is_paper_unlimited():
+        return lim
+    return RiskLimits(
+        max_leverage=max(lim.max_leverage, 10.0),
+        max_position_pct=max(lim.max_position_pct, 1.0),
+        max_daily_loss_pct=1.0,
+        max_open_positions=500,
+        min_signal_confidence=min(lim.min_signal_confidence, 0.35),
+        min_immunity_confidence=min(lim.min_immunity_confidence, 0.30),
+        max_trades_per_day=10_000,
+        updated_at=lim.updated_at,
+        updated_by=f"{lim.updated_by}+paper",
+    )
+
+
 def get_active_limits() -> RiskLimits:
-    return _active
+    return apply_paper_overrides(_active)
 
 
 def set_active_limits(limits: RiskLimits) -> None:

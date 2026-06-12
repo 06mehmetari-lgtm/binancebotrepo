@@ -139,6 +139,9 @@ class LearningEngine:
             imbalance_5=imbalance_5,
             funding=funding,
             source=str(trade.get("source", trade.get("shadow_id", ""))),
+            exit_reason=str(trade.get("exit_reason", "")),
+            peak_upnl_pct=trade.get("peak_upnl_pct"),
+            hold_seconds=float(trade.get("hold_seconds", 0) or 0),
         )
         await persist_profile(redis, learner.build_profile(), lessons)
         log.info(f"[learn] trade_closed {symbol} {direction} pnl={pnl:+.2%} lessons={len(lessons)}")

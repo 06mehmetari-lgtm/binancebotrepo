@@ -1,6 +1,7 @@
 'use client'
 import { useEffect, useState, useCallback } from 'react'
 import { useParams } from 'next/navigation'
+import { SymbolTradeHistory } from '@/components/SymbolTradeHistory'
 import {
   ComposedChart, Area, Bar, Line, Cell, BarChart,
   XAxis, YAxis, Tooltip, CartesianGrid,
@@ -348,16 +349,37 @@ export default function CoinPage() {
   const [error, setError] = useState('')
   const [chartType, setChartType] = useState<'price' | 'rsi' | 'macd'>('price')
   const [leverageVal, setLeverageVal] = useState(1)
+  const [tradeLevels, setTradeLevels] = useState<
+    { entry: number; exit?: number; direction: string }[]
+  >([])
 
   const fetchData = useCallback(async () => {
     if (!symbol) return
     try {
-      const res = await fetch(`/api/coin/${symbol}`)
+      const [res, trRes] = await Promise.all([
+        fetch(`/api/coin/${symbol}`),
+        fetch(`/api/coin/${symbol}/trades`),
+      ])
       const raw = await res.json()
       if (!res.ok) throw new Error((raw as { error?: string }).error ?? `HTTP ${res.status}`)
       const d = normalizeCoinPayload(raw as Record<string, unknown>)
       setData(d)
       setLeverageVal(d.leverageRec?.recommended ?? 1)
+      if (trRes.ok) {
+        const trd = await trRes.json()
+        const rows = (Array.isArray(trd.trades) ? trd.trades : []) as {
+          entry_price?: number
+          exit_price?: number
+          direction?: string
+        }[]
+        setTradeLevels(
+          rows.slice(0, 12).map(t => ({
+            entry: Number(t.entry_price ?? 0),
+            exit: t.exit_price != null ? Number(t.exit_price) : undefined,
+            direction: String(t.direction ?? 'long'),
+          }))
+        )
+      }
     } catch (e: any) {
       setError(e.message)
     } finally {
@@ -528,6 +550,26 @@ export default function CoinPage() {
                     {price > 0 && (
                       <ReferenceLine y={price} stroke="#94a3b8" strokeDasharray="2 2" strokeWidth={1} />
                     )}
+                    {tradeLevels.map((t, i) => (
+                      <ReferenceLine
+                        key={`entry-${i}`}
+                        y={t.entry}
+                        stroke={t.direction === 'long' ? '#22c55e' : '#ef4444'}
+                        strokeDasharray="4 3"
+                        strokeWidth={1}
+                        strokeOpacity={0.7}
+                      />
+                    ))}
+                    {tradeLevels.filter(t => t.exit).map((t, i) => (
+                      <ReferenceLine
+                        key={`exit-${i}`}
+                        y={t.exit!}
+                        stroke="#fbbf24"
+                        strokeDasharray="2 2"
+                        strokeWidth={1}
+                        strokeOpacity={0.6}
+                      />
+                    ))}
                   </ComposedChart>
                 </ResponsiveContainer>
               </div>
@@ -545,6 +587,22 @@ export default function CoinPage() {
                     </Bar>
                   </BarChart>
                 </ResponsiveContainer>
+              </div>
+              <div className="px-4 py-3 border-t border-gray-800 flex gap-4 text-[10px] text-gray-500">
+                <span><span className="text-green-400">— —</span> Long giriş</span>
+                <span><span className="text-red-400">— —</span> Short giriş</span>
+                <span><span className="text-yellow-400">—</span> Çıkış</span>
+              </div>
+            </div>
+          )}
+
+          {hasChart && (
+            <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
+              <div className="px-4 py-3 border-b border-gray-800">
+                <h3 className="text-sm font-semibold text-white">Al / Sat Geçmişi — {symbol}</h3>
+              </div>
+              <div className="p-4">
+                <SymbolTradeHistory symbol={symbol} />
               </div>
             </div>
           )}

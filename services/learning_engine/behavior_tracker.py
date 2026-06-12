@@ -20,6 +20,9 @@ FACTOR_LABELS: dict[str, str] = {
     "trade_long_loss": "Long işlem zararı",
     "trade_short_win": "Short işlem kârı",
     "trade_short_loss": "Short işlem zararı",
+    "profit_take_good": "Kâr kademesi / trailing ile çıkış",
+    "early_flat_loss": "AI FLAT ile erken zarar çıkışı",
+    "missed_peak": "Zirve kâr kaçırıldı sonra zarar",
 }
 
 
@@ -130,8 +133,11 @@ class SymbolLearner:
         imbalance_5: float | None = None,
         funding: float | None = None,
         source: str = "",
+        exit_reason: str = "",
+        peak_upnl_pct: float | None = None,
+        hold_seconds: float = 0,
     ) -> list[str]:
-        """Her kapanan işlemden derinlik/funding bağlamıyla ders."""
+        """Her kapanan işlemden derinlik/funding/çıkış nedeniyle ders."""
         key = f"trade_{direction}_{'win' if won else 'loss'}"
         st = self._pat(key)
         if won:
@@ -139,10 +145,28 @@ class SymbolLearner:
             st.total_move_pct += abs(pnl_pct) * 100
         else:
             st.misses += 1
+        why = exit_reason[:160] if exit_reason else "sinyal/guard"
         lessons: list[str] = [
             f"Kapanış {direction} {'kâr' if won else 'zarar'} {pnl_pct:+.2%} "
-            f"(rejim {self.last_regime}, kaynak {source or '?'})"
+            f"(rejim {self.last_regime}, {int(hold_seconds)}sn, neden: {why})"
         ]
+        if exit_reason:
+            if any(x in exit_reason for x in ("Kâr kademesi", "Kâr hedefi", "Trailing", "Kârda sat", "Kâr koruma")):
+                pt = self._pat("profit_take_good")
+                pt.hits += 1
+                pt.total_move_pct += abs(pnl_pct) * 100
+                lessons.append(f"✓ İyi çıkış: {exit_reason[:100]}")
+            elif "AI FLAT" in exit_reason and not won:
+                ef = self._pat("early_flat_loss")
+                ef.misses += 1
+                lessons.append(f"✗ Erken FLAT zarar — pozisyon tut veya kârda sat: {exit_reason[:80]}")
+        peak = float(peak_upnl_pct or 0)
+        if peak > abs(pnl_pct) * 100 + 0.3 and not won:
+            mp = self._pat("missed_peak")
+            mp.misses += 1
+            lessons.append(
+                f"Zirve +{peak:.2f}% varken {pnl_pct:+.2%} ile kapandı — trailing sıkılaştır"
+            )
         if imbalance_5 is not None:
             side = "bid baskısı" if imbalance_5 > 0.2 else (
                 "ask baskısı" if imbalance_5 < -0.2 else "dengeli defter"

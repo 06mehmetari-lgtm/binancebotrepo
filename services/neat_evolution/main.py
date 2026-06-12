@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 
 import redis.asyncio as aioredis
 
@@ -48,6 +49,7 @@ async def evolution_cycle(redis: aioredis.Redis, gm: GenomeManager):
                     None, engine.run, GENERATIONS
                 )
                 result["symbol"] = symbol
+                result["ts"] = int(time.time())
                 await redis.set(f"neat:best_genome:{symbol}", json.dumps(result), ex=86400)
                 await redis.lpush("neat:evolution_log", json.dumps(result))
                 await redis.ltrim("neat:evolution_log", 0, 999)

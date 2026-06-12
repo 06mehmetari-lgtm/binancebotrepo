@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 
 import redis.asyncio as aioredis
 
 PORTFOLIO_KEY = "portfolio:state:v1"
+_LAST_SNAPSHOT_TS = 0.0
+SNAPSHOT_INTERVAL_SEC = 60
 
 
 async def _scan(redis: aioredis.Redis, pattern: str) -> list[str]:
@@ -89,6 +92,59 @@ async def publish_portfolio_state(redis: aioredis.Redis) -> dict:
     }
     await redis.set(PORTFOLIO_KEY, json.dumps(state), ex=120)
     await redis.publish("ch:portfolio:update", json.dumps({"ts": state["updated_at"]}))
+
+    global _LAST_SNAPSHOT_TS
+    now = time.time()
+    if now - _LAST_SNAPSHOT_TS >= SNAPSHOT_INTERVAL_SEC:
+        _LAST_SNAPSHOT_TS = now
+        try:
+            trade_hist_raw = await redis.lrange("oms:trade_history", 0, 999)
+            trades = []
+            for r in trade_hist_raw:
+                try:
+                    trades.append(json.loads(r))
+                except json.JSONDecodeError:
+                    pass
+            trades.sort(key=lambda t: t.get("closed_at", 0))
+            equity = float(os.environ.get("PORTFOLIO_VALUE", "10000"))
+            for t in trades:
+                equity += float(t.get("pnl_usdt", 0))
+            for p in positions:
+                sym = p.get("symbol", "")
+                if not sym:
+                    continue
+                ticker_raw = await redis.get(f"binance:ticker:{sym.lower()}")
+                price = 0.0
+                if ticker_raw:
+                    try:
+                        td = json.loads(ticker_raw)
+                        d = td.get("data", td)
+                        bid = float(d.get("b", 0) or 0)
+                        ask = float(d.get("a", bid) or bid)
+                        price = (bid + ask) / 2 if bid and ask else bid or ask
+                    except (json.JSONDecodeError, TypeError, ValueError):
+                        pass
+                entry = float(p.get("entry_price", 0))
+                size = float(p.get("size_usd", 0))
+                direction = p.get("direction", "long")
+                if price > 0 and entry > 0 and size > 0:
+                    upnl_pct = (
+                        ((price - entry) / entry) * 100
+                        if direction == "long"
+                        else ((entry - price) / entry) * 100
+                    )
+                    equity += size * (upnl_pct / 100)
+            snapshot = {
+                "ts": int(now),
+                "equity": round(equity, 2),
+                "trade_count": len(trades),
+                "open_positions": len(positions),
+            }
+            await redis.lpush("portfolio:pnl:snapshots", json.dumps(snapshot))
+            await redis.ltrim("portfolio:pnl:snapshots", 0, 719)
+        except Exception:
+            pass
+
     return state
 
 

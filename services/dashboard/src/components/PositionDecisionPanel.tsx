@@ -1,6 +1,7 @@
 'use client'
 
 import type { PositionDecision } from '@/lib/positions'
+import { SymbolTradeHistory } from '@/components/SymbolTradeHistory'
 
 const DIR_STYLE: Record<string, string> = {
   long: 'text-green-400 bg-green-900/30 border-green-800/50',
@@ -115,6 +116,35 @@ export function PositionDecisionPanel({ pos }: { pos: PositionDecision }) {
         </div>
       )}
 
+      {pos.ladder && (
+        <div className="bg-cyan-950/30 border border-cyan-800/40 rounded-lg p-3">
+          <p className="text-cyan-400 text-[10px] uppercase tracking-wider font-bold mb-2">
+            Kademe {pos.ladder.tier ?? 1} — al/sat planı
+          </p>
+          <div className="grid grid-cols-3 gap-2 text-[11px]">
+            <div>
+              <p className="text-gray-500">Kâr hedefi</p>
+              <p className="text-green-400 font-mono">%{pos.ladder.take_profit_pct ?? '—'}</p>
+            </div>
+            <div>
+              <p className="text-gray-500">Stop</p>
+              <p className="text-red-400 font-mono">%{pos.ladder.stop_loss_pct ?? '—'}</p>
+            </div>
+            <div>
+              <p className="text-gray-500">Giriş güveni</p>
+              <p className="text-white font-mono">
+                {pos.ladder.entry_confidence != null
+                  ? `${Math.round(pos.ladder.entry_confidence * 100)}%`
+                  : '—'}
+              </p>
+            </div>
+          </div>
+          {pos.ladder.entry_reason && (
+            <p className="text-gray-400 mt-2">{pos.ladder.entry_reason}</p>
+          )}
+        </div>
+      )}
+
       {targets && (targets.stop_loss != null || targets.take_profit != null) && (
         <p className="text-gray-500">
           Hedef SL/TP:{' '}
@@ -123,6 +153,11 @@ export function PositionDecisionPanel({ pos }: { pos: PositionDecision }) {
           <span className="text-green-400 font-mono">{targets.take_profit != null ? String(targets.take_profit) : '—'}</span>
         </p>
       )}
+
+      <div>
+        <p className="text-gray-500 text-[10px] uppercase tracking-wider mb-2">Al / sat geçmişi</p>
+        <SymbolTradeHistory symbol={pos.symbol} />
+      </div>
 
       {(pos.votes?.length ?? 0) > 0 && (
         <div>

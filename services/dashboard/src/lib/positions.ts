@@ -48,6 +48,13 @@ export type PositionDecision = {
   ai_confidence_pct?: number
   shadow_accounts?: number
   sources_label?: string
+  ladder?: {
+    tier?: number
+    take_profit_pct?: number
+    stop_loss_pct?: number
+    entry_confidence?: number
+    entry_reason?: string
+  }
 }
 
 function priceFromFeatures(raw: string | null): number {
@@ -270,6 +277,7 @@ export async function fetchOpenPositions(redis: Redis): Promise<{
       votes: Array.isArray(votes) ? votes : [],
       trade_action: currentSignal?.trade_action as string | undefined,
       open_reason: openReason,
+      ladder: posObj.ladder as PositionDecision['ladder'],
       regime,
       context_regime: regime,
       ai_confidence_pct: aiConf > 0 ? Math.round(aiConf * 100) : undefined,

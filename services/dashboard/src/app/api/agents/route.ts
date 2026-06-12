@@ -26,6 +26,7 @@ export async function GET(req: Request) {
     pipeline.get(`signal:latest:${symbol}`)
     pipeline.get(`learn:profile:${symbol}`)
     pipeline.get('learn:global:v1')
+    pipeline.get('system:risk_limits:v1')
     const results = await pipeline.exec()
 
     const votesRaw = (safeJson(results?.[0]?.[1] as string | null) ?? []) as Array<Record<string, unknown>>
@@ -36,6 +37,7 @@ export async function GET(req: Request) {
     const liveSignal = safeJson(results?.[5]?.[1] as string | null) as Record<string, unknown> | null
     const learnProfile = safeJson(results?.[6]?.[1] as string | null)
     const learnGlobal = safeJson(results?.[7]?.[1] as string | null)
+    const riskLimitsRaw = safeJson(results?.[8]?.[1] as string | null) as Record<string, unknown> | null
 
     const votes = Array.isArray(votesRaw)
       ? votesRaw.map(v => ({
@@ -73,8 +75,18 @@ export async function GET(req: Request) {
             confidence: liveSignal.confidence,
             trade_action: liveSignal.trade_action,
             has_position: liveSignal.has_position,
+            crisis_level: Number(liveSignal.crisis_level ?? 0),
+            drift_status: String(liveSignal.drift_status ?? 'STABLE'),
+            kelly_fraction: Number(liveSignal.kelly_fraction ?? 0),
+            regime: liveSignal.regime,
           }
         : null,
+      risk_context: {
+        crisis_level: Number(liveSignal?.crisis_level ?? 0),
+        drift_status: String(liveSignal?.drift_status ?? 'STABLE'),
+        kelly_fraction: Number(liveSignal?.kelly_fraction ?? 0),
+        max_position_pct: Number(riskLimitsRaw?.max_position_pct ?? 0.05),
+      },
       learn_profile: learnProfile,
       learn_global: learnGlobal,
     })

@@ -34,9 +34,11 @@ async def process_closed_trade(redis: aioredis.Redis, db, trade_data: dict):
     # Write to memory
     await memory_writer.write(trade_data, result, ctx, redis=redis)
 
+    exit_reason = str(trade_data.get("exit_reason", "") or "")[:200]
     lesson_text = (
         f"{symbol}: {'WIN' if result['was_winner'] else 'LOSS'} "
         f"{result['pnl_pct']:+.2%} — {result['error_category']}"
+        + (f" | {exit_reason}" if exit_reason else "")
     )
     await redis.lpush("activity:feed", json.dumps({
         "type": "autopsy",

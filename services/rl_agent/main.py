@@ -65,8 +65,25 @@ async def train_cycle(redis: aioredis.Redis):
 
         _last_retrain = time.time()
         await redis.set("rl:model_ready", "1", ex=RETRAIN_INTERVAL)
+        await redis.lpush("rl:train:history", json.dumps({
+            "ts": int(time.time()),
+            "buffer_size": len(_feature_buffer),
+            "timesteps": 50_000,
+            "status": "ok",
+        }))
+        await redis.ltrim("rl:train:history", 0, 99)
     except Exception as e:
         log.error(f"PPO training error: {e}")
+        try:
+            await redis.lpush("rl:train:history", json.dumps({
+                "ts": int(time.time()),
+                "buffer_size": len(_feature_buffer),
+                "timesteps": 0,
+                "status": f"error:{str(e)[:120]}",
+            }))
+            await redis.ltrim("rl:train:history", 0, 99)
+        except Exception:
+            pass
 
 
 async def inference_loop(redis: aioredis.Redis):

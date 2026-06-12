@@ -38,15 +38,43 @@ class SignalGenerator:
             total = sum(votes.values())
             confidence = votes[best] / total if total else 0.0
             try:
-                from risk_limits import get_active_limits
+                from risk_limits import get_active_limits, is_paper_unlimited
                 min_conf = get_active_limits().min_signal_confidence
+                paper = is_paper_unlimited()
             except Exception:
                 min_conf = 0.60
+                paper = False
             direction = best if confidence >= min_conf else "flat"
             source = "agent_system"
+            if (direction == "flat" or best == "flat") and features and paper:
+                tech = self._technical_signal(symbol, features, kelly_fraction)
+                if tech and tech.direction != "flat":
+                    direction = tech.direction
+                    confidence = max(confidence, tech.confidence)
+                    source = "agent+technical_paper"
 
         elif features:
-            # ── Technical fallback (no agents / Anthropic key not set) ──────
+            tech = self._technical_signal(symbol, features, kelly_fraction)
+            if tech:
+                return tech
+            return None
+
+        else:
+            return None
+
+        return Signal(
+            symbol=symbol,
+            direction=direction,
+            confidence=round(confidence, 4),
+            kelly_fraction=kelly_fraction,
+            source=source,
+            timestamp=int(time.time() * 1000),
+        )
+
+    def _technical_signal(
+        self, symbol: str, features: dict, kelly_fraction: float
+    ) -> Signal | None:
+            # ── Technical fallback ──────
             rsi = float(features.get("rsi_14", 50) or 50)
             macd_hist = float(features.get("macd_hist", 0) or 0)
             bb_pos = float(features.get("bb_position", 0.5) or 0.5)
@@ -96,29 +124,33 @@ class SignalGenerator:
                 short_score *= 0.6
 
             try:
-                from risk_limits import get_active_limits
+                from risk_limits import get_active_limits, is_paper_unlimited
                 min_conf = get_active_limits().min_signal_confidence
+                paper = is_paper_unlimited()
             except Exception:
                 min_conf = 0.60
+                paper = False
+            if paper:
+                min_conf = min(min_conf, 0.32)
             if long_score >= min_conf and long_score > short_score:
                 direction = "long"
                 confidence = min(0.95, long_score)
             elif short_score >= min_conf and short_score > long_score:
                 direction = "short"
                 confidence = min(0.95, short_score)
+            elif paper and max(long_score, short_score) >= 0.28:
+                direction = "long" if long_score > short_score else "short"
+                confidence = min(0.85, max(long_score, short_score))
             else:
                 direction = "flat"
                 confidence = max(long_score, short_score)
 
             source = "technical"
-        else:
-            return None
-
-        return Signal(
-            symbol=symbol,
-            direction=direction,
-            confidence=round(confidence, 4),
-            kelly_fraction=kelly_fraction,
-            source=source,
-            timestamp=int(time.time() * 1000),
-        )
+            return Signal(
+                symbol=symbol,
+                direction=direction,
+                confidence=round(confidence, 4),
+                kelly_fraction=kelly_fraction,
+                source=source,
+                timestamp=int(time.time() * 1000),
+            )

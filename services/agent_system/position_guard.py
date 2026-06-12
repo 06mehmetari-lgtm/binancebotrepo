@@ -27,6 +27,17 @@ EMERGENCY_LOSS_PCT = float(os.getenv("GUARD_EMERGENCY_LOSS_PCT", "2.5"))
 MIN_HOLD_CONFIDENCE = float(os.getenv("GUARD_MIN_HOLD_CONFIDENCE", "0.45"))
 GUARD_DEBATE_MAX_AGE = float(os.getenv("GUARD_DEBATE_MAX_AGE", "8"))
 GUARD_ACTION_COOLDOWN = float(os.getenv("GUARD_ACTION_COOLDOWN", "30"))
+TAKE_PROFIT_PCT = float(os.getenv("GUARD_TAKE_PROFIT_PCT", "0.5"))
+PAPER_MIN_HOLD_SEC = float(os.getenv("PAPER_MIN_HOLD_SEC", "120"))
+PROFIT_PROTECT_PCT = float(os.getenv("GUARD_PROFIT_PROTECT_PCT", "0.25"))
+TRAIL_MIN_PEAK_PCT = float(os.getenv("GUARD_TRAIL_MIN_PEAK", "1.5"))
+TRAIL_GIVEBACK_PCT = float(os.getenv("GUARD_TRAIL_GIVEBACK_PCT", "0.6"))
+
+
+def _profit_tiers() -> list[float]:
+    raw = os.getenv("GUARD_PROFIT_TIERS", "0.5,2,5,10,25")
+    tiers = sorted({float(x.strip()) for x in raw.split(",") if x.strip()})
+    return tiers or [0.5, 2.0, 5.0, 10.0, 25.0]
 _guard_sem: asyncio.Semaphore | None = None
 _last_close_publish: dict[str, float] = {}
 
@@ -118,6 +129,15 @@ def evaluate_position(
     v_conf = float((verdict or {}).get("confidence", 0) or 0)
     avoid = str((learn or {}).get("avoid_hint", "") or "")
 
+    try:
+        from risk_limits import is_paper_unlimited
+        paper_mode = is_paper_unlimited()
+    except Exception:
+        paper_mode = os.getenv("DRY_RUN", "true").lower() in ("1", "true", "yes")
+
+    entry_time = float(pos.get("entry_time", 0) or 0)
+    hold_sec = time.time() - entry_time if entry_time > 0 else 9999.0
+
     checks: dict = {
         "crisis": crisis,
         "drift": drift,
@@ -144,26 +164,100 @@ def evaluate_position(
             upnl, v_conf, trade_action, checks, time.time(),
         )
 
+    ladder = pos.get("ladder") or {}
+    peak_upnl = float(ladder.get("peak_upnl_pct") or upnl)
+    if upnl > peak_upnl:
+        peak_upnl = upnl
+        checks["peak_upnl_pct"] = round(peak_upnl, 3)
+
+    tp_pct = float(ladder.get("take_profit_pct") or TAKE_PROFIT_PCT)
+    if upnl >= tp_pct:
+        return GuardDecision(
+            symbol, source, direction, "close", "high",
+            f"Kâr hedefi %{tp_pct:.2f} — kademeli çıkış (PnL {upnl:+.2f}%)",
+            upnl, v_conf, trade_action, checks, time.time(),
+        )
+
+    for tier in sorted(_profit_tiers(), reverse=True):
+        if upnl >= tier:
+            return GuardDecision(
+                symbol, source, direction, "close", "high",
+                f"Kâr kademesi %{tier:g} — realize (PnL {upnl:+.2f}%, zirve {peak_upnl:+.2f}%)",
+                upnl, v_conf, trade_action, checks, time.time(),
+            )
+
+    if peak_upnl >= TRAIL_MIN_PEAK_PCT and upnl > PROFIT_PROTECT_PCT:
+        giveback = peak_upnl - upnl
+        if giveback >= TRAIL_GIVEBACK_PCT:
+            return GuardDecision(
+                symbol, source, direction, "close", "high",
+                f"Trailing stop — zirve {peak_upnl:+.2f}% → {upnl:+.2f}% (geri {giveback:.2f}%)",
+                upnl, v_conf, trade_action, checks, time.time(),
+            )
+
+    if upnl > PROFIT_PROTECT_PCT and sig_dir in ("long", "short") and sig_dir != direction and sig_conf >= 0.30:
+        return GuardDecision(
+            symbol, source, direction, "close", "high",
+            f"Sat sinyali + kârda ({upnl:+.2f}%) — {sig_dir.upper()} {sig_conf:.0%}",
+            upnl, v_conf, trade_action, checks, time.time(),
+        )
+
+    if upnl > 0.15 and sig_dir in ("long", "short") and sig_dir != direction and sig_conf >= 0.35:
+        return GuardDecision(
+            symbol, source, direction, "close", "high",
+            f"Sat sinyali + kârda ({upnl:+.2f}%) — {sig_dir.upper()} {sig_conf:.0%}",
+            upnl, v_conf, trade_action, checks, time.time(),
+        )
+
     try:
         from risk_limits import get_active_limits
         flat_close_conf = get_active_limits().min_signal_confidence * 0.92
     except Exception:
         flat_close_conf = 0.55
-    if trade_action == "close" or (
+    flat_exit = trade_action == "close" or (
         sig_dir == "flat" and v_dir == "flat" and v_conf >= flat_close_conf
-    ):
-        return GuardDecision(
-            symbol, source, direction, "close", "high",
-            "AI çıkış (FLAT) — sinyal ve verdict uyumlu",
-            upnl, v_conf, trade_action, checks, time.time(),
-        )
+    )
+    if flat_exit:
+        if upnl > PROFIT_PROTECT_PCT:
+            pass
+        elif paper_mode and hold_sec < PAPER_MIN_HOLD_SEC and upnl > -EMERGENCY_LOSS_PCT:
+            pass
+        elif peak_upnl >= TRAIL_MIN_PEAK_PCT and upnl > 0:
+            return GuardDecision(
+                symbol, source, direction, "close", "high",
+                f"Kâr koruma — zirve {peak_upnl:+.2f}%, çıkış {upnl:+.2f}% (AI FLAT)",
+                upnl, v_conf, trade_action, checks, time.time(),
+            )
+        else:
+            return GuardDecision(
+                symbol, source, direction, "close", "high",
+                "AI çıkış (FLAT) — sinyal ve verdict uyumlu",
+                upnl, v_conf, trade_action, checks, time.time(),
+            )
 
     if v_dir == "flat" and direction in ("long", "short"):
-        return GuardDecision(
-            symbol, source, direction, "close", "high",
-            f"AI FLAT ({v_conf:.0%}) — yön uyumsuz pozisyon kapatılıyor",
-            upnl, v_conf, trade_action, checks, time.time(),
-        )
+        if upnl > PROFIT_PROTECT_PCT:
+            return GuardDecision(
+                symbol, source, direction, "close", "high",
+                f"Kârda sat — AI FLAT ama PnL {upnl:+.2f}% (zirve {peak_upnl:+.2f}%)",
+                upnl, v_conf, trade_action, checks, time.time(),
+            )
+        if paper_mode and v_conf < 0.55:
+            pass
+        elif paper_mode and hold_sec < PAPER_MIN_HOLD_SEC:
+            pass
+        elif peak_upnl >= TRAIL_MIN_PEAK_PCT and upnl > 0:
+            return GuardDecision(
+                symbol, source, direction, "close", "high",
+                f"Kâr koruma — zirve {peak_upnl:+.2f}% (AI FLAT, hâlâ +{upnl:.2f}%)",
+                upnl, v_conf, trade_action, checks, time.time(),
+            )
+        else:
+            return GuardDecision(
+                symbol, source, direction, "close", "high",
+                f"AI FLAT ({v_conf:.0%}) — yön uyumsuz pozisyon kapatılıyor",
+                upnl, v_conf, trade_action, checks, time.time(),
+            )
 
     try:
         from risk_limits import get_active_limits
@@ -319,6 +413,20 @@ async def run_guard_cycle(
 
         pos["source"] = pos.get("source", "oms")
         dec = evaluate_position(symbol, pos, features, context, signal, verdict, learn)
+
+        ladder = pos.get("ladder") or {}
+        peak = float(ladder.get("peak_upnl_pct") or 0)
+        if dec.unrealized_pct > peak and pos.get("source") == "oms":
+            ladder["peak_upnl_pct"] = round(dec.unrealized_pct, 4)
+            pos["ladder"] = ladder
+            try:
+                await redis.set(
+                    f"oms:position:{symbol}",
+                    json.dumps(pos),
+                    ex=86400,
+                )
+            except Exception as e:
+                log.debug("peak_upnl persist %s: %s", symbol, e)
         if pos.get("source") == "shadow":
             dec.shadow_id = str(pos.get("shadow_id", ""))
         decisions.append(dec)

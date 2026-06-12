@@ -18,10 +18,12 @@ function safeJson(raw: string | null): unknown {
   }
 }
 
+export const maxDuration = 30
+
 async function ollamaStatus() {
   try {
     const res = await fetch(`${OLLAMA_URL}/api/tags`, {
-      signal: AbortSignal.timeout(4000),
+      signal: AbortSignal.timeout(2000),
     })
     if (!res.ok) return { ok: false, error: `HTTP ${res.status}`, models: [] as string[] }
     const data = (await res.json()) as { models?: { name?: string }[] }
@@ -110,9 +112,9 @@ export async function GET(req: Request) {
     const firstShadowReady = Boolean(firstShadow?.promotion_ready)
     const immunity = safeJson(immunityRaw) as Record<string, unknown> | null
 
-    const profileKeys = await scanKeys(redis, 'learn:profile:*')
+    const profileKeys = (await scanKeys(redis, 'learn:profile:*')).slice(0, 80)
     const pipeline = redis.pipeline()
-    for (const key of profileKeys.slice(0, 120)) pipeline.get(key)
+    for (const key of profileKeys) pipeline.get(key)
     pipeline.get(`learn:profile:${focusSymbol}`)
     pipeline.get(`signal:latest:${focusSymbol}`)
     pipeline.get(`agents:verdict:${focusSymbol}`)
@@ -143,9 +145,13 @@ export async function GET(req: Request) {
     const focusContext = safeJson(exec?.[off + 4]?.[1] as string | null)
     const focusLessonsRaw = (exec?.[off + 5]?.[1] as string[]) ?? []
 
+    const lessonSymbols = symbols.slice(0, 25)
+    const lessonPipe = redis.pipeline()
+    for (const sym of lessonSymbols) lessonPipe.lrange(`trade:lessons:${sym}`, 0, 2)
+    const lessonExec = await lessonPipe.exec()
     const allLessons: { symbol: string; text: string; ts: number; source?: string }[] = []
-    for (const sym of symbols.slice(0, 60)) {
-      const rows = await redis.lrange(`trade:lessons:${sym}`, 0, 2)
+    lessonSymbols.forEach((sym, i) => {
+      const rows = (lessonExec?.[i]?.[1] as string[]) ?? []
       for (const row of rows) {
         const les = safeJson(row) as { text?: string; ts?: number; source?: string } | null
         if (les?.text) {
@@ -157,7 +163,7 @@ export async function GET(req: Request) {
           })
         }
       }
-    }
+    })
     allLessons.sort((a, b) => b.ts - a.ts)
 
     const activity = activityRaw

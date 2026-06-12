@@ -126,6 +126,7 @@ class PaperTrader:
                 "pnl_pct": round(pnl_pct, 6),
                 "pnl_usdt": round(exit_value - pos["entry_capital"], 4),
                 "hold_seconds": round(time.time() - pos["entry_time"], 1),
+                "closed_at": round(time.time(), 3),
             }
             p.trades.append(trade)
             del p.positions[symbol]

@@ -1,11 +1,9 @@
 'use client'
 import { useEffect, useState, Fragment, useCallback } from 'react'
-import {
-  XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
-  ReferenceLine, Area, AreaChart,
-} from 'recharts'
 import { PositionDecisionPanel } from '@/components/PositionDecisionPanel'
 import RiskLimitsEditor from '@/components/RiskLimitsEditor'
+import { LiveEquityChart, type CurvePoint } from '@/components/LiveEquityChart'
+import { useStreamInvalidate } from '@/hooks/useStream'
 import type { PositionDecision } from '@/lib/positions'
 
 type Position = PositionDecision
@@ -24,12 +22,11 @@ interface PositionData {
   halt_reason?: string | null
 }
 
-interface CurvePoint { ts: number; equity: number; pnl: number; symbol: string; direction: string }
-
 interface PortfolioData {
   curve: CurvePoint[]
   stats: {
-    start_equity: number; current_equity: number; total_pnl: number; total_pnl_pct: number
+    start_equity: number; current_equity: number; realized_equity?: number; unrealized_usdt?: number
+    total_pnl: number; total_pnl_pct: number
     daily_pnl: number; total_trades: number; win_rate: number; avg_win_usdt: number
     avg_loss_usdt: number; profit_factor: number | null; max_drawdown_pct: number
   }
@@ -93,59 +90,6 @@ function EmptyState() {
   )
 }
 
-function EquityCurve({ curve }: { curve: CurvePoint[] }) {
-  if (curve.length < 2) {
-    return (
-      <div className="h-40 flex items-center justify-center text-gray-600 text-sm">
-        Equity curve will appear after first closed trade
-      </div>
-    )
-  }
-  const start = curve[0]?.equity ?? 10000
-  const isPositive = (curve[curve.length - 1]?.equity ?? start) >= start
-  const gradId = 'eqGrad'
-
-  const CustomTooltip = ({ active, payload }: { active?: boolean; payload?: { payload: CurvePoint }[] }) => {
-    if (!active || !payload?.length) return null
-    const d = payload[0].payload
-    const pnl = d.equity - start
-    return (
-      <div className="bg-gray-900 border border-gray-700 rounded-lg p-2.5 text-xs shadow-xl">
-        <p className="text-gray-400">{fmtTs(d.ts)}</p>
-        <p className="text-white font-bold font-mono">${d.equity.toLocaleString('en-US', { maximumFractionDigits: 2 })}</p>
-        <p className={`font-mono font-bold ${pnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-          {pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}
-        </p>
-        {d.symbol && <p className="text-gray-500 mt-0.5">{d.symbol} {d.direction}</p>}
-      </div>
-    )
-  }
-
-  return (
-    <ResponsiveContainer width="100%" height={180}>
-      <AreaChart data={curve} margin={{ top: 4, right: 4, left: 0, bottom: 0 }}>
-        <defs>
-          <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
-            <stop offset="5%" stopColor={isPositive ? '#16a34a' : '#dc2626'} stopOpacity={0.25} />
-            <stop offset="95%" stopColor={isPositive ? '#16a34a' : '#dc2626'} stopOpacity={0.02} />
-          </linearGradient>
-        </defs>
-        <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" vertical={false} />
-        <XAxis dataKey="ts" tickFormatter={fmtTs} tick={{ fill: '#6b7280', fontSize: 10 }}
-          tickLine={false} axisLine={false} interval="preserveStartEnd" />
-        <YAxis tick={{ fill: '#6b7280', fontSize: 10 }} tickLine={false} axisLine={false}
-          tickFormatter={v => `$${(v / 1000).toFixed(1)}K`} width={52} domain={['auto', 'auto']} />
-        <Tooltip content={<CustomTooltip />} />
-        <ReferenceLine y={start} stroke="#374151" strokeDasharray="4 4" strokeWidth={1} />
-        <Area
-          type="monotone" dataKey="equity" stroke={isPositive ? '#16a34a' : '#dc2626'}
-          strokeWidth={2} fill={`url(#${gradId})`} dot={false} activeDot={{ r: 4, fill: isPositive ? '#16a34a' : '#dc2626' }}
-        />
-      </AreaChart>
-    </ResponsiveContainer>
-  )
-}
-
 export default function PositionsPage() {
   const [data, setData] = useState<PositionData | null>(null)
   const [portfolio, setPortfolio] = useState<PortfolioData | null>(null)
@@ -155,20 +99,51 @@ export default function PositionsPage() {
   const [emergencyMsg, setEmergencyMsg] = useState('')
   const [expandedSymbol, setExpandedSymbol] = useState<string | null>(null)
   const [maxOpenLimit, setMaxOpenLimit] = useState(3)
+  const [portfolioValue, setPortfolioValue] = useState(10000)
+  const [maxPositionPct, setMaxPositionPct] = useState(0.05)
+  const [streamLive, setStreamLive] = useState(false)
+  const [loadError, setLoadError] = useState('')
 
   const fetchData = useCallback(async () => {
     try {
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), 20000)
       const [posRes, portRes] = await Promise.all([
-        fetch('/api/positions'),
-        fetch('/api/portfolio'),
+        fetch('/api/positions', { signal: controller.signal, cache: 'no-store' }),
+        fetch('/api/portfolio', { signal: controller.signal, cache: 'no-store' }),
       ])
-      if (posRes.ok) setData(await posRes.json())
+      clearTimeout(timer)
+      if (posRes.ok) {
+        setData(await posRes.json())
+        setLoadError('')
+      } else {
+        const body = await posRes.json().catch(() => ({}))
+        setLoadError((body as { error?: string }).error ?? `positions API ${posRes.status}`)
+      }
       if (portRes.ok) setPortfolio(await portRes.json())
       setLastUpdate(new Date().toLocaleTimeString())
-    } catch { /* retry */ } finally {
+    } catch (e) {
+      setLoadError(e instanceof Error && e.name === 'AbortError'
+        ? 'API zaman aşımı — Redis kontrol edin'
+        : String(e))
+    } finally {
       setLoading(false)
     }
   }, [])
+
+  const onStreamEvent = useCallback(() => {
+    fetchData()
+  }, [fetchData])
+
+  const { connected: sseConnected } = useStreamInvalidate({
+    hints: ['trade_closed', 'portfolio', 'guard', 'emergency'],
+    onEvent: onStreamEvent,
+    debounceMs: 200,
+  })
+
+  useEffect(() => {
+    setStreamLive(sseConnected)
+  }, [sseConnected])
 
   useEffect(() => {
     fetchData()
@@ -176,6 +151,8 @@ export default function PositionsPage() {
       .then(r => r.json())
       .then(d => {
         if (d.limits?.max_open_positions) setMaxOpenLimit(d.limits.max_open_positions)
+        if (d.limits?.max_position_pct) setMaxPositionPct(d.limits.max_position_pct)
+        if (d.limits?.portfolio_value_usd) setPortfolioValue(d.limits.portfolio_value_usd)
       })
       .catch(() => {})
     const t = setInterval(fetchData, 5000)
@@ -241,10 +218,29 @@ export default function PositionsPage() {
     }
   }
 
-  if (loading) return (
+  if (loading && !data && !loadError) return (
     <div className="flex items-center justify-center mt-32 gap-3 text-gray-500">
       <span className="animate-spin text-orange-400">⚡</span>
-      <span>Loading positions...</span>
+      <span>Pozisyonlar yükleniyor…</span>
+    </div>
+  )
+
+  if (!data && loadError) return (
+    <div className="max-w-lg mx-auto mt-20 space-y-4 text-center">
+      <p className="text-red-400 font-bold">Pozisyonlar yüklenemedi</p>
+      <p className="text-gray-500 text-sm font-mono">{loadError}</p>
+      <button
+        type="button"
+        onClick={() => { setLoading(true); fetchData() }}
+        className="px-4 py-2 rounded-lg bg-orange-800 text-white text-sm font-bold"
+      >
+        Tekrar dene
+      </button>
+      <p className="text-xs text-gray-600 text-left bg-gray-900 border border-gray-800 rounded-lg p-3">
+        Al/sat için pipeline çalışmalı: data_ingestion, feature_engine, signal_engine, oms, shadow_system.
+        <br />
+        <code className="text-gray-400">cd ~/prometheus && bash scripts/server-deploy-full.sh</code>
+      </p>
     </div>
   )
 
@@ -294,7 +290,10 @@ export default function PositionsPage() {
           >
             {emergencyBusy ? '⏳...' : '⟳ İşlem Yeniden Başlat'}
           </button>
-          <span className="text-xs text-gray-600">{lastUpdate} · 5s</span>
+          <span className="text-xs text-gray-600 flex items-center gap-1.5">
+            <span className={`inline-block w-1.5 h-1.5 rounded-full ${streamLive ? 'bg-green-400 animate-pulse' : 'bg-gray-600'}`} />
+            {lastUpdate} · {streamLive ? 'canlı' : '5s'}
+          </span>
         </div>
       </div>
 
@@ -343,15 +342,23 @@ export default function PositionsPage() {
       {/* Portfolio equity curve */}
       <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
         <div className="px-4 py-3 border-b border-gray-800 flex items-center justify-between flex-wrap gap-2">
-          <h2 className="text-blue-400 font-semibold text-sm uppercase tracking-wider">📈 Equity Curve</h2>
+          <h2 className="text-blue-400 font-semibold text-sm uppercase tracking-wider">📈 Equity Curve (canlı)</h2>
           {stats && (
-            <div className="flex items-center gap-4 text-xs">
+            <div className="flex items-center gap-4 text-xs flex-wrap">
               <span className="text-gray-500">
-                Start: <span className="text-gray-300 font-mono">${stats.start_equity.toLocaleString()}</span>
+                Başlangıç: <span className="text-gray-300 font-mono">${stats.start_equity.toLocaleString()}</span>
               </span>
               <span className="text-gray-500">
-                Now: <span className="text-white font-bold font-mono">${stats.current_equity.toLocaleString('en-US', { maximumFractionDigits: 2 })}</span>
+                Şimdi: <span className="text-white font-bold font-mono">${stats.current_equity.toLocaleString('en-US', { maximumFractionDigits: 2 })}</span>
               </span>
+              {stats.unrealized_usdt != null && (
+                <span className="text-gray-500">
+                  Gerçekleşmemiş:{' '}
+                  <span className={stats.unrealized_usdt >= 0 ? 'text-green-400' : 'text-red-400'}>
+                    {stats.unrealized_usdt >= 0 ? '+' : ''}${stats.unrealized_usdt.toFixed(2)}
+                  </span>
+                </span>
+              )}
               <span className={stats.total_pnl >= 0 ? 'text-green-400 font-bold' : 'text-red-400 font-bold'}>
                 {stats.total_pnl >= 0 ? '+' : ''}${stats.total_pnl.toFixed(2)} ({stats.total_pnl_pct >= 0 ? '+' : ''}{stats.total_pnl_pct.toFixed(2)}%)
               </span>
@@ -359,7 +366,7 @@ export default function PositionsPage() {
           )}
         </div>
         <div className="p-4">
-          <EquityCurve curve={curve} />
+          <LiveEquityChart curve={curve} startEquity={stats?.start_equity ?? 10000} />
         </div>
         {stats && stats.total_trades > 0 && (
           <div className="px-4 pb-4 grid grid-cols-2 sm:grid-cols-4 gap-3">
@@ -392,15 +399,19 @@ export default function PositionsPage() {
         <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 space-y-2">
           <div className="flex justify-between text-xs text-gray-400">
             <span>Capital Exposed</span>
-            <span>${totalExposed.toFixed(0)} / $10,000 portfolio (max $500)</span>
+            <span>
+              ${totalExposed.toFixed(0)} / ${portfolioValue.toLocaleString()} portföy (max ${(portfolioValue * maxPositionPct).toFixed(0)}/pozisyon)
+            </span>
           </div>
           <div className="h-2 bg-gray-700 rounded-full overflow-hidden">
             <div
               className="h-full bg-orange-500 rounded-full transition-all"
-              style={{ width: `${Math.min(totalExposed / 500 * 100, 100)}%` }}
+              style={{ width: `${Math.min(totalExposed / portfolioValue * 100, 100)}%` }}
             />
           </div>
-          <p className="text-xs text-gray-600">{(totalExposed / 10000 * 100).toFixed(2)}% of portfolio · Max 5% per position</p>
+          <p className="text-xs text-gray-600">
+            {(totalExposed / portfolioValue * 100).toFixed(2)}% portföy · Max {(maxPositionPct * 100).toFixed(0)}% / pozisyon
+          </p>
         </div>
       )}
 

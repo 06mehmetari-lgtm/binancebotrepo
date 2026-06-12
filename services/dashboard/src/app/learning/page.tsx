@@ -7,6 +7,8 @@ import {
   stageColor,
   type LearningTab,
 } from '@/lib/learning-hub'
+import { LearningMetricsChart } from '@/components/LearningMetricsChart'
+import { useStreamInvalidate } from '@/hooks/useStream'
 
 type HubData = {
   server_time: number
@@ -84,26 +86,69 @@ export default function LearningPage() {
   const [cmdMsg, setCmdMsg] = useState('')
   const [cmdBusy, setCmdBusy] = useState(false)
   const [lastUpdate, setLastUpdate] = useState('')
+  const [loadError, setLoadError] = useState('')
+  const [streamLive, setStreamLive] = useState(false)
+  const [metrics, setMetrics] = useState<{
+    neat_by_time: { ts: number; avg_fitness: number; count?: number }[]
+    rl: { ts: number; buffer_size: number; timesteps: number; status: string }[]
+    win_rate_trend: { ts: number; win_rate: number; trade_n: number }[]
+    summary?: { current_win_rate: number; total_trades: number; rl_train_runs: number }
+  } | null>(null)
+
+  const loadMetrics = useCallback(async () => {
+    try {
+      const res = await fetch('/api/learning/metrics')
+      if (res.ok) setMetrics(await res.json())
+    } catch {
+      /* retry */
+    }
+  }, [])
 
   const load = useCallback(async () => {
     try {
-      const res = await fetch(`/api/learning?symbol=${encodeURIComponent(symbol)}`)
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), 25000)
+      const res = await fetch(`/api/learning?symbol=${encodeURIComponent(symbol)}`, {
+        signal: controller.signal,
+        cache: 'no-store',
+      })
+      clearTimeout(timer)
       if (res.ok) {
         setData(await res.json())
+        setLoadError('')
         setLastUpdate(new Date().toLocaleTimeString('tr-TR'))
+      } else {
+        const body = await res.json().catch(() => ({}))
+        setLoadError((body as { error?: string }).error ?? `API hata ${res.status}`)
       }
-    } catch {
-      /* retry */
+    } catch (e) {
+      setLoadError(e instanceof Error && e.name === 'AbortError'
+        ? 'API zaman aşımı (25s) — Redis veya Ollama yavaş'
+        : String(e))
     } finally {
       setLoading(false)
     }
   }, [symbol])
 
+  const onStream = useCallback(() => {
+    load()
+    loadMetrics()
+  }, [load, loadMetrics])
+
+  const { connected } = useStreamInvalidate({
+    hints: ['learn', 'trade_closed', 'signal'],
+    onEvent: onStream,
+    debounceMs: 400,
+  })
+
+  useEffect(() => { setStreamLive(connected) }, [connected])
+
   useEffect(() => {
     load()
-    const t = setInterval(load, 3000)
+    loadMetrics()
+    const t = setInterval(() => { load(); loadMetrics() }, 3000)
     return () => clearInterval(t)
-  }, [load])
+  }, [load, loadMetrics])
 
   const runCommand = async (
     action: string,
@@ -127,7 +172,7 @@ export default function LearningPage() {
     }
   }
 
-  if (loading && !data) {
+  if (loading && !data && !loadError) {
     return (
       <div className="flex items-center justify-center min-h-[50vh] gap-3 text-gray-500">
         <span className="animate-pulse text-purple-400 text-2xl">🤖</span>
@@ -136,7 +181,27 @@ export default function LearningPage() {
     )
   }
 
-  const d = data!
+  if (!data) {
+    return (
+      <div className="max-w-lg mx-auto mt-20 space-y-4 text-center">
+        <p className="text-red-400 font-bold">Öğrenme merkezi yüklenemedi</p>
+        <p className="text-gray-500 text-sm">{loadError || 'Redis bağlantısı veya API hatası'}</p>
+        <button
+          type="button"
+          onClick={() => { setLoading(true); load() }}
+          className="px-4 py-2 rounded-lg bg-purple-800 text-white text-sm font-bold"
+        >
+          Tekrar dene
+        </button>
+        <p className="text-xs text-gray-600">
+          Sunucuda: <code className="text-gray-400">docker compose ps</code> ve{' '}
+          <code className="text-gray-400">docker compose logs dashboard --tail 30</code>
+        </p>
+      </div>
+    )
+  }
+
+  const d = data
 
   return (
     <div className="space-y-4 max-w-[1600px] mx-auto">
@@ -156,7 +221,10 @@ export default function LearningPage() {
             className="bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white w-36 font-mono"
             placeholder="BTCUSDT"
           />
-          <span className="text-xs text-gray-600">Güncelleme: {lastUpdate}</span>
+          <span className="text-xs text-gray-600 flex items-center gap-1.5">
+            <span className={`inline-block w-1.5 h-1.5 rounded-full ${streamLive ? 'bg-green-400 animate-pulse' : 'bg-gray-600'}`} />
+            Güncelleme: {lastUpdate} · {streamLive ? 'SSE' : '3s'}
+          </span>
           <span
             className={`text-xs font-bold px-2 py-1 rounded border ${
               d.learning.engine_active
@@ -383,6 +451,22 @@ export default function LearningPage() {
       )}
 
       {tab === 'stream' && (
+        <div className="space-y-4">
+          <section className="bg-gray-900 border border-gray-800 rounded-xl p-5">
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="text-purple-400 font-bold text-sm">📈 Öğrenme Metrikleri (epoch / fitness / win rate)</h2>
+              {metrics?.summary && (
+                <span className="text-xs text-gray-500">
+                  WR: {metrics.summary.current_win_rate.toFixed(1)}% · {metrics.summary.total_trades} trade · {metrics.summary.rl_train_runs} PPO run
+                </span>
+              )}
+            </div>
+            <LearningMetricsChart
+              neatByTime={metrics?.neat_by_time ?? []}
+              rl={metrics?.rl ?? []}
+              winRateTrend={metrics?.win_rate_trend ?? []}
+            />
+          </section>
         <div className="grid lg:grid-cols-3 gap-4">
           <section className="lg:col-span-1 bg-gray-900 border border-gray-800 rounded-xl p-5">
             <h2 className="text-green-400 font-bold text-sm mb-3">Servis nabzı</h2>
@@ -419,6 +503,7 @@ export default function LearningPage() {
               ))}
             </div>
           </section>
+        </div>
         </div>
       )}
 

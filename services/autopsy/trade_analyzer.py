@@ -40,8 +40,16 @@ class TradeAnalyzer:
         }
 
     def _categorize(self, trade: dict, ctx: dict, pnl_pct: float, hold_hours: float) -> str:
+        reason = str(trade.get("exit_reason", "") or "")
         if pnl_pct > 0:
+            if any(x in reason for x in ("Kâr kademesi", "Kâr hedefi", "Trailing", "Kârda sat")):
+                return "PROFIT_TAKE"
             return "WIN"
+        if "AI FLAT" in reason and hold_hours < 0.05:
+            return "EARLY_FLAT_EXIT"
+        peak = float(trade.get("peak_upnl_pct") or 0)
+        if peak > 1.0 and pnl_pct <= 0:
+            return "MISSED_PEAK"
         drift = ctx.get("drift_status", "STABLE")
         if drift in ("DRIFTING", "SHOCK"):
             return "DRIFT_IGNORED"
