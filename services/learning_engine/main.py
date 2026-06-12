@@ -17,7 +17,7 @@ import redis.asyncio as aioredis
 
 from behavior_tracker import SymbolLearner, TickSample
 from lesson_writer import persist_global, persist_profile
-from llm_synthesizer import synthesize_coin_insight
+from llm_synthesizer import synthesize_coin_insight, synthesize_position_track
 
 logging.basicConfig(
     level=logging.INFO,
@@ -181,13 +181,46 @@ class LearningEngine:
             await redis.ltrim(f"trade:market_state:{symbol}", 0, 49)
         log.info(f"[learn] trade_closed {symbol} {direction} pnl={pnl:+.2%} lessons={len(lessons)}")
 
+    async def on_position_track(self, redis: aioredis.Redis, payload: dict):
+        symbol = str(payload.get("symbol", "")).upper()
+        if not symbol:
+            return
+        mismatch = payload.get("mismatch") or {}
+        tick = payload.get("tick") or {}
+        throttle_key = f"position:llm:throttle:{symbol}"
+        if await redis.get(throttle_key):
+            return
+        await redis.set(throttle_key, "1", ex=120)
+
+        insight = synthesize_position_track(symbol, mismatch, tick)
+        lesson_text = (
+            f"Plan sapması {mismatch.get('pct', 0):.2f}% — "
+            f"canlı {tick.get('price')} vs plan {tick.get('planned_price')}"
+        )
+        if insight:
+            lesson_text = f"{insight.get('lesson', lesson_text)} | Aksiyon: {insight.get('action', 'hold')}"
+        await redis.lpush(
+            f"trade:lessons:{symbol}",
+            json.dumps({"text": lesson_text, "ts": time.time(), "source": "position_track_llm"}),
+        )
+        await redis.ltrim(f"trade:lessons:{symbol}", 0, 49)
+        profile_raw = await redis.get(f"learn:profile:{symbol}")
+        if profile_raw and insight:
+            try:
+                profile = json.loads(profile_raw)
+                profile["position_track_insight"] = insight
+                await persist_profile(redis, profile, [lesson_text])
+            except (json.JSONDecodeError, TypeError):
+                pass
+        log.info(f"[learn] position_track {symbol} sev={mismatch.get('severity')} llm={bool(insight)}")
+
 
 async def pubsub_listener(engine: LearningEngine, redis_cmd: aioredis.Redis):
     """Dedicated pubsub connection — features + trade_closed on one listener."""
     redis_sub = await aioredis.from_url(REDIS_URL)
     pubsub = redis_sub.pubsub()
     await pubsub.psubscribe("ch:features:*")
-    await pubsub.subscribe("ch:trade_closed")
+    await pubsub.subscribe("ch:trade_closed", "ch:position_track")
     log.info("learning_engine: pubsub (features + trade_closed)")
     sem = asyncio.Semaphore(int(os.getenv("LEARNING_CONCURRENCY", "80")))
 
@@ -210,8 +243,17 @@ async def pubsub_listener(engine: LearningEngine, redis_cmd: aioredis.Redis):
                         sym = ch.split(":")[-1] if ":" in ch else sym
                     await _ingest(str(sym).upper())
                 elif mtype == "message":
-                    trade = json.loads(msg["data"])
-                    await engine.on_trade_closed(redis_cmd, trade)
+                    ch = msg.get("channel", b"")
+                    if isinstance(ch, bytes):
+                        ch = ch.decode()
+                    raw = msg.get("data")
+                    if isinstance(raw, bytes):
+                        raw = raw.decode()
+                    if ch == "ch:position_track":
+                        await engine.on_position_track(redis_cmd, json.loads(raw))
+                    else:
+                        trade = json.loads(raw)
+                        await engine.on_trade_closed(redis_cmd, trade)
             except Exception as e:
                 log.debug(f"pubsub: {e}")
     finally:

@@ -259,7 +259,7 @@ export default function PositionsPage() {
         <div>
           <h1 className="text-white font-bold text-base">Portfolio — Paper Trading</h1>
           <p className="text-gray-500 text-xs mt-0.5">
-            OMS + Shadow · AI koruyucu ~1s · öğrenme açık pozisyonlarda öncelikli
+            OMS + Shadow · 3&apos;lü grafik 400ms · plan/canlı/fark/tahmin · Ollama öğrenme
           </p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">

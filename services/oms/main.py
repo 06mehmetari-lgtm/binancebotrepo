@@ -463,11 +463,19 @@ async def process_signal(redis: aioredis.Redis, symbol: str):
         or signal.get("stop_loss_pct")
         or os.getenv("PAPER_STOP_LOSS_PCT", "1.5")
     )
+    trade_plan: dict = {}
+    try:
+        from position_plan import build_entry_plan
+
+        trade_plan = build_entry_plan(price, direction, signal)
+    except ImportError:
+        pass
     # Track the paper/live position
     await redis.set(f"oms:position:{symbol}", json.dumps({
         "symbol": symbol, "direction": direction,
         "size_usd": size_usd, "entry_price": price,
         "entry_time": time.time(), "entry_signal": signal,
+        "trade_plan": trade_plan,
         "ladder": {
             "tier": 1,
             "initial_size_usd": size_usd,

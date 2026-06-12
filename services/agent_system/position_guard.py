@@ -333,6 +333,79 @@ def _dedupe_positions(positions: list[dict]) -> list[dict]:
     return out
 
 
+async def _record_position_tick(
+    redis: aioredis.Redis,
+    symbol: str,
+    pos: dict,
+    features: dict,
+    signal: dict | None,
+    dec: GuardDecision,
+) -> None:
+    """Salise tick + plan uyumsuzluk — dashboard 3'lü grafik + Ollama öğrenme."""
+    try:
+        from position_plan import (
+            build_forecast_curve,
+            mismatch_score,
+            planned_price_now,
+        )
+    except ImportError:
+        return
+
+    entry = float(pos.get("entry_price") or 0)
+    entry_ts = float(pos.get("entry_time") or 0)
+    direction = str(pos.get("direction") or "long")
+    price = float(features.get("close") or features.get("last_price") or 0)
+    if price <= 0 or entry <= 0:
+        return
+
+    trade_plan = pos.get("trade_plan") or {}
+    if not trade_plan and pos.get("entry_signal"):
+        try:
+            from position_plan import build_entry_plan
+
+            trade_plan = build_entry_plan(entry, direction, pos["entry_signal"])
+            pos["trade_plan"] = trade_plan
+            await redis.set(f"oms:position:{symbol}", json.dumps(pos), ex=86400)
+        except Exception:
+            trade_plan = {}
+
+    planned_p = planned_price_now(trade_plan, entry_ts, direction, entry)
+    forecast = build_forecast_curve(price, direction, signal)
+    forecast_p = float(forecast[0]["price"]) if forecast else price
+    mm = mismatch_score(price, planned_p, forecast_p)
+
+    tick = {
+        "ts_ms": int(time.time() * 1000),
+        "ts": time.time(),
+        "price": price,
+        "upnl_pct": dec.unrealized_pct,
+        "planned_price": planned_p,
+        "forecast_price": forecast_p,
+        "mismatch": mm,
+    }
+    pipe = redis.pipeline()
+    pipe.lpush(f"oms:ticks:{symbol}", json.dumps(tick))
+    pipe.ltrim(f"oms:ticks:{symbol}", 0, 599)
+    pipe.set(
+        f"oms:position:track:{symbol}",
+        json.dumps({**tick, "severity": mm["severity"], "symbol": symbol}),
+        ex=300,
+    )
+    await pipe.execute()
+
+    if mm["severity"] in ("warn", "critical"):
+        lesson = (
+            f"{symbol} plan sapması {mm['pct']:.2f}% — canlı {price:.6f} "
+            f"plan {planned_p:.6f} — {dec.reason[:100]}"
+        )
+        await redis.lpush(f"trade:lessons:{symbol}", json.dumps({"text": lesson, "ts": time.time()}))
+        await redis.ltrim(f"trade:lessons:{symbol}", 0, 49)
+        await redis.publish(
+            "ch:position_track",
+            json.dumps({"symbol": symbol, "mismatch": mm, "tick": tick}),
+        )
+
+
 async def list_open_positions(redis: aioredis.Redis) -> list[dict]:
     raw = await redis.get("portfolio:state:v1")
     if raw:
@@ -413,6 +486,9 @@ async def run_guard_cycle(
 
         pos["source"] = pos.get("source", "oms")
         dec = evaluate_position(symbol, pos, features, context, signal, verdict, learn)
+
+        if pos.get("source") == "oms":
+            await _record_position_tick(redis, symbol, pos, features, signal, dec)
 
         ladder = pos.get("ladder") or {}
         peak = float(ladder.get("peak_upnl_pct") or 0)

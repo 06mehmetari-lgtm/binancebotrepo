@@ -2,6 +2,7 @@
 
 import type { PositionDecision } from '@/lib/positions'
 import { SymbolTradeHistory } from '@/components/SymbolTradeHistory'
+import { PositionTripleChart } from '@/components/PositionTripleChart'
 
 const DIR_STYLE: Record<string, string> = {
   long: 'text-green-400 bg-green-900/30 border-green-800/50',
@@ -51,6 +52,8 @@ export function PositionDecisionPanel({ pos }: { pos: PositionDecision }) {
           <span className="text-gray-500">Giriş motoru: <span className="text-blue-400">{String(entry.source)}</span></span>
         )}
       </div>
+
+      <PositionTripleChart symbol={pos.symbol} />
 
       {pos.guard && (
         <div className={`rounded-lg p-3 border ${

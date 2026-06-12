@@ -65,3 +65,31 @@ def synthesize_coin_insight(symbol: str, profile: dict) -> dict | None:
         data["llm_provider"] = provider or "llm"
         return data
     return None
+
+
+def synthesize_position_track(symbol: str, mismatch: dict, tick: dict) -> dict | None:
+    """Ollama/yerel LLM — açık pozisyon plan sapması dersi (kâr odaklı)."""
+    sev = mismatch.get("severity", "ok")
+    if sev not in ("warn", "critical"):
+        return None
+
+    prompt = (
+        f"Sen kripto pozisyon izleme koçusun. {symbol} açık pozisyonda plan-canlı sapma var.\n"
+        f"Sapma: {mismatch.get('pct', 0):.2f}% | vs plan: {mismatch.get('vs_planned', 0):+.3f}% | "
+        f"PnL: {tick.get('upnl_pct', 0):+.2f}% | canlı: {tick.get('price')} plan: {tick.get('planned_price')}\n"
+        "Kâr koruma ve zarar minimize odaklı Türkçe 2 cümle + tek aksiyon (tut/kısmi sat/sıkı stop).\n"
+        'Yanıt JSON: {"lesson":"...","action":"hold|tighten_stop|take_partial|close","profit_focus":"..."}'
+    )
+    raw, provider = chat_completion(
+        prompt,
+        max_tokens=200,
+        temperature=0.25,
+        model_pool="learning",
+    )
+    if not raw:
+        return None
+    data = _parse_json_response(raw)
+    if data and data.get("lesson"):
+        data["llm_provider"] = provider or "ollama"
+        return data
+    return None
