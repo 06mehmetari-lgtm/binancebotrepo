@@ -104,8 +104,7 @@ docker compose up -d redis postgres timescaledb qdrant ollama 2>&1 | tail -15
 sleep 8
 docker compose exec -T redis redis-cli -a "$REDIS_PW" --no-auth-warning PING
 
-# ── 4) Build ───────────────────────────────────
-echo "=== [4/10] Docker build ==="
+# ── 4) Build (servis servis — canli cikti, takilmis gibi gorunmez) ─
 BUILD_SERVICES_FULL=(
   data_ingestion sentiment macro feature_engine context_engine
   agent_system signal_engine learning_engine shadow_system oms immunity_system
@@ -124,15 +123,34 @@ fi
 CACHE_FLAG=""
 [ "$NO_CACHE" = "1" ] && CACHE_FLAG="--no-cache"
 
+TOTAL=${#BUILD_LIST[@]}
+echo "=== [4/10] Docker build: $TOTAL servis (servis basina 2-5 dk, TOPLAM ~15-45 dk) ==="
 echo "build start $(date -Iseconds)" > "$BUILD_LOG"
-set +e
-docker compose build $CACHE_FLAG "${BUILD_LIST[@]}" >> "$BUILD_LOG" 2>&1
-BUILD_EXIT=$?
+echo "Mod=$MODE servisler=${BUILD_LIST[*]}" >> "$BUILD_LOG"
+
+BUILD_EXIT=0
+IDX=0
+for svc in "${BUILD_LIST[@]}"; do
+  IDX=$((IDX + 1))
+  echo ""
+  echo ">>> BUILD $IDX/$TOTAL: $svc — $(date +%H:%M:%S)"
+  echo ">>> BUILD $IDX/$TOTAL: $svc" >> "$BUILD_LOG"
+  set +e
+  # tee: hem ekrana hem loga (SSH uzerinden canli gorunur)
+  docker compose build --progress=plain $CACHE_FLAG "$svc" 2>&1 | tee -a "$BUILD_LOG"
+  SVC_EXIT=${PIPESTATUS[0]}
+  set -e
+  if [ "$SVC_EXIT" -ne 0 ]; then
+    echo "UYARI: $svc build exit $SVC_EXIT"
+    echo "SVC_FAIL:$svc:$SVC_EXIT" >> "$BUILD_LOG"
+    BUILD_EXIT=$SVC_EXIT
+  else
+    echo "OK: $svc build tamam ($IDX/$TOTAL)"
+  fi
+done
 echo "BUILD_EXIT:$BUILD_EXIT" >> "$BUILD_LOG"
-set -e
-tail -30 "$BUILD_LOG"
 if [ "$BUILD_EXIT" -ne 0 ]; then
-  echo "UYARI: build exit $BUILD_EXIT — devam ediliyor (eski image ile)"
+  echo "UYARI: bazi servisler build edilemedi — mevcut image ile devam"
 fi
 
 # ── 5) Paper / risk scriptleri ─────────────────

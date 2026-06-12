@@ -83,6 +83,7 @@ def stream_command(client, cmd: str, timeout: int) -> tuple[int, str]:
     deadline = time.time() + timeout
     last_print = time.time()
 
+    last_data = time.time()
     while not channel.exit_status_ready():
         if time.time() > deadline:
             raise TimeoutError(f"Komut zaman aşımı ({timeout}s)")
@@ -90,13 +91,19 @@ def stream_command(client, cmd: str, timeout: int) -> tuple[int, str]:
             chunk = channel.recv(16384)
             chunks.append(chunk)
             text = chunk.decode("utf-8", errors="replace")
-            if time.time() - last_print > 2:
-                tail = text[-500:] if len(text) > 500 else text
-                if tail.strip():
-                    print(tail, end="", flush=True)
-                last_print = time.time()
+            if text:
+                print(text, end="", flush=True)
+                last_data = time.time()
         else:
-            time.sleep(0.5)
+            # Uzun build adiminda heartbeat (takilmadi mesaji)
+            if time.time() - last_data > 90:
+                elapsed = int(time.time() - (deadline - timeout))
+                print(
+                    f"\n... hala calisiyor ({elapsed}s) — Docker build uzun surebilir, bekleyin ...\n",
+                    flush=True,
+                )
+                last_data = time.time()
+            time.sleep(0.3)
 
     while channel.recv_ready():
         chunks.append(channel.recv(16384))
