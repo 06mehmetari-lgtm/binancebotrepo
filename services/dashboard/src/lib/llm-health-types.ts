@@ -37,6 +37,7 @@ export type KeyOverridesMeta = {
   groq_masked: string[]
   cerebras_masked: string[]
   google_masked: string[]
+  openrouter_masked?: string[]
   probe_results?: Record<string, ProbeSummary>
 }
 
