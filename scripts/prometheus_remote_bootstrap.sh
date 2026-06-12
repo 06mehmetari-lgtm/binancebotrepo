@@ -63,11 +63,22 @@ upsert_env RISK_MAX_WEEKLY_LOSS_PCT 0.08
 upsert_env RISK_MAX_ATR_PCT 5.0
 upsert_env BACKTEST_WALK_FORWARD true
 upsert_env PAPER_UNLIMITED true
-upsert_env PAPER_MIN_HOLD_SEC 120
-upsert_env GUARD_PROFIT_TIERS "0.5,2,5,10,25"
-upsert_env GUARD_TRAIL_MIN_PEAK 1.5
-upsert_env GUARD_TRAIL_GIVEBACK_PCT 0.6
-upsert_env GUARD_PROFIT_PROTECT_PCT 0.25
+upsert_env PAPER_MIN_HOLD_SEC 180
+upsert_env GUARD_PROFIT_TIERS "1.5,3,6,12"
+upsert_env GUARD_TAKE_PROFIT_PCT 1.2
+upsert_env GUARD_MAX_LOSS_PCT 1.0
+upsert_env GUARD_EMERGENCY_LOSS_PCT 1.8
+upsert_env GUARD_TRAIL_MIN_PEAK 2.0
+upsert_env GUARD_TRAIL_GIVEBACK_PCT 0.5
+upsert_env GUARD_PROFIT_PROTECT_PCT 0.8
+upsert_env SHADOW_MIN_CONFIDENCE 0.62
+upsert_env SHADOW_MAX_OPEN 3
+upsert_env SHADOW_HARD_STOP_PCT 1.2
+upsert_env SYMBOL_COOLDOWN_SEC 1800
+upsert_env PAPER_MIN_SIGNAL_CONFIDENCE 0.58
+upsert_env OMS_MIN_CONFIDENCE 0.60
+upsert_env PAPER_TAKE_PROFIT_PCT 1.5
+upsert_env PAPER_STOP_LOSS_PCT 1.2
 upsert_env LLM_PROVIDER_ORDER "openrouter,ollama,google,groq,cerebras"
 upsert_env LLM_VPS_MODE true
 upsert_env ALLOW_GROQ_ON_VPS true
@@ -111,7 +122,8 @@ BUILD_SERVICES_FULL=(
   dashboard backtest autopsy rag_memory neat_evolution rl_agent scenario_engine
 )
 BUILD_SERVICES_QUICK=(
-  context_engine signal_engine agent_system learning_engine shadow_system oms dashboard
+  context_engine feature_engine signal_engine agent_system learning_engine
+  shadow_system oms immunity_system dashboard
 )
 
 if [ "$MODE" = "quick" ]; then
@@ -225,12 +237,18 @@ rc("PUBLISH", "ch:portfolio:updated", "1")
 print("redis ok")
 PYEOF
 
-# ── 8) Zombie fix ──────────────────────────────
-echo "=== [8/10] Zombie container kontrolü ==="
-if ! docker compose ps --format json 2>/dev/null | head -1 | grep -q Running; then
-  bash scripts/fix-docker-zombie.sh 2>/dev/null || true
-  docker compose up -d 2>&1 | tail -10 || true
-fi
+# ── 8) Zombie + restarting fix ─────────────────
+echo "=== [8/10] Container saglik duzeltme ==="
+bash scripts/fix-docker-zombie.sh 2>/dev/null || true
+for c in $(docker compose ps -a --format '{{.Name}}' 2>/dev/null); do
+  st=$(docker inspect --format '{{.State.Status}}' "$c" 2>/dev/null || echo unknown)
+  if [ "$st" = "restarting" ] || [ "$st" = "exited" ]; then
+    echo "  restart $c ($st)"
+    docker restart "$c" 2>/dev/null || docker compose up -d "$c" 2>/dev/null || true
+  fi
+done
+sleep 6
+docker compose up -d 2>&1 | tail -8 || true
 
 # ── 9) Sağlık kontrolü ─────────────────────────
 echo "=== [9/10] Sağlık kontrolü ==="

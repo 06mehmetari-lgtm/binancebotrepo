@@ -29,6 +29,7 @@ BOOTSTRAP_REMOTE = "/tmp/prometheus_remote_bootstrap.sh"
 DEFAULT_HOST = "194.163.181.39"
 DEFAULT_USER = "root"
 DEFAULT_DIR = "/root/prometheus"
+DEFAULT_REPO = "https://github.com/06mehmetari-lgtm/binancebotrepo.git"
 CONNECT_TIMEOUT = 45
 BOOTSTRAP_TIMEOUT = 3600  # 60 dk — full build
 
@@ -196,13 +197,28 @@ def main() -> int:
 
     print("SSH OK")
 
-    # Proje dizini var mı?
+    # Proje dizini yoksa otomatik clone
     code, out = stream_command(client, f"test -d {prom_dir} && echo DIR_OK || echo DIR_MISSING", 30)
     if "DIR_MISSING" in out:
-        print(f"HATA: {prom_dir} sunucuda yok. Önce repo clone edin:")
-        print(f"  git clone https://github.com/06mehmetari-lgtm/binancebotrepo.git {prom_dir}")
-        client.close()
-        return 1
+        print(f"Sunucuda {prom_dir} yok — otomatik git clone...")
+        parent = os.path.dirname(prom_dir.rstrip("/")) or "/root"
+        repo = secrets.get("VPS_REPO_URL", DEFAULT_REPO)
+        clone_cmd = (
+            f"mkdir -p {parent} && "
+            f"git clone {repo} {prom_dir} 2>&1 || "
+            f"(cd {prom_dir} && git fetch origin && git checkout master)"
+        )
+        c2, out2 = stream_command(client, clone_cmd, 300)
+        _, verify = stream_command(
+            client,
+            f"test -f {prom_dir}/docker-compose.yml && echo DIR_OK || echo DIR_MISSING",
+            30,
+        )
+        if c2 != 0 or "DIR_OK" not in verify:
+            print(f"HATA: Otomatik clone basarisiz — {prom_dir}")
+            client.close()
+            return 1
+        print("OK: Repo clone tamam")
 
     upload_bootstrap(client)
 
@@ -231,13 +247,25 @@ def main() -> int:
         client.close()
         return 1
 
-    # Son durum
-    stream_command(
-        client,
-        f"tail -5 /tmp/prometheus_bootstrap.log 2>/dev/null; "
-        f"docker compose -f {prom_dir}/docker-compose.yml ps --format '{{{{.Name}}}} {{{{.Status}}}}' 2>/dev/null | head -20",
-        60,
-    )
+    # Son durum + otomatik iyilestirme
+    post_cmd = f"""
+cd {prom_dir}
+echo '--- container durumu ---'
+docker compose ps --format '{{{{.Name}}}} {{{{.Status}}}}' 2>/dev/null | head -25
+echo '--- restarting unhealthy ---'
+for c in $(docker compose ps --format '{{{{.Name}}}}' 2>/dev/null); do
+  st=$(docker inspect --format '{{{{.State.Status}}}}' "$c" 2>/dev/null || echo unknown)
+  if [ "$st" = "restarting" ] || [ "$st" = "exited" ]; then
+    echo "restart $c ($st)"
+    docker restart "$c" 2>/dev/null || true
+  fi
+done
+sleep 5
+echo '--- API son kontrol ---'
+curl -sf -o /dev/null -w 'dashboard /api/status %{{http_code}}\\n' --max-time 15 http://localhost:3000/api/status || echo 'dashboard bekleniyor'
+tail -3 /tmp/prometheus_bootstrap.log 2>/dev/null
+"""
+    stream_command(client, post_cmd, 120)
 
     stream_command(client, f"rm -f {remote_env}", 15)
     client.close()

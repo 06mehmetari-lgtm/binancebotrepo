@@ -1,287 +1,142 @@
 @echo off
-
 chcp 65001 >nul 2>&1
-
 setlocal EnableDelayedExpansion
 
-
-
 REM ============================================================
-
-REM  PROMETHEUS — TEK TIKLA SUNUCU AYAGA KALDIR
-
-REM  PROMETHEUS_AYAGA_KALDIR.bat
-
-REM  PROMETHEUS_AYAGA_KALDIR.bat quick
-
+REM  PROMETHEUS — TEK TIK, TAM OTOMATIK DEPLOY
+REM  PROMETHEUS_AYAGA_KALDIR.bat        → FULL (17 servis, ~30-45 dk)
+REM  PROMETHEUS_AYAGA_KALDIR.bat quick → hizli (~9 servis)
 REM ============================================================
-
-
 
 cd /d "%~dp0"
-
 set "MODE=%~1"
-
 if "%MODE%"=="" set "MODE=full"
-
 set "EXIT_CODE=0"
-
-
-
-echo.
-
-echo ================================================================
-
-echo   PROMETHEUS — SUNUCUYU AYAGA KALDIR
-
-echo   Hedef: http://194.163.181.39:3000
-
-echo   Mod  : %MODE%
-
-echo ================================================================
-
-echo.
-
-
-
-REM ── Python ───────────────────────────────────────────────────
-
-set "PY="
-
-where python >nul 2>&1 && set "PY=python"
-
-if not defined PY where py >nul 2>&1 && set "PY=py -3"
-
-if not defined PY (
-
-    echo [HATA] Python bulunamadi. https://python.org
-
-    goto :done
-
-)
-
-echo [OK] Python: %PY%
-
-
-
-REM ── Gizli bilgiler ───────────────────────────────────────────
-
 set "SECRETS=scripts\.deploy.secrets"
 
-if not exist "%SECRETS%" goto :secrets_missing
-
-goto :secrets_ok
-
-
-
-:secrets_missing
-
+echo.
+echo ================================================================
+echo   PROMETHEUS — TAM OTOMATIK SUNUCU DEPLOY
+echo   http://194.163.181.39:3000
+echo   Mod: %MODE%
+echo ================================================================
 echo.
 
-echo [UYARI] %SECRETS% bulunamadi.
-
-if exist "scripts\.deploy.secrets.example" (
-
-    echo.
-
-    echo Ornekten kopyalayin:
-
-    echo   copy scripts\.deploy.secrets.example scripts\.deploy.secrets
-
-    echo VPS_PASS ve OPENROUTER_API_KEY yazin, kaydedin, BAT'i tekrar calistirin.
-
-    echo.
-
-    choice /C YN /M "Ornekten simdi kopyalansin mi"
-
-    if errorlevel 2 goto :secrets_help
-
-    copy /Y "scripts\.deploy.secrets.example" "%SECRETS%" >nul
-
-    echo Dosya olusturuldu — notepad aciliyor...
-
-    notepad "%SECRETS%"
-
+REM ── Python ──
+set "PY="
+where python >nul 2>&1 && set "PY=python"
+if not defined PY where py >nul 2>&1 && set "PY=py -3"
+if not defined PY (
+    echo [HATA] Python yok — https://python.org kurun, tekrar calistirin.
+    set "EXIT_CODE=1"
     goto :done
-
 )
+echo [OK] Python: %PY%
 
-:secrets_help
+REM ── paramiko (SSH) otomatik ──
+%PY% -m pip install paramiko -q 2>nul
+echo [OK] paramiko hazir
 
-echo.
+REM ── Gizli bilgiler: dosya VEYA ortam degiskeni ──
+set "HAS_SECRETS=0"
+if exist "%SECRETS%" set "HAS_SECRETS=1"
+if defined VPS_PASS set "HAS_SECRETS=1"
+if "!HAS_SECRETS!"=="0" (
+    echo.
+    echo [HATA] VPS sifresi gerekli — bir kez ayarlayin:
+    echo   copy scripts\.deploy.secrets.example scripts\.deploy.secrets
+    echo   VPS_PASS ve OPENROUTER_API_KEY yazin
+    echo   VEYA: set VPS_PASS=sifreniz
+    echo.
+    set "EXIT_CODE=1"
+    goto :done
+)
+echo [OK] Deploy kimlik bilgileri hazir
 
-echo Alternatif ortam degiskeni:
-
-echo   set VPS_PASS=sifreniz
-
-echo   set OPENROUTER_API_KEY=sk-or-v1-...
-
-echo.
-
-goto :done
-
-
-
-:secrets_ok
-
-
-
-REM ── Git: PC kodu once GitHub'a ───────────────────────────────
-
+REM ── Git: PC -^> GitHub -^> VPS (otomatik) ──
 where git >nul 2>&1
-
 if errorlevel 1 (
-
-    echo [UYARI] git yok — VPS mevcut GitHub kodu ile devam eder.
-
+    echo [UYARI] git yok — VPS GitHub'daki son kodu kullanir
     goto :run_deploy
-
 )
 
-
-
 echo.
-
-echo [GIT 1/4] Bilgisayardaki degisiklikler hazirlaniyor...
-
+echo [GIT] Senkronizasyon...
 git add -A
 
-
-
 set "GIT_DIRTY=0"
-
 for /f "delims=" %%L in ('git status --porcelain 2^>nul') do set "GIT_DIRTY=1"
 
-
-
 if "!GIT_DIRTY!"=="1" (
-
-    echo [GIT 2/4] Otomatik commit...
-
+    echo [GIT] Otomatik commit...
     git commit -m "deploy: PC sync before VPS"
-
     if errorlevel 1 (
-
-        echo [HATA] git commit basarisiz — deploy durdu.
-
+        echo [HATA] git commit basarisiz
         set "EXIT_CODE=1"
-
         goto :done
-
     )
-
-    echo [OK] Commit tamam.
-
 ) else (
-
-    echo [OK] Commit gerekmiyor.
-
+    echo [GIT] Commit gerekmiyor
 )
 
-
-
-echo [GIT 3/4] git pull origin master...
-
-git pull origin master --no-edit
-
+echo [GIT] pull...
+git pull origin master --rebase --no-edit
 if errorlevel 1 (
-
-    echo [HATA] git pull basarisiz — deploy durdu.
-
-    set "EXIT_CODE=1"
-
-    goto :done
-
+    git stash push -u -m "deploy-autostash" 2>nul
+    git pull origin master --rebase --no-edit
+    if errorlevel 1 (
+        echo [HATA] git pull basarisiz
+        set "EXIT_CODE=1"
+        goto :done
+    )
+    git stash pop 2>nul
 )
 
-echo [OK] git pull tamam.
-
-
-
-echo [GIT 4/4] git push origin master...
-
+echo [GIT] push...
 git push origin master
-
 if errorlevel 1 (
-
-    echo [HATA] git push basarisiz — deploy durdu.
-
-    set "EXIT_CODE=1"
-
-    goto :done
-
+    git pull origin master --rebase --no-edit
+    git push origin master
+    if errorlevel 1 (
+        echo [HATA] git push basarisiz
+        set "EXIT_CODE=1"
+        goto :done
+    )
 )
-
-echo [OK] git push tamam:
-
 git log -1 --oneline 2>nul
-
-echo.
-
-
+echo [OK] GitHub guncel
 
 :run_deploy
-
 echo.
-
-echo [BASLIYOR] VPS deploy — mod=%MODE%
-
+echo [DEPLOY] VPS bootstrap basliyor — mod=%MODE%
 if /i "%MODE%"=="full" (
-    echo            FULL: ~17 servis build, 30-45 dk — DONMEDI bekleyin
+    echo          FULL: 17 servis build + tum konteynerler + saglik kontrolu
+    echo          Sure: ~30-45 dk — pencereyi KAPATMAYIN
 ) else (
-    echo            QUICK: ~7 servis build, 10-15 dk
+    echo          QUICK: 9 servis build + tum konteynerler
+    echo          Sure: ~12-18 dk
 )
-
-echo            Ilerleme: BUILD 3/17 signal_engine gibi satirlar gelir
-
-echo            Log: tail -f /tmp/prometheus_build.log
-
 echo.
-
-
 
 %PY% scripts\prometheus_full_deploy.py --mode %MODE%
-
 set "EXIT_CODE=!errorlevel!"
 
-
-
 echo.
-
 if "!EXIT_CODE!"=="0" (
-
     echo ================================================================
-
-    echo   TAMAMLANDI
-
+    echo   BASARILI — sistem ayakta, hicbir sey yapmaniz gerekmiyor
     echo   http://194.163.181.39:3000
-
-    echo   http://194.163.181.39:3000/system
-
-    echo   http://194.163.181.39:3000/signals
-
     echo   http://194.163.181.39:3000/positions
-
+    echo   http://194.163.181.39:3000/system
     echo ================================================================
-
+    start "" "http://194.163.181.39:3000/system"
 ) else (
-
     echo ================================================================
-
-    echo   HATA — tekrar: PROMETHEUS_AYAGA_KALDIR.bat quick
-
+    echo   HATA — log: ssh root@194.163.181.39 tail -100 /tmp/prometheus_bootstrap.log
+    echo   Tekrar: PROMETHEUS_AYAGA_KALDIR.bat
     echo ================================================================
-
 )
 
-
-
 :done
-
-echo.
-
-pause
-
+if not "%EXIT_CODE%"=="0" pause
 exit /b %EXIT_CODE%
-
-
