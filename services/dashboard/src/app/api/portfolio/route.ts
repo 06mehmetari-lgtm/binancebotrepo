@@ -16,17 +16,18 @@ export async function GET() {
       redis.get('portfolio:capital:v1'),
     ])
 
-    let portfolioCap: {
+    type PortfolioCap = {
       try_amount?: number
       usd_cap?: number
       portfolio_usd?: number
       usd_try_rate?: number
       fee_per_side_pct?: number
-    } | null = null
+    }
+    let portfolioCap: PortfolioCap = {}
     for (const raw of [capRaw, tryCapRaw]) {
       if (!raw) continue
       try {
-        const parsed = JSON.parse(raw)
+        const parsed = JSON.parse(raw) as Partial<PortfolioCap>
         portfolioCap = { ...portfolioCap, ...parsed }
         break
       } catch {

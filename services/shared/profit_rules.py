@@ -123,12 +123,14 @@ def agent_entry_ok(direction: str, verdict: dict | None) -> tuple[bool, str]:
 
 
 def cooldown_after_close(pnl_pct: float, *, blacklisted: bool = False) -> int:
-    """Zarar sonrası uzun bekleme — churn önleme."""
+    """Zarar sonrası uzun bekleme; kârda daha hızlı yeniden giriş (motor)."""
     if pnl_pct < 0:
         return LOSS_COOLDOWN_SEC if not blacklisted else LOSS_COOLDOWN_SEC * 2
+    if pnl_pct >= 0.003:
+        return int(os.getenv("WIN_COOLDOWN_SEC", "300"))
     if blacklisted:
         return paper_cooldown_sec()
-    return SYMBOL_COOLDOWN_SEC
+    return paper_cooldown_sec()
 
 
 def build_history_record(payload: dict) -> dict:

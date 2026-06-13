@@ -647,6 +647,27 @@ async def simulate_tick(redis: aioredis.Redis, symbol: str):
     if not ok:
         return
 
+    learn_raw = await redis.get(f"learn:profile:{symbol}")
+    try:
+        from learn_entry import check_learn_veto, entry_size_multiplier, parse_last_lesson
+        veto, veto_why = check_learn_veto(direction, learn_raw.decode() if isinstance(learn_raw, bytes) else learn_raw)
+        if veto:
+            log.debug(f"[SHADOW SKIP] {symbol} {veto_why}")
+            return
+        learn_str = learn_raw.decode() if isinstance(learn_raw, bytes) else learn_raw
+        size_mult, learn_note = entry_size_multiplier(direction, learn_str)
+    except ImportError:
+        size_mult, learn_note = 1.0, ""
+
+    last_lesson = ""
+    try:
+        lesson_rows = await redis.lrange(f"trade:lessons:{symbol}", 0, 0)
+        if lesson_rows:
+            lr = lesson_rows[0]
+            last_lesson = parse_last_lesson(lr.decode() if isinstance(lr, bytes) else lr)
+    except Exception:
+        pass
+
     try:
         from risk_limits import get_active_limits
         lim = get_active_limits()
@@ -668,7 +689,7 @@ async def simulate_tick(redis: aioredis.Redis, symbol: str):
     open_n = await _shadow_open_count(redis, SHADOW_OPEN_IDS[0])
     slot_budget = PORTFOLIO_VALUE / max(SHADOW_MAX_OPEN, 1)
     base_usd = min(PORTFOLIO_VALUE * max_pos_pct, slot_budget * 0.92)
-    margin_usd = base_usd * min(confidence, 0.85)
+    margin_usd = base_usd * min(confidence, 0.85) * size_mult
     if open_n >= SHADOW_MAX_OPEN * 0.8:
         margin_usd *= 0.85
     if margin_usd <= 0:
@@ -746,6 +767,8 @@ async def simulate_tick(redis: aioredis.Redis, symbol: str):
                         "kelly_fraction": float(signal.get("kelly_fraction", 0) or 0),
                         "risk_reasons": (risk.get("reasons") or [])[:4],
                         "notional_usd": round(notional_usd, 2),
+                        "learn_note": learn_note[:80] if learn_note else "",
+                        "entry_lesson": last_lesson[:200] if last_lesson else "",
                     },
                 }),
                 ex=86400,
@@ -755,7 +778,8 @@ async def simulate_tick(redis: aioredis.Redis, symbol: str):
                 f"[SHADOW OPEN] {shadow_id} {direction.upper()} {symbol} "
                 f"conf={confidence:.2f} margin=${margin_usd:.0f} ({port_pct*100:.1f}%) "
                 f"lev={leverage:.0f}x notional=${notional_usd:.0f} "
-                f"sl={sl_pct}% tp={tp_pct}% reasons={','.join(lev_reasons[:3])}"
+                f"sl={sl_pct}% tp={tp_pct}% learn={learn_note or '-'} "
+                f"reasons={','.join(lev_reasons[:3])}"
             )
             if SHADOW_ONE_PER_SYMBOL:
                 break
@@ -903,7 +927,7 @@ async def _trading_loop(redis: aioredis.Redis):
                 await simulate_tick(redis, symbol)
             except Exception as e:
                 log.error(f"Shadow tick error {symbol}: {e}")
-        await asyncio.sleep(5)
+        await asyncio.sleep(3)
 
 
 if __name__ == "__main__":

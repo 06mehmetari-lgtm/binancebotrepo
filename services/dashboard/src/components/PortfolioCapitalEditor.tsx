@@ -79,12 +79,12 @@ export default function PortfolioCapitalEditor({
   const sizing = data?.sizing
 
   return (
-    <section className="bg-gray-900 border border-blue-800/40 rounded-xl p-4 space-y-3">
+    <section id="kasa" className="bg-gradient-to-br from-blue-950/80 to-gray-900 border-2 border-blue-500/60 rounded-xl p-5 space-y-4 shadow-lg shadow-blue-900/20">
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div>
-          <h2 className="text-blue-400 font-bold text-sm">💰 İşlem bakiyesi (USD)</h2>
-          <p className="text-gray-500 text-xs mt-1">
-            Girdiğiniz tutar = paper portföy üst limiti. Pozisyon boyutu, slot bütçesi ve max coin sayısı buna göre hesaplanır.
+          <h2 className="text-blue-300 font-black text-base tracking-wide">💰 KASA TUTARI (USD)</h2>
+          <p className="text-gray-400 text-sm mt-1">
+            Buraya yazdığınız bakiye = botun kullanacağı sermaye. 5.000 · 10.000 · 100.000 — istediğinizi girin, <strong className="text-white">Uygula</strong> deyin.
           </p>
         </div>
         <span className="text-xs text-gray-500">
@@ -93,24 +93,24 @@ export default function PortfolioCapitalEditor({
       </div>
 
       <div className="flex flex-wrap gap-2 items-end">
-        <label className="flex-1 min-w-[200px] space-y-1">
-          <span className="text-gray-500 text-xs">Bakiye ($)</span>
+        <label className="flex-1 min-w-[240px] space-y-1">
+          <span className="text-blue-200 text-sm font-semibold">Kasa tutarı ($)</span>
           <input
             type="text"
             inputMode="decimal"
-            className="w-full bg-gray-950 border border-gray-700 rounded-lg px-3 py-2 text-white font-mono text-lg"
+            className="w-full bg-gray-950 border-2 border-blue-600/50 rounded-lg px-4 py-3 text-white font-mono text-2xl font-bold focus:border-blue-400 focus:outline-none"
             value={input}
             onChange={e => setInput(e.target.value)}
-            placeholder="10000"
+            placeholder="örn. 10000"
           />
         </label>
         <button
           type="button"
           onClick={save}
           disabled={busy}
-          className="px-5 py-2.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold disabled:opacity-50"
+          className="px-8 py-3 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-sm font-black disabled:opacity-50 shadow-md"
         >
-          {busy ? 'Kaydediliyor…' : 'Uygula'}
+          {busy ? 'Kaydediliyor…' : '✓ Uygula'}
         </button>
       </div>
 

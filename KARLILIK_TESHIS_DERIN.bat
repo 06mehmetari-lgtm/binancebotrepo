@@ -4,7 +4,7 @@ cd /d "%~dp0"
 echo.
 echo ================================================================
 echo   DERIN KARLILIK TESHISI
-echo   Pipeline + neden alim yok + islem yasam dongusu + 50 coin
+echo   Tam pipeline + shadow izi + islem dongusu + LLM JSON ozeti
 echo ================================================================
 echo.
 set "PY="

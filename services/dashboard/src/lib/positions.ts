@@ -1,5 +1,6 @@
 import type { Redis } from 'ioredis'
 import { scanKeys } from '@/lib/universe'
+import { computeExitEstimate } from '@/lib/exit-estimate'
 
 function safeJson(raw: string | null): unknown {
   if (!raw) return null
@@ -60,14 +61,38 @@ export type PositionDecision = {
     margin_usd?: number
     position_size_pct?: number
     slot_budget_usd?: number
+    breakeven_armed?: boolean
+    peak_upnl_pct?: number
+    entry_lesson?: string
+    learn_note?: string
   }
   leverage?: number
+  /** Giriş anındaki kaldıraç (ladder'dan donmuş) */
+  entry_leverage?: number
   notional_usd?: number
   margin_usd?: number
   qty_estimate?: number
   entry_at_label?: string
   exit_plan?: string
   leverage_reasons?: string[]
+  hold_seconds?: number
+  peak_upnl_pct?: number
+  breakeven_armed?: boolean
+  learning_stage?: string
+  avoid_hint?: string
+  best_entry_hint?: string
+  last_lesson?: string
+  learn_win_rate?: number
+  learn_trades?: number
+  exit_estimate?: {
+    trigger: string
+    label: string
+    countdown_sec: number
+    estimated_close_at: number
+    urgency: 'now' | 'imminent' | 'normal'
+    detail: string
+    secondary?: string
+  }
 }
 
 function priceFromFeatures(raw: string | null): number {
@@ -97,7 +122,8 @@ export function consolidatePositions(rows: PositionDecision[]): PositionDecision
         sources_label: cur.shadow_accounts ? 'oms+shadow' : 'oms',
         notional_usd: (p.notional_usd ?? 0) + (cur.notional_usd ?? 0),
         margin_usd: (p.margin_usd ?? p.size_usd) + (cur.margin_usd ?? cur.size_usd),
-        leverage: Math.max(p.leverage ?? 1, cur.leverage ?? 1),
+        entry_leverage: p.entry_leverage ?? cur.entry_leverage,
+        leverage: p.entry_leverage ?? p.leverage ?? cur.entry_leverage ?? cur.leverage,
       })
       continue
     }
@@ -109,7 +135,8 @@ export function consolidatePositions(rows: PositionDecision[]): PositionDecision
         notional_usd: (cur.notional_usd ?? 0) + (p.notional_usd ?? 0),
         shadow_accounts: (cur.shadow_accounts ?? 0) + 1,
         sources_label: 'oms+shadow',
-        leverage: Math.max(cur.leverage ?? 1, p.leverage ?? 1),
+        leverage: cur.entry_leverage ?? cur.leverage ?? p.entry_leverage ?? p.leverage,
+        entry_leverage: cur.entry_leverage ?? p.entry_leverage,
       })
       continue
     }
@@ -120,13 +147,14 @@ export function consolidatePositions(rows: PositionDecision[]): PositionDecision
       notional_usd: (cur.notional_usd ?? 0) + (p.notional_usd ?? 0),
       shadow_accounts: (cur.shadow_accounts ?? 1) + 1,
       sources_label: `shadow×${(cur.shadow_accounts ?? 1) + 1}`,
-      leverage: Math.max(cur.leverage ?? 1, p.leverage ?? 1),
+      entry_leverage: cur.entry_leverage ?? p.entry_leverage,
+      leverage: cur.entry_leverage ?? cur.leverage ?? p.entry_leverage ?? p.leverage,
     })
   }
   return Array.from(map.values())
 }
 
-function tickerMid(raw: string | null): number {
+function fmtEntryTime(ts: number): string {
   if (!ts) return '—'
   return new Date(ts * 1000).toLocaleString('tr-TR', {
     day: '2-digit',
@@ -134,6 +162,19 @@ function tickerMid(raw: string | null): number {
     hour: '2-digit',
     minute: '2-digit',
   })
+}
+
+function tickerMid(raw: string | null): number {
+  if (!raw) return 0
+  try {
+    const t = JSON.parse(raw) as { data?: { b?: string; a?: string } }
+    const d = t.data ?? t
+    const bid = parseFloat(String((d as { b?: string }).b ?? 0))
+    const ask = parseFloat(String((d as { a?: string }).a ?? bid))
+    return bid > 0 && ask > 0 ? (bid + ask) / 2 : bid || ask
+  } catch {
+    return 0
+  }
 }
 
 function buildExitPlan(
@@ -152,17 +193,6 @@ function buildExitPlan(
   if (unrealizedPct <= -(sl ?? 1.2)) parts.push('STOP yakın')
   if (unrealizedPct >= (tp ?? 1.5)) parts.push('TP yakın')
   return parts.length ? parts.join(' · ') : 'SL/TP ladder'
-}
-  if (!raw) return 0
-  try {
-    const t = JSON.parse(raw) as { data?: { b?: string; a?: string } }
-    const d = t.data ?? t
-    const bid = parseFloat(String((d as { b?: string }).b ?? 0))
-    const ask = parseFloat(String((d as { a?: string }).a ?? bid))
-    return bid > 0 && ask > 0 ? (bid + ask) / 2 : bid || ask
-  } catch {
-    return 0
-  }
 }
 
 export async function fetchOpenPositions(redis: Redis): Promise<{
@@ -231,9 +261,15 @@ export async function fetchOpenPositions(redis: Redis): Promise<{
   for (const r of raws) pipeline.get(`agents:verdict:${r.symbol}`)
   for (const r of raws) pipeline.get(`agents:verdicts:${r.symbol}`)
   for (const r of raws) pipeline.get(`guard:position:${r.symbol}`)
+  for (const r of raws) pipeline.get(`learn:profile:${r.symbol}`)
+  for (const r of raws) pipeline.lindex(`trade:lessons:${r.symbol}`, 0)
 
   const n = raws.length
   const exec = await pipeline.exec()
+
+  const GUARD_OFF = 7 * n
+  const LEARN_OFF = 8 * n
+  const LESSON_OFF = 9 * n
 
   const positions: PositionDecision[] = []
 
@@ -248,8 +284,11 @@ export async function fetchOpenPositions(redis: Redis): Promise<{
     const sigRaw = exec?.[4 * n + i]?.[1] as string | null
     const verdictRaw = exec?.[5 * n + i]?.[1] as string | null
     const votesRaw = exec?.[6 * n + i]?.[1] as string | null
-    const guardRaw = exec?.[7 * n + i]?.[1] as string | null
+    const guardRaw = exec?.[GUARD_OFF + i]?.[1] as string | null
+    const learnRaw = exec?.[LEARN_OFF + i]?.[1] as string | null
+    const lessonRaw = exec?.[LESSON_OFF + i]?.[1] as string | null
     const guardParsed = safeJson(guardRaw) as Record<string, unknown> | null
+    const learnParsed = safeJson(learnRaw) as Record<string, unknown> | null
 
     let currentPrice = tickerMid(tickerRaw)
     if (currentPrice <= 0) currentPrice = priceFromFeatures(featRaw)
@@ -262,16 +301,22 @@ export async function fetchOpenPositions(redis: Redis): Promise<{
     const direction = String(posObj.direction ?? 'long')
     const sizeUsd = Number(posObj.size_usd ?? 0)
 
+    const entryTime = Number(posObj.entry_time ?? posObj.time ?? 0)
+    const ageSeconds = entryTime ? Date.now() / 1000 - entryTime : 0
+
+    const entrySignal = (posObj.entry_signal ?? {}) as Record<string, unknown>
+    const currentSignal = safeJson(sigRaw) as Record<string, unknown> | null
+
     const ladder = (posObj.ladder ?? {}) as PositionDecision['ladder']
-    const leverage = Math.max(
+    const entryLeverage = Math.max(
       1,
       Number(
         ladder?.leverage ??
           (entrySignal as { leverage?: number }).leverage ??
-          (currentSignal?.leverage as number | undefined) ??
           1,
       ),
     )
+    const leverage = entryLeverage
     const marginUsd = Number(
       posObj.margin_usd ?? ladder?.margin_usd ?? posObj.size_usd ?? sizeUsd,
     )
@@ -292,11 +337,6 @@ export async function fetchOpenPositions(redis: Redis): Promise<{
     const qtyEstimate =
       entryPrice > 0 && notionalUsd > 0 ? notionalUsd / entryPrice : undefined
 
-    const entryTime = Number(posObj.entry_time ?? posObj.time ?? 0)
-    const ageSeconds = entryTime ? Date.now() / 1000 - entryTime : 0
-
-    const entrySignal = (posObj.entry_signal ?? {}) as Record<string, unknown>
-    const currentSignal = safeJson(sigRaw) as Record<string, unknown> | null
     const verdictParsed = safeJson(verdictRaw) as Record<string, unknown> | null
     const votes = votesRaw ? (safeJson(votesRaw) as PositionDecision['votes']) : []
 
@@ -338,6 +378,24 @@ export async function fetchOpenPositions(redis: Redis): Promise<{
           }
         : undefined
 
+    const peakUpnl = Number(ladder?.peak_upnl_pct ?? 0)
+    const breakevenArmed = Boolean(ladder?.breakeven_armed)
+    const holdSeconds = entryTime ? Math.floor(ageSeconds) : 0
+    const exitEstimate = computeExitEstimate({
+      entry_time: entryTime || undefined,
+      direction,
+      unrealized_pct: unrealizedPct,
+      ladder,
+      guard: guardBlock,
+      current_signal_direction: String(currentSignal?.direction ?? 'flat'),
+    })
+
+    let lastLesson = String(ladder?.entry_lesson ?? '')
+    if (!lastLesson && lessonRaw) {
+      const lessonObj = safeJson(lessonRaw) as { text?: string } | null
+      lastLesson = String(lessonObj?.text ?? lessonRaw ?? '').slice(0, 200)
+    }
+
     positions.push({
       symbol: raws[i].symbol,
       direction,
@@ -345,6 +403,7 @@ export async function fetchOpenPositions(redis: Redis): Promise<{
       margin_usd: marginUsd,
       notional_usd: +notionalUsd.toFixed(2),
       leverage,
+      entry_leverage: entryLeverage,
       qty_estimate: qtyEstimate ? +qtyEstimate.toFixed(6) : undefined,
       entry_price: entryPrice,
       entry_time: entryTime || undefined,
@@ -353,6 +412,10 @@ export async function fetchOpenPositions(redis: Redis): Promise<{
       unrealized_pct: +unrealizedPct.toFixed(3),
       unrealized_usdt: +unrealizedUsdt.toFixed(4),
       age_hours: +(ageSeconds / 3600).toFixed(1),
+      hold_seconds: holdSeconds,
+      peak_upnl_pct: peakUpnl > 0 ? peakUpnl : undefined,
+      breakeven_armed: breakevenArmed || undefined,
+      exit_estimate: exitEstimate,
       source: raws[i].source,
       shadow_id: raws[i].shadow_id,
       entry_signal: Object.keys(entrySignal).length ? entrySignal : undefined,
@@ -364,6 +427,12 @@ export async function fetchOpenPositions(redis: Redis): Promise<{
       ladder,
       leverage_reasons: ladder?.leverage_reasons,
       exit_plan: buildExitPlan(ladder, guardBlock, unrealizedPct),
+      learning_stage: learnParsed ? String(learnParsed.learning_stage ?? 'L0') : undefined,
+      avoid_hint: learnParsed ? String(learnParsed.avoid_hint ?? '') : undefined,
+      best_entry_hint: learnParsed ? String(learnParsed.best_entry_hint ?? '') : undefined,
+      learn_win_rate: learnParsed ? Number(learnParsed.win_rate ?? 0) : undefined,
+      learn_trades: learnParsed ? Number(learnParsed.trades ?? 0) : undefined,
+      last_lesson: lastLesson || undefined,
       regime,
       context_regime: regime,
       ai_confidence_pct: aiConf > 0 ? Math.round(aiConf * 100) : undefined,

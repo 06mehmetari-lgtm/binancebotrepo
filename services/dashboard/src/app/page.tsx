@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { LiveEquityChart, type CurvePoint } from '@/components/LiveEquityChart'
 import { RecentTradesFeed } from '@/components/RecentTradesFeed'
 import DeployStatusPanel from './components/DeployStatusPanel'
+import PortfolioCapitalEditor from '@/components/PortfolioCapitalEditor'
 import { useStreamInvalidate } from '@/hooks/useStream'
 
 interface Market { symbol: string; rsi_14: number; direction: string; confidence: number; regime: string; crisis_level: number; kelly_fraction: number; drift_status: string }
@@ -249,6 +250,11 @@ export default function Home() {
   return (
     <div className="space-y-5">
       <DeployStatusPanel />
+
+      <PortfolioCapitalEditor
+        openCount={status.open_positions ?? 0}
+        maxOpen={30}
+      />
 
       <div className="flex items-center justify-between">
         <h1 className="text-white font-bold text-base">Overview — Canlı İzleme</h1>

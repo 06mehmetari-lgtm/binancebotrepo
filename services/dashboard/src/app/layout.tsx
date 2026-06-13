@@ -14,7 +14,7 @@ const NAV_LINKS = [
   { href: '/learning', label: '📈 AI Öğrenme' },
   { href: '/llm-keys', label: '🔑 LLM Keys' },
   { href: '/chat', label: '💬 Chat' },
-  { href: '/positions', label: '💼 Positions' },
+  { href: '/positions', label: '💰 Kasa & Pozisyon' },
   { href: '/autopsy', label: '🔬 Otopsi' },
   { href: '/compare', label: '⚖ Compare' },
   { href: '/scanner', label: '🔍 Scanner' },

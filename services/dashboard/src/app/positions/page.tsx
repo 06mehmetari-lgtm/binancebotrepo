@@ -3,6 +3,9 @@ import { useEffect, useState, Fragment, useCallback, useMemo } from 'react'
 import { PositionDecisionPanel } from '@/components/PositionDecisionPanel'
 import RiskLimitsEditor from '@/components/RiskLimitsEditor'
 import PortfolioCapitalEditor from '@/components/PortfolioCapitalEditor'
+import { ExitCountdownCell } from '@/components/ExitCountdownCell'
+import { LeverageBadge } from '@/components/LeverageBadge'
+import { MotorEngineBar, LearnStageBadge, LessonSnippet } from '@/components/MotorEngineBar'
 import { LiveEquityChart, type CurvePoint } from '@/components/LiveEquityChart'
 import { PositionBubbleChart, buildBubblePoints } from '@/components/PositionBubbleChart'
 import { useLiveEquity } from '@/hooks/useLiveEquity'
@@ -336,11 +339,21 @@ export default function PositionsPage() {
 
   return (
     <div className="space-y-5">
+      {/* KASA — en üstte, kaçırılmaz */}
+      <PortfolioCapitalEditor openCount={positions.length} maxOpen={maxOpenLimit} />
+
+      <MotorEngineBar
+        openCount={positions.length}
+        maxOpen={maxOpenLimit}
+        streamLive={streamLive}
+        tradingHalted={trading_halted}
+      />
+
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div>
           <h1 className="text-white font-bold text-base">Portfolio — Paper Trading</h1>
           <p className="text-gray-500 text-xs mt-0.5">
-            OMS + Shadow · 3&apos;lü grafik 400ms · plan/canlı/fark/tahmin · Ollama öğrenme
+            OMS + Shadow · kaldıraç & alım/satım logları · kasa yukarıda ayarlanır
           </p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
@@ -388,8 +401,6 @@ export default function PositionsPage() {
       {emergencyMsg && (
         <p className="text-xs text-orange-300 bg-orange-950/30 border border-orange-800/50 rounded-lg px-3 py-2">{emergencyMsg}</p>
       )}
-
-      <PortfolioCapitalEditor openCount={positions.length} maxOpen={maxOpenLimit} />
 
       <RiskLimitsEditor openCount={positions.length} />
 
@@ -570,8 +581,11 @@ export default function PositionsPage() {
                 <tr className="text-gray-500 border-b border-gray-800/60 text-xs bg-gray-900/60">
                   <th className="text-left px-4 py-2.5">Symbol</th>
                   <th className="text-left px-4 py-2.5">Dir</th>
-                  <th className="text-left px-4 py-2.5">Lev</th>
+                  <th className="text-left px-4 py-2.5">Alım kaldıracı</th>
                   <th className="text-left px-4 py-2.5">Alım zamanı</th>
+                  <th className="text-left px-4 py-2.5">Tahmini satış ⏱</th>
+                  <th className="text-left px-4 py-2.5">Öğrenme</th>
+                  <th className="text-left px-4 py-2.5">Son ders</th>
                   <th className="text-left px-4 py-2.5">Entry</th>
                   <th className="text-left px-4 py-2.5">Now</th>
                   <th className="text-left px-4 py-2.5">Margin</th>
@@ -614,15 +628,35 @@ export default function PositionsPage() {
                       </span>
                     </td>
                     <td className="px-4 py-3">
-                      <span className="text-violet-400 font-bold font-mono">{pos.leverage ?? 1}x</span>
-                      {pos.leverage_reasons?.length ? (
-                        <span className="block text-[10px] text-gray-600 truncate max-w-[80px]" title={pos.leverage_reasons.join(', ')}>
-                          {pos.leverage_reasons[0]}
-                        </span>
-                      ) : null}
+                      <LeverageBadge
+                        entryLeverage={pos.entry_leverage ?? pos.leverage ?? 1}
+                        reasons={pos.leverage_reasons}
+                        notionalUsd={pos.notional_usd}
+                        marginUsd={pos.margin_usd ?? pos.size_usd}
+                      />
                     </td>
                     <td className="px-4 py-3 text-xs text-gray-400 font-mono whitespace-nowrap">
                       {pos.entry_at_label ?? (pos.entry_time ? fmtDateTime(pos.entry_time) : '—')}
+                    </td>
+                    <td className="px-4 py-3">
+                      <ExitCountdownCell pos={pos} />
+                    </td>
+                    <td className="px-4 py-3">
+                      <LearnStageBadge
+                        stage={pos.learning_stage}
+                        winRate={pos.learn_win_rate}
+                        trades={pos.learn_trades}
+                      />
+                      {pos.ladder?.learn_note && (
+                        <span className="block text-[9px] text-amber-600/80 mt-0.5">{pos.ladder.learn_note}</span>
+                      )}
+                    </td>
+                    <td className="px-4 py-3">
+                      <LessonSnippet
+                        lesson={pos.last_lesson ?? pos.ladder?.entry_lesson}
+                        avoid={pos.avoid_hint}
+                        entryHint={pos.best_entry_hint}
+                      />
                     </td>
                     <td className="px-4 py-3 font-mono text-xs text-gray-300">{fmtPrice(pos.entry_price)}</td>
                     <td className="px-4 py-3 font-mono text-xs text-white">{fmtPrice(pos.current_price)}</td>
@@ -645,7 +679,7 @@ export default function PositionsPage() {
                   </tr>
                   {exp && (
                     <tr className="bg-gray-950/50">
-                      <td colSpan={14}>
+                      <td colSpan={17}>
                         <PositionDecisionPanel pos={pos} />
                       </td>
                     </tr>

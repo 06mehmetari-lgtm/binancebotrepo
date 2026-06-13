@@ -3,6 +3,8 @@
 import type { PositionDecision } from '@/lib/positions'
 import { SymbolTradeHistory } from '@/components/SymbolTradeHistory'
 import { PositionTripleChart } from '@/components/PositionTripleChart'
+import { ExitCountdownCell } from '@/components/ExitCountdownCell'
+import { LeverageBadge } from '@/components/LeverageBadge'
 
 const DIR_STYLE: Record<string, string> = {
   long: 'text-green-400 bg-green-900/30 border-green-800/50',
@@ -46,7 +48,12 @@ export function PositionDecisionPanel({ pos }: { pos: PositionDecision }) {
         </span>
         <span className="text-gray-500">Kaynak: <span className="text-white">{pos.source}</span></span>
         {pos.leverage != null && (
-          <span className="text-violet-400 font-bold">{pos.leverage}x kaldıraç</span>
+          <LeverageBadge
+            entryLeverage={pos.entry_leverage ?? pos.leverage}
+            reasons={pos.leverage_reasons}
+            notionalUsd={pos.notional_usd}
+            marginUsd={pos.margin_usd ?? pos.size_usd}
+          />
         )}
         {pos.entry_at_label && (
           <span className="text-gray-500">Alım: <span className="text-gray-300">{pos.entry_at_label}</span></span>
@@ -59,6 +66,26 @@ export function PositionDecisionPanel({ pos }: { pos: PositionDecision }) {
         )}
         {entry.source != null && (
           <span className="text-gray-500">Giriş motoru: <span className="text-blue-400">{String(entry.source)}</span></span>
+        )}
+      </div>
+
+      {pos.last_lesson && (
+        <div className="bg-emerald-950/30 border border-emerald-800/40 rounded-lg p-3">
+          <p className="text-emerald-400 text-[10px] uppercase font-bold mb-1">Bu alımda uygulanan ders</p>
+          <p className="text-gray-300 text-xs leading-relaxed">{pos.last_lesson}</p>
+        </div>
+      )}
+      {pos.avoid_hint && (
+        <p className="text-red-400/80 text-[11px]">Kaçın: {pos.avoid_hint}</p>
+      )}
+
+      <div className="bg-gray-900/80 border border-cyan-800/40 rounded-lg p-3">
+        <p className="text-cyan-400 text-[10px] uppercase tracking-wider font-bold mb-2">
+          Tahmini satış — canlı geri sayım
+        </p>
+        <ExitCountdownCell pos={pos} />
+        {pos.exit_plan && (
+          <p className="text-gray-500 text-[10px] mt-2">Plan: {pos.exit_plan}</p>
         )}
       </div>
 
@@ -133,10 +160,14 @@ export function PositionDecisionPanel({ pos }: { pos: PositionDecision }) {
           <p className="text-cyan-400 text-[10px] uppercase tracking-wider font-bold mb-2">
             Kademe {pos.ladder.tier ?? 1} — al/sat planı
           </p>
-          <div className="grid grid-cols-3 gap-2 text-[11px]">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-[11px]">
             <div>
               <p className="text-gray-500">Kâr hedefi</p>
               <p className="text-green-400 font-mono">%{pos.ladder.take_profit_pct ?? '—'}</p>
+            </div>
+            <div>
+              <p className="text-gray-500">Kaldıraç (alım)</p>
+              <p className="text-violet-300 font-mono font-bold">{pos.entry_leverage ?? pos.ladder?.leverage ?? '—'}x</p>
             </div>
             <div>
               <p className="text-gray-500">Stop</p>

@@ -487,12 +487,12 @@ def live_update(svc: str, container: str, reasons: list[str]) -> tuple[bool, str
         run(["docker", "cp", str(PROM_DIR / "services/oms/portfolio_sync.py"), f"{container}:/app/portfolio_sync.py"])
     if svc == "shadow_system":
         run(["docker", "cp", str(PROM_DIR / "services/oms/portfolio_sync.py"), f"{container}:/app/portfolio_sync.py"])
-        for shared in ("profit_rules.py", "risk_limits.py", "leverage_model.py", "risk_model.py", "portfolio_cap.py", "portfolio_try.py", "price_resolver.py"):
+        for shared in ("profit_rules.py", "risk_limits.py", "leverage_model.py", "risk_model.py", "portfolio_cap.py", "portfolio_try.py", "price_resolver.py", "learn_entry.py"):
             sf = PROM_DIR / "services/shared" / shared
             if sf.is_file():
                 run(["docker", "cp", str(sf), f"{container}:/app/{shared}"])
     if svc == "agent_system":
-        for shared in ("profit_rules.py", "risk_limits.py", "leverage_model.py", "risk_model.py", "portfolio_cap.py", "price_resolver.py", "llm_providers.py", "groq_orchestrator.py",
+        for shared in ("profit_rules.py", "risk_limits.py", "leverage_model.py", "risk_model.py", "portfolio_cap.py", "price_resolver.py", "learn_entry.py", "llm_providers.py", "groq_orchestrator.py",
                        "llm_status.py", "llm_runtime_keys.py", "llm_health.py", "proxy_pool.py", "position_plan.py"):
             sf = PROM_DIR / "services/shared" / shared
             if sf.is_file():
