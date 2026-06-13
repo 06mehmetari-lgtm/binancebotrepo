@@ -65,6 +65,10 @@ export type PositionDecision = {
     slot_budget_usd?: number
     breakeven_armed?: boolean
     peak_upnl_pct?: number
+    trough_upnl_pct?: number
+    bounce_from_trough_pct?: number
+    recovery_armed?: boolean
+    trail_floor_pct?: number
     entry_lesson?: string
     learn_note?: string
   }
@@ -191,6 +195,12 @@ function buildExitPlan(
   const tp = ladder?.take_profit_pct
   if (sl) parts.push(`SL -${sl}%`)
   if (tp) parts.push(`TP +${tp}%`)
+  if (ladder?.recovery_armed) {
+    parts.push(`Toparlanma → +0.05% (dip ${Number(ladder.trough_upnl_pct ?? 0).toFixed(2)}%)`)
+  }
+  if (ladder?.trail_floor_pct != null && Number(ladder.trail_floor_pct) > -900) {
+    parts.push(`Trail taban ${Number(ladder.trail_floor_pct).toFixed(2)}%`)
+  }
   if (guard?.action && guard.action !== 'hold') {
     parts.push(`Guard: ${guard.action}`)
   }
@@ -463,6 +473,9 @@ export async function fetchOpenPositions(redis: Redis): Promise<{
       ladder,
       guard: guardBlock,
       current_signal_direction: String(currentSignal?.direction ?? 'flat'),
+      current_signal_confidence: Number(currentSignal?.confidence ?? 0),
+      agent_verdict_direction: String(verdict?.direction ?? 'flat'),
+      agent_verdict_confidence: Number(verdict?.confidence ?? 0),
     })
 
     let lastLesson = String(ladder?.entry_lesson ?? '')
@@ -531,6 +544,17 @@ export async function fetchOpenPositions(redis: Redis): Promise<{
       p.current_price = mark
       p.unrealized_pct = +live.pct.toFixed(3)
       p.unrealized_usdt = +live.usdt.toFixed(4)
+      p.exit_estimate = computeExitEstimate({
+        entry_time: p.entry_time,
+        direction: p.direction,
+        unrealized_pct: p.unrealized_pct,
+        ladder: p.ladder,
+        guard: p.guard,
+        current_signal_direction: String(p.current_signal?.direction ?? 'flat'),
+        current_signal_confidence: Number(p.current_signal?.confidence ?? 0),
+        agent_verdict_direction: String(p.verdict?.direction ?? 'flat'),
+        agent_verdict_confidence: Number(p.verdict?.confidence ?? 0),
+      })
     }
   }
 

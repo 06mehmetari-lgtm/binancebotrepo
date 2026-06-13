@@ -39,13 +39,18 @@ PATCH_MAP: list[tuple[str, list[tuple[str, str]]]] = [
     ("services/signal_engine/signal_validator.py", [("prometheus_signal", "/app/signal_validator.py")]),
     ("services/signal_engine/main.py", [("prometheus_signal", "/app/main.py")]),
     ("services/oms/main.py", [("prometheus_oms", "/app/main.py")]),
+    ("services/rag_memory/main.py", [("prometheus_rag", "/app/main.py")]),
 ]
 
-RESTART_SERVICES = ("shadow_system", "agent_system", "signal_engine", "oms", "immunity_system")
+RESTART_SERVICES = ("shadow_system", "agent_system", "signal_engine", "oms", "immunity_system", "rag_memory")
 
 ENV_PATCH = """
 grep -q '^MAX_POSITION_HOLD_SEC=' .env 2>/dev/null || echo 'MAX_POSITION_HOLD_SEC=3600' >> .env
 grep -q '^STALE_VERDICT_HOLD_SEC=' .env 2>/dev/null || echo 'STALE_VERDICT_HOLD_SEC=1200' >> .env
+grep -q '^SCRATCH_EXIT_MAX_LOSS_PCT=' .env 2>/dev/null || echo 'SCRATCH_EXIT_MAX_LOSS_PCT=-0.12' >> .env
+grep -q '^SOFT_STOP_LOSS_PCT=' .env 2>/dev/null || echo 'SOFT_STOP_LOSS_PCT=-0.85' >> .env
+grep -q '^LOSS_TO_PROFIT_TARGET_PCT=' .env 2>/dev/null || echo 'LOSS_TO_PROFIT_TARGET_PCT=0.05' >> .env
+grep -q '^RECOVERY_BOUNCE_MIN_PCT=' .env 2>/dev/null || echo 'RECOVERY_BOUNCE_MIN_PCT=0.12' >> .env
 grep -q '^SYMBOL_BLACKLIST=' .env 2>/dev/null || echo 'SYMBOL_BLACKLIST=ESPORTSUSDT,GTCUSDT,DEXEUSDT,AIOUSDT,BRUSDT,BEATUSDT,NAORISUSDT' >> .env
 sed -i 's|^SHADOW_MIN_CONFIDENCE=.*|SHADOW_MIN_CONFIDENCE=0.60|' .env 2>/dev/null || true
 sed -i 's|^PAPER_MIN_SIGNAL_CONFIDENCE=.*|PAPER_MIN_SIGNAL_CONFIDENCE=0.57|' .env 2>/dev/null || true

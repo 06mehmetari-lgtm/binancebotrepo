@@ -181,9 +181,15 @@ def classify_shadow_block(
 
 def parse_risk_limits(risk: dict) -> dict:
     max_lev = float(risk.get("max_leverage", 3) or 3)
-    max_pos = float(risk.get("max_position_pct", 0.05) or 0.05)
-    if max_pos > 1:
-        max_pos = max_pos / 100 if max_pos <= 100 else 0.05
+    raw_pos = float(risk.get("max_position_pct", 0.05) or 0.05)
+    try:
+        sys.path.insert(0, str(ROOT / "services" / "shared"))
+        from risk_limits import normalize_max_position_pct  # noqa: WPS433
+
+        max_pos = normalize_max_position_pct(raw_pos)
+    except Exception:
+        max_pos = raw_pos / 100.0 if raw_pos > 1 else raw_pos
+        max_pos = max(0.001, min(max_pos, 1.0))
     return {
         "max_leverage": min(max_lev, 3.0),
         "max_position_pct": max_pos,
@@ -219,7 +225,12 @@ def infer_shadow_equity(
     configured = portfolio_value_usd(portfolio, cap_raw)
     live_raw = jparse(meta_raw.get("portfolio:live_equity:v1"))
     if live_raw:
-        live = float(live_raw.get("equity_usd") or live_raw.get("equity") or 0)
+        live = float(
+            live_raw.get("live_equity_usd")
+            or live_raw.get("equity_usd")
+            or live_raw.get("equity")
+            or 0
+        )
         if live > 0:
             return configured, live, "redis:live_equity"
 
@@ -406,6 +417,13 @@ def trace_shadow_entry(
 
     max_open = int(rules.get("shadow_max_open", 30))
     max_pos = float(risk_lim.get("max_position_pct", 0.05))
+    try:
+        from risk_limits import normalize_max_position_pct  # noqa: WPS433
+
+        max_pos = normalize_max_position_pct(max_pos)
+    except Exception:
+        if max_pos > 1:
+            max_pos = max_pos / 100.0
     lev = float(sig.get("leverage") or (sig.get("risk") or {}).get("recommended_leverage") or 1)
     lev = max(1.0, min(lev, float(risk_lim.get("max_leverage", 3))))
     leader = (read_env_flags().get("SHADOW_OPEN_IDS") or "SHADOW_A").split(",")[0].strip()
@@ -634,6 +652,172 @@ def decision_row(
     return line
 
 
+def log_ozet_panel(
+    *,
+    rules: dict,
+    risk_lim: dict,
+    max_open: int,
+    open_n: int,
+    symbols: list[str],
+    signals: dict,
+    features: dict,
+    alim_uygun_list: list[tuple[str, str, float]],
+    block_all: Counter,
+    open_positions: dict[str, dict],
+    portfolio: dict,
+    cd_map: dict[str, str | None],
+    all_trades: list[dict],
+    chron: list[dict],
+    detail_raw: dict,
+    feat_raw_map: dict,
+    valid_long: list,
+    valid_short: list,
+    directional: list,
+) -> None:
+    """Tek bakista: sinir, tarama, acik, bekleyen, alinan, zarar."""
+    log("\n" + "=" * 72)
+    log("  OZET PANEL — sinir / tarama / acik / bekleyen / alim / zarar")
+    log("=" * 72)
+
+    log("\n  [SINIRLAR — kac tane alabilir?]")
+    log(f"    Shadow max acik:     {max_open} pozisyon (slot)")
+    log(f"    Immunity max acik:   {risk_lim['max_open_positions']} pozisyon")
+    log(f"    Islem basi max:      portfoyun %{risk_lim['max_position_pct']*100:.1f}'i")
+    log(f"    Max kaldirac:        {risk_lim['max_leverage']:.0f}x")
+    log(f"    Sembol basi:         1 pozisyon (SHADOW_ONE_PER_SYMBOL)")
+    log(f"    Blacklist:           {len(rules.get('blacklist') or [])} coin engelli")
+    log(f"    Min shadow conf:     {float(rules.get('shadow_min_conf', 0.60))*100:.0f}%")
+    log(f"    Cooldown:            {int(rules.get('cooldown_sec', 600))}s "
+        f"(zarar sonrasi {int(rules.get('loss_cooldown_sec', 1800))}s)")
+
+    total_open = int(portfolio.get("total_open", 0) or 0)
+    oms_open = int(portfolio.get("oms_open", 0) or 0)
+    bos_slot = max(0, max_open - open_n)
+    log(f"\n  [ANLIK — simdi kac tane acik?]")
+    log(f"    Acik toplam:         {total_open} (shadow={open_n}, oms={oms_open})")
+    log(f"    Dolu slot:           {open_n}/{max_open}  |  Bos slot: {bos_slot}")
+    if open_n >= max_open:
+        log("    !! SLOT DOLU — yeni alim yapilamaz, once kapanis gerekir")
+
+    log(f"\n  [TARAMA — alim komutu icin evren]")
+    log(f"    Taranan sembol:      {len(symbols)}")
+    log(f"    Feature var:         {len(features)}/{len(symbols)}")
+    log(f"    Sinyal var:          {len(signals)}/{len(symbols)}")
+    log(f"    Yonlu sinyal:        {len(directional)} (long+short)")
+    log(f"    Gecerli LONG:        {len(valid_long)}")
+    log(f"    Gecerli SHORT:       {len(valid_short)}")
+    log(f"    ALIM_UYGUN:          {len(alim_uygun_list)} sembol (tum kontrolleri gecti)")
+    log("    Blokaj (top 8):")
+    for b, n in block_all.most_common(8):
+        log(f"      {n:4d}x  {b}")
+
+    bekleyen_hazir: list[tuple[str, str, float]] = []
+    bekleyen_cooldown: list[str] = []
+    bekleyen_slot_yok: list[tuple[str, str, float]] = []
+    for sym, d, c in alim_uygun_list:
+        if sym in open_positions:
+            continue
+        cd_raw = cd_map.get(f"trade:cooldown:shadow:{sym.upper()}")
+        cooled = bool(cd_raw and time.time() < float(cd_raw or 0))
+        if cooled:
+            bekleyen_cooldown.append(sym)
+        elif open_n >= max_open:
+            bekleyen_slot_yok.append((sym, d, c))
+        else:
+            bekleyen_hazir.append((sym, d, c))
+
+    log(f"\n  [BEKLEYEN — alinmayi bekleyen]")
+    log(f"    Hazir (slot var):    {len(bekleyen_hazir)} sembol — shadow tick ile acilir")
+    for sym, d, c in sorted(bekleyen_hazir, key=lambda x: -x[2])[:8]:
+        log(f"      -> {sym:14s} {d:5s} conf={c:.0%}")
+    if len(bekleyen_hazir) > 8:
+        log(f"      ... +{len(bekleyen_hazir) - 8} daha")
+    log(f"    Cooldown'da:         {len(bekleyen_cooldown)} sembol")
+    if bekleyen_cooldown[:5]:
+        log(f"      -> {', '.join(bekleyen_cooldown[:5])}")
+    log(f"    Slot dolu yuzunden:  {len(bekleyen_slot_yok)} sembol (sinyal OK, yer yok)")
+    if bekleyen_slot_yok[:3]:
+        for sym, d, c in bekleyen_slot_yok[:3]:
+            log(f"      -> {sym:14s} {d:5s} conf={c:.0%}")
+
+    positions = portfolio.get("positions") or []
+    log(f"\n  [ACIK POZISYONLAR — su an tutulan] ({len(positions)})")
+    if not positions:
+        log("    (acik pozisyon yok)")
+    for p in positions:
+        sym = p.get("symbol", "?")
+        entry = float(p.get("entry_price", 0) or 0)
+        price = ticker_price(
+            detail_raw.get(f"binance:ticker:{sym.lower()}"),
+            feat_raw_map.get(f"features:latest:{sym}"),
+            detail_raw.get(f"klines:1h:{sym}"),
+        )
+        upnl = 0.0
+        if entry > 0 and price > 0:
+            upnl = (
+                (price - entry) / entry * 100
+                if p.get("direction") == "long"
+                else (entry - price) / entry * 100
+            )
+        log(
+            f"    {sym:14s} {str(p.get('direction','?')):5s} "
+            f"entry={entry:.4f} upnl={upnl:+.2f}% "
+            f"size=${float(p.get('size_usd',0) or 0):.0f} "
+            f"[{p.get('source','?')}]"
+        )
+
+    log(f"\n  [ALINMIS — islem gecmisi] ({len(all_trades)} kayit)")
+    if not all_trades:
+        log("    Henuz kapanmis islem yok")
+    else:
+        wins = sum(1 for t in all_trades if float(t.get("pnl_pct", 0)) > 0)
+        losses = sum(1 for t in all_trades if float(t.get("pnl_pct", 0)) < 0)
+        flat = len(all_trades) - wins - losses
+        total_pnl = sum(float(t.get("pnl_usdt", 0)) for t in all_trades)
+        log(f"    Toplam islem:        {len(all_trades)}")
+        log(f"    Kazanc / Zarar:      {wins} / {losses} (flat={flat})")
+        wr_pct = wins / len(all_trades) * 100 if all_trades else 0
+        log(f"    Win rate:            {wr_pct:.1f}%")
+        log(f"    Toplam PnL:          ${total_pnl:+,.2f}")
+        log("    Son 5 alinan/kapanan:")
+        for t in all_trades[:5]:
+            sym = str(t.get("symbol", "?"))
+            pnl_u = float(t.get("pnl_usdt", 0))
+            pnl_p = float(t.get("pnl_pct", 0))
+            mark = "WIN" if pnl_p > 0 else ("LOSS" if pnl_p < 0 else "FLAT")
+            log(
+                f"      {sym:14s} {str(t.get('direction','?')):5s} "
+                f"{pct(pnl_p)} ${pnl_u:+.2f} [{mark}] "
+                f"{str(t.get('exit_reason') or t.get('close_reason') or '?')[:28]}"
+            )
+
+    log(f"\n  [ZARAR — en cok kaybettiren]")
+    if chron:
+        sym_pnl: dict[str, float] = defaultdict(float)
+        sym_n: dict[str, int] = defaultdict(int)
+        for t in chron:
+            s = str(t.get("symbol", "?"))
+            sym_pnl[s] += float(t.get("pnl_usdt", 0))
+            sym_n[s] += 1
+        losers = [(s, p) for s, p in sym_pnl.items() if p < 0]
+        losers.sort(key=lambda x: x[1])
+        if losers:
+            for sym, pnl_u in losers[:8]:
+                log(f"    {sym:14s} ${pnl_u:+.2f} ({sym_n[sym]} islem)")
+        else:
+            log("    Zarar eden sembol yok (tum islemler >= 0)")
+        winners = [(s, p) for s, p in sym_pnl.items() if p > 0]
+        winners.sort(key=lambda x: -x[1])
+        if winners:
+            log("  [KAZANC — en iyi semboller]")
+            for sym, pnl_u in winners[:5]:
+                log(f"    {sym:14s} ${pnl_u:+.2f} ({sym_n[sym]} islem)")
+    else:
+        log("    Islem gecmisi bos")
+
+    log("=" * 72)
+
+
 def main() -> None:
     t0 = time.time()
     rules = load_profit_rules()
@@ -653,6 +837,13 @@ def main() -> None:
     uptime = shell("uptime 2>/dev/null | tail -1")
     if uptime:
         log(f"  {uptime}")
+        try:
+            load_part = uptime.split("load average:")[-1].strip().split(",")[0].strip()
+            load_1 = float(load_part)
+            if load_1 > 15:
+                log(f"  !! UYARI: VPS yuksek yuk (load {load_1:.0f}) — [5]+ bolumler yavas; OZET [4z] erken gelir")
+        except (IndexError, ValueError):
+            pass
     hb_keys = [f"system:heartbeat:{s}" for s in CRITICAL_SERVICES]
     hb_raw = mget_map(hb_keys)
     now = time.time()
@@ -971,6 +1162,55 @@ def main() -> None:
         sig = signals.get(sym) or {}
         log(f"  {sym:14s} {d:5s} conf={conf:.0%}  red={str(sig.get('reject_reason','?'))[:55]}")
 
+    # Islem gecmisi + acik pozisyon fiyatlari (OZET icin erken yukle)
+    ozet_extra: list[str] = []
+    for sym in (p.get("symbol") for p in (portfolio.get("positions") or []) if p.get("symbol")):
+        for k in (
+            f"binance:ticker:{sym.lower()}",
+            f"features:latest:{sym}",
+            f"klines:1h:{sym}",
+        ):
+            if k not in detail_raw:
+                ozet_extra.append(k)
+    if ozet_extra:
+        detail_raw.update(mget_map(ozet_extra, "ozet-acik"))
+
+    all_trades: list[dict] = []
+    raw_trades = rc("LRANGE", "oms:trade_history", "0", "499")
+    for line in raw_trades.splitlines():
+        try:
+            all_trades.append(json.loads(line.strip()))
+        except json.JSONDecodeError:
+            pass
+    all_trades.sort(key=lambda t: float(t.get("closed_at", 0)), reverse=True)
+    chron: list[dict] = (
+        sorted(all_trades, key=lambda t: float(t.get("closed_at", 0))) if all_trades else []
+    )
+
+    log("\n[4z] OZET PANEL — sinir / tarama / acik / bekleyen / alim / zarar")
+    log("  (Detay bolumler [5]+ asagida; VPS yuksek yukte uzun surebilir)")
+    log_ozet_panel(
+        rules=rules,
+        risk_lim=risk_lim,
+        max_open=max_open,
+        open_n=open_n,
+        symbols=symbols,
+        signals=signals,
+        features=features,
+        alim_uygun_list=alim_uygun_list,
+        block_all=block_all,
+        open_positions=open_positions,
+        portfolio=portfolio,
+        cd_map=cd_map,
+        all_trades=all_trades,
+        chron=chron,
+        detail_raw=detail_raw,
+        feat_raw_map=feat_raw_map,
+        valid_long=valid_long,
+        valid_short=valid_short,
+        directional=directional,
+    )
+
     log(f"\n[5] TUM YONLU SINYALLER — KARAR ZINCIRI ({len(directional)} adet)")
     extra_keys: list[str] = []
     sample_syms = [s for s, _, _, _ in sorted(directional, key=lambda x: -x[2])]
@@ -1221,14 +1461,7 @@ def main() -> None:
         )
 
     log("\n[8] ISLEM GECMISI")
-    raw_trades = rc("LRANGE", "oms:trade_history", "0", "499")
-    all_trades: list[dict] = []
-    for line in raw_trades.splitlines():
-        try:
-            all_trades.append(json.loads(line.strip()))
-        except json.JSONDecodeError:
-            pass
-    all_trades.sort(key=lambda t: float(t.get("closed_at", 0)), reverse=True)
+    log(f"  Kayit sayisi: {len(all_trades)} (ozet [4z] bolumunde)")
 
     log(f"\n[8a] SON 15 ISLEM — al/sat + boyut")
     log(
@@ -1295,11 +1528,11 @@ def main() -> None:
         if entry_sig.get("consensus_reasoning"):
             log(f"    giris_gerekce: {str(entry_sig.get('consensus_reasoning'))[:100]}")
 
-    chron: list[dict] = []
-    if all_trades:
+    if all_trades and not chron:
         chron = sorted(all_trades, key=lambda t: float(t.get("closed_at", 0)))
-        recent = chron[-50:]
-        old = chron[:-50]
+    if chron:
+        recent = chron[-50:] if len(chron) > 50 else chron
+        old = chron[:-50] if len(chron) > 50 else []
 
         def wr(ts: list[dict]) -> float:
             return sum(1 for t in ts if float(t.get("pnl_pct", 0)) > 0) / len(ts) if ts else 0.0

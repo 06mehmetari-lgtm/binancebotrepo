@@ -9,6 +9,16 @@ type LivePnLRow = {
   current_price?: number | null
   unrealized_pct?: number
   unrealized_usdt?: number
+  entry_time?: number
+  guard?: PositionDecision['guard']
+  verdict?: PositionDecision['verdict']
+  current_signal?: Pick<NonNullable<PositionDecision['current_signal']>, 'direction'>
+  ladder?: Pick<
+    NonNullable<PositionDecision['ladder']>,
+    'stop_loss_pct' | 'take_profit_pct' | 'breakeven_armed' | 'peak_upnl_pct'
+  >
+  peak_upnl_pct?: number
+  breakeven_armed?: boolean
 }
 
 type LivePnLPayload = {
@@ -49,11 +59,23 @@ export function useLivePositionPnL(basePositions: PositionDecision[], enabled = 
     return basePositions.map(p => {
       const row = map.get(`${p.symbol}:${p.direction}`)
       if (!row) return p
+      const ladder = row.ladder
+        ? { ...p.ladder, ...row.ladder }
+        : p.ladder
       return {
         ...p,
+        entry_time: row.entry_time ?? p.entry_time,
         current_price: row.current_price ?? p.current_price,
         unrealized_pct: row.unrealized_pct ?? p.unrealized_pct,
         unrealized_usdt: row.unrealized_usdt ?? p.unrealized_usdt,
+        guard: row.guard ?? p.guard,
+        verdict: row.verdict ?? p.verdict,
+        current_signal: row.current_signal
+          ? { ...p.current_signal, ...row.current_signal }
+          : p.current_signal,
+        ladder,
+        peak_upnl_pct: row.peak_upnl_pct ?? ladder?.peak_upnl_pct ?? p.peak_upnl_pct,
+        breakeven_armed: row.breakeven_armed ?? ladder?.breakeven_armed ?? p.breakeven_armed,
       }
     })
   }, [basePositions, live])

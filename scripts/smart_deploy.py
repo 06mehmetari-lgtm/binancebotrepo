@@ -589,13 +589,14 @@ def main() -> int:
     print(f"\n[4/4] Akilli deploy (tahmini ~{fmt_duration(max(60, vps_est))})...")
     print("-" * 68)
 
+    deploy_timeout = int(s.get("DEPLOY_TIMEOUT", "14400") or "14400")
     transport = c.get_transport()
     channel = transport.open_session() if transport else None
     if not channel:
         total_timer.stop()
         print("HATA: SSH channel")
         return 1
-    channel.settimeout(7200)
+    channel.settimeout(deploy_timeout)
     channel.exec_command(
         f"cd {prom_dir} && "
         f"DEPLOY_EXPECTED_SHA={expected_sha} "
@@ -603,7 +604,7 @@ def main() -> int:
         f"python3 -u scripts/smart_deploy_remote.py"
     )
     buf: list[str] = []
-    deadline = time.time() + 7200
+    deadline = time.time() + deploy_timeout
     while True:
         if channel.recv_ready():
             chunk = channel.recv(8192).decode("utf-8", errors="replace")
@@ -624,7 +625,7 @@ def main() -> int:
             break
         if time.time() > deadline:
             total_timer.stop()
-            print("\nHATA: Zaman asimi (120dk)")
+            print(f"\nHATA: Zaman asimi ({fmt_duration(deploy_timeout)})")
             c.close()
             return 1
         time.sleep(0.05)

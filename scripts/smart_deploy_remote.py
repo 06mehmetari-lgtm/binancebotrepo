@@ -146,6 +146,9 @@ CRITICAL_SERVICES = frozenset({
 
 INFRA_SERVICES = ["redis", "postgres", "timescaledb", "qdrant"]
 
+# up -d sonrasi hala ayaga kalkmayan servisler — bir kez rebuild dene
+REBUILD_IF_STUCK = frozenset({"rag_memory", "neat_evolution", "rl_agent", "backtest", "autopsy"})
+
 
 def log(msg: str) -> None:
     print(msg, flush=True)
@@ -276,6 +279,41 @@ def up_service(svc: str) -> tuple[bool, str]:
     return code == 0, out[:250]
 
 
+def service_logs_tail(svc: str, lines: int = 12) -> str:
+    ctr = CONTAINER_BY_SERVICE.get(svc, svc)
+    _, out = run(f"docker logs {ctr} --tail {lines} 2>&1", timeout=30)
+    return out[:500] if out else ""
+
+
+def heal_stuck_service(svc: str) -> tuple[bool, str]:
+    """Kapali/crash-loop servisi kaldir; gerekirse rebuild."""
+    ctr = CONTAINER_BY_SERVICE.get(svc, "?")
+    if container_running(ctr):
+        return True, "already running"
+
+    ok, msg = up_service(svc)
+    wait_s = 6 if svc in REBUILD_IF_STUCK else 3
+    time.sleep(wait_s)
+    if container_running(ctr):
+        return True, "up -d"
+
+    tail = service_logs_tail(svc)
+    if tail:
+        log(f"    ! {svc} log: {tail.splitlines()[-1][:100]}")
+
+    if svc not in REBUILD_IF_STUCK:
+        return False, msg or tail[:200] or "container ayaga kalkmadi"
+
+    log(f"    ⟳ {svc} rebuild (crash-loop / imaj eksik)")
+    success, build_msg = build_service(svc)
+    if not success:
+        return False, build_msg[:250]
+    time.sleep(4)
+    if container_running(ctr):
+        return True, "rebuild+up"
+    return False, service_logs_tail(svc)[:250] or "rebuild sonrasi hala kapali"
+
+
 def heal_fleet(
     code_affected: set[str] | None = None,
     heal_all_down: bool = True,
@@ -338,10 +376,12 @@ def heal_fleet(
             continue
         why = "kod etkilendi" if svc in code_affected else ("kritik" if svc in CRITICAL_SERVICES else "kapali")
         log(f"    ↑ {svc} ({ctr}) [{why}]")
-        ok, msg = up_service(svc)
+        ok, msg = heal_stuck_service(svc)
         if ok:
-            time.sleep(3 if svc in CRITICAL_SERVICES else 1)
-            healed.append({"service": svc, "container": ctr, "was": st, "action": "up -d"})
+            healed.append({
+                "service": svc, "container": ctr, "was": st,
+                "action": msg if msg != "up -d" else "up -d",
+            })
         else:
             failed.append({"service": svc, "container": ctr, "was": st, "error": msg})
 
@@ -695,11 +735,10 @@ def apply_running_updates(
 
         if not running:
             log(f"    ↑ {svc} kapali — once up, sonra kod yukle")
-            up_ok, up_msg = up_service(svc)
+            up_ok, up_msg = heal_stuck_service(svc)
             if not up_ok:
                 fail_list.append({"service": svc, "action": "up", "error": up_msg})
                 continue
-            time.sleep(3 if svc in CRITICAL_SERVICES else 1)
             running = container_running(ctr)
 
         if mode == "build":
@@ -953,6 +992,24 @@ def main() -> int:
         for svc in still_down:
             ctr = CONTAINER_BY_SERVICE.get(svc, "?")
             log(f"    ✗ {svc} ({ctr})")
+
+    # Son sans: kapali kalan servisleri rebuild ile tekrar dene
+    if still_down:
+        log("\n  EK HEAL (kapali servisler):")
+        for svc in still_down:
+            log(f"    ↑ {svc} tekrar deneniyor...")
+            ok, msg = heal_stuck_service(svc)
+            if ok:
+                log(f"    ✓ {svc} — {msg}")
+                ok_list.append({"service": svc, "action": f"ek_heal:{msg}"})
+                fail_list = [x for x in fail_list if x.get("service") != svc]
+            else:
+                log(f"    ✗ {svc} — {msg[:120]}")
+        fleet_after = scan_fleet()
+        fleet_summary["after_up"] = sum(1 for r in fleet_after if r["up"])
+        fleet_summary["after_down"] = sum(1 for r in fleet_after if not r["up"])
+        fleet_summary["down_services"] = [r["service"] for r in fleet_after if not r["up"]]
+        still_down = fleet_summary["down_services"]
 
     if fail_list or still_down:
         log("\nSMART_DEPLOY_PARTIAL")

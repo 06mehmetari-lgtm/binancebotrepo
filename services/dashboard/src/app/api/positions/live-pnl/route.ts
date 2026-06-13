@@ -23,12 +23,32 @@ export async function GET() {
         direction: p.direction,
         source: p.source,
         entry_price: p.entry_price,
+        entry_time: p.entry_time,
         current_price: p.current_price,
         unrealized_pct: p.unrealized_pct,
         unrealized_usdt: p.unrealized_usdt,
         margin_usd: p.margin_usd ?? p.size_usd,
         notional_usd: p.notional_usd,
         leverage: p.leverage,
+        guard: p.guard,
+        verdict: p.verdict,
+        current_signal: p.current_signal
+          ? { direction: p.current_signal.direction }
+          : undefined,
+        ladder: p.ladder
+          ? {
+              stop_loss_pct: p.ladder.stop_loss_pct,
+              take_profit_pct: p.ladder.take_profit_pct,
+              breakeven_armed: p.ladder.breakeven_armed,
+              peak_upnl_pct: p.ladder.peak_upnl_pct,
+              trough_upnl_pct: p.ladder.trough_upnl_pct,
+              bounce_from_trough_pct: p.ladder.bounce_from_trough_pct,
+              recovery_armed: p.ladder.recovery_armed,
+              trail_floor_pct: p.ladder.trail_floor_pct,
+            }
+          : undefined,
+        peak_upnl_pct: p.peak_upnl_pct,
+        breakeven_armed: p.breakeven_armed,
       })),
     })
   } finally {

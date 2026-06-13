@@ -494,9 +494,11 @@ services:
     container_name: prometheus_rag
     restart: unless-stopped
     environment:
+      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379
       - QDRANT_URL=http://qdrant:6333
       - POSTGRES_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/prometheus_trading
     depends_on:
+      - redis
       - qdrant
       - postgres
     networks:

@@ -1,7 +1,8 @@
 import asyncio
+import json
 import logging
 import os
-import json
+import time
 
 import redis.asyncio as aioredis
 
@@ -15,12 +16,29 @@ log = logging.getLogger(__name__)
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379")
 QDRANT_URL = os.getenv("QDRANT_URL", "http://qdrant:6333")
 
-embedder = Embedder()
-qdrant_manager = QdrantManager(qdrant_url=QDRANT_URL)
-retriever = MemoryRetriever(qdrant_url=QDRANT_URL)
+embedder: Embedder | None = None
+qdrant_manager: QdrantManager | None = None
+retriever: MemoryRetriever | None = None
 
 
-async def handle_memory_request(redis: aioredis.Redis, request: dict) -> list[dict]:
+def _ensure_clients() -> None:
+    global embedder, qdrant_manager, retriever
+    if embedder is None:
+        embedder = Embedder()
+    if qdrant_manager is None:
+        qdrant_manager = QdrantManager(qdrant_url=QDRANT_URL)
+    if retriever is None:
+        retriever = MemoryRetriever(qdrant_url=QDRANT_URL)
+
+
+async def heartbeat_loop(redis: aioredis.Redis) -> None:
+    while True:
+        await redis.set("system:heartbeat:rag_memory", str(time.time()), ex=120)
+        await asyncio.sleep(30)
+
+
+async def handle_memory_request(request: dict) -> list[dict]:
+    _ensure_clients()
     query = request.get("query", "")
     symbol = request.get("symbol", "")
     limit = int(request.get("limit", 5))
@@ -32,28 +50,33 @@ async def handle_memory_request(redis: aioredis.Redis, request: dict) -> list[di
 
 
 async def main():
-    log.info("rag_memory starting")
+    log.info("rag_memory starting (redis=%s)", REDIS_URL.split("@")[-1])
     redis = await aioredis.from_url(REDIS_URL)
+    await redis.ping()
+    log.info("Redis connected")
 
-    # Initialize Qdrant collection
+    asyncio.create_task(heartbeat_loop(redis))
+    await redis.set("system:heartbeat:rag_memory", str(time.time()), ex=120)
+
+    _ensure_clients()
     try:
         qdrant_manager.ensure_collection("trade_memories", vector_size=384)
         log.info("Qdrant collection ready")
     except Exception as e:
-        log.warning(f"Qdrant init warning: {e}")
+        log.warning("Qdrant init warning: %s", e)
 
-    # Listen for memory retrieval requests
     while True:
         item = await redis.blpop("rag:requests", timeout=5)
+        await redis.set("system:heartbeat:rag_memory", str(time.time()), ex=120)
         if not item:
             continue
         try:
             request = json.loads(item[1])
-            results = await handle_memory_request(redis, request)
+            results = await handle_memory_request(request)
             response_key = f"rag:response:{request.get('request_id', 'unknown')}"
             await redis.set(response_key, json.dumps(results), ex=30)
         except Exception as e:
-            log.error(f"RAG memory error: {e}")
+            log.error("RAG memory error: %s", e)
 
 
 if __name__ == "__main__":

@@ -32,6 +32,9 @@ try:
         paper_cooldown_sec,
         profit_tiers,
         stale_flat_should_exit,
+        compute_exit_estimate,
+        evaluate_position_exit,
+        update_ladder_tracking,
     )
     from price_resolver import resolve_market_price
 except ImportError:
@@ -53,6 +56,15 @@ except ImportError:
 
     def stale_flat_should_exit(**_kwargs) -> tuple[bool, str]:
         return False, ""
+
+    def compute_exit_estimate(**_kwargs) -> dict:
+        return {"trigger": "hold", "label": "Tutuluyor", "countdown_sec": 3600, "estimated_close_at": time.time() + 3600, "urgency": "normal", "detail": "", "computed_at": time.time()}
+
+    def evaluate_position_exit(**_kwargs) -> tuple[str, str, str]:
+        return "hold", "ok", "hold"
+
+    def update_ladder_tracking(ladder, upnl, hold_sec):
+        return dict(ladder or {})
 
     def cooldown_after_close(pnl_pct: float, *, blacklisted: bool = False) -> int:
         return SYMBOL_COOLDOWN_SEC
@@ -180,8 +192,12 @@ async def hydrate_paper_from_redis(redis: aioredis.Redis) -> None:
                 restored += 1
             if cursor == 0:
                 break
-        equity_target = float(p.initial_capital) if p.initial_capital > 0 else float(p.capital) + locked
-        if restored > 0:
+        equity_target = max(
+            float(PORTFOLIO_VALUE),
+            float(p.initial_capital) if p.initial_capital > 0 else 0.0,
+            float(p.capital) + locked,
+        )
+        if restored > 0 or locked > 0:
             p.capital = max(0.0, equity_target - locked)
             log.info(
                 f"[HYDRATE] {sid} pozisyon={restored} locked=${locked:.0f} "
@@ -794,81 +810,79 @@ async def _enforce_hard_stops(redis: aioredis.Redis) -> None:
                 sl_pct = float(ladder.get("stop_loss_pct") or SHADOW_HARD_STOP_PCT)
                 tp_pct = float(ladder.get("take_profit_pct") or profit_tiers()[0])
 
-                if price > 0 and entry > 0:
-                    await _persist_shadow_live_quote(redis, shadow_id, sym, pos, price, upnl)
+                sig_raw = await redis.get(f"signal:latest:{sym}")
+                sig_dir = "flat"
+                sig_conf = 0.0
+                if sig_raw:
+                    try:
+                        sig_parsed = json.loads(sig_raw)
+                        sig_dir = sig_parsed.get("direction", "flat")
+                        sig_conf = float(sig_parsed.get("confidence", 0) or 0)
+                    except json.JSONDecodeError:
+                        pass
+                v_dir = "flat"
+                v_conf = 0.0
+                verdict_raw = await redis.get(f"agents:verdict:{sym}")
+                if verdict_raw:
+                    try:
+                        v = json.loads(verdict_raw)
+                        v_dir = str(v.get("direction", "flat"))
+                        v_conf = float(v.get("confidence", 0) or 0)
+                    except json.JSONDecodeError:
+                        pass
+                guard_action = "hold"
+                guard_raw = await redis.get(f"guard:position:{sym}")
+                if guard_raw:
+                    try:
+                        guard_action = str(json.loads(guard_raw).get("action", "hold"))
+                    except json.JSONDecodeError:
+                        pass
 
-                peak = float(ladder.get("peak_upnl_pct") or upnl)
-                if upnl > peak:
-                    ladder["peak_upnl_pct"] = round(upnl, 4)
-                if float(ladder.get("peak_upnl_pct") or 0) >= BREAKEVEN_ACTIVATE_PCT:
-                    ladder["breakeven_armed"] = True
+                ladder = update_ladder_tracking(ladder, upnl, hold_sec)
                 if ladder != pos.get("ladder"):
                     await _persist_shadow_ladder(redis, shadow_id, sym, ladder)
+
+                if opened > 0:
+                    pos["exit_estimate"] = compute_exit_estimate(
+                        entry_time=opened,
+                        direction=direction,
+                        upnl=upnl,
+                        peak_upnl=float(ladder.get("peak_upnl_pct") or upnl),
+                        sl_pct=sl_pct,
+                        tp_pct=tp_pct,
+                        sig_dir=sig_dir,
+                        v_dir=v_dir,
+                        v_conf=v_conf,
+                        breakeven_armed=bool(ladder.get("breakeven_armed")),
+                        guard_action=guard_action,
+                    )
+
+                if price > 0 and entry > 0:
+                    await _persist_shadow_live_quote(redis, shadow_id, sym, pos, price, upnl)
 
                 close_price = price if price > 0 else entry
                 if close_price <= 0:
                     continue
 
-                if hold_sec >= MAX_POSITION_HOLD_SEC:
+                exit_action, exit_reason, exit_kind = evaluate_position_exit(
+                    hold_sec=hold_sec,
+                    upnl=upnl,
+                    direction=direction,
+                    ladder=ladder,
+                    sl_pct=sl_pct,
+                    tp_pct=tp_pct,
+                    sig_dir=sig_dir,
+                    sig_conf=sig_conf,
+                    v_dir=v_dir,
+                    v_conf=v_conf,
+                    guard_action=guard_action,
+                )
+                if exit_action in ("close", "emergency_close"):
                     await _force_close_shadow(
                         redis, shadow_id, sym, pos, close_price,
-                        f"max_hold {MAX_POSITION_HOLD_SEC // 60}dk ({upnl:+.2f}%)",
+                        f"{exit_kind} — {exit_reason}",
                     )
                     continue
-
-                if hold_sec >= STALE_VERDICT_HOLD_SEC:
-                    sig_raw = await redis.get(f"signal:latest:{sym}")
-                    sig_dir = "flat"
-                    v_dir = "flat"
-                    v_conf = 0.0
-                    if sig_raw:
-                        try:
-                            sig_dir = json.loads(sig_raw).get("direction", "flat")
-                        except json.JSONDecodeError:
-                            pass
-                    verdict_raw = await redis.get(f"agents:verdict:{sym}")
-                    if verdict_raw:
-                        try:
-                            v = json.loads(verdict_raw)
-                            v_dir = str(v.get("direction", "flat"))
-                            v_conf = float(v.get("confidence", 0) or 0)
-                        except json.JSONDecodeError:
-                            pass
-                    peak = float(ladder.get("peak_upnl_pct") or upnl)
-                    should_stale, stale_why = stale_flat_should_exit(
-                        hold_sec=hold_sec,
-                        upnl=upnl,
-                        peak_upnl=peak,
-                        sig_dir=sig_dir,
-                        direction=direction,
-                        v_dir=v_dir,
-                        v_conf=v_conf,
-                    )
-                    if should_stale:
-                        await _force_close_shadow(
-                            redis, shadow_id, sym, pos, close_price,
-                            f"stale_flat_verdict — {stale_why}",
-                        )
-                        continue
-
-                if price <= 0:
-                    continue
-
-                if ladder.get("breakeven_armed") and upnl <= BREAKEVEN_FLOOR_PCT and hold_sec >= 120:
-                    await _force_close_shadow(
-                        redis, shadow_id, sym, pos, price,
-                        f"breakeven_stop zirve {peak:+.2f}% → {upnl:+.2f}%",
-                    )
-                elif upnl <= -sl_pct:
-                    await _force_close_shadow(
-                        redis, shadow_id, sym, pos, price,
-                        f"hard_stop %{sl_pct:.1f} ({upnl:+.2f}%)",
-                    )
-                elif upnl >= tp_pct:
-                    await _force_close_shadow(
-                        redis, shadow_id, sym, pos, price,
-                        f"take_profit %{tp_pct:.1f} ({upnl:+.2f}%)",
-                    )
             except json.JSONDecodeError:
                 continue
             except Exception as e:
@@ -943,25 +957,21 @@ async def simulate_tick(redis: aioredis.Redis, symbol: str):
         pass
 
     try:
-        from risk_limits import get_active_limits
+        from risk_limits import get_active_limits, normalize_max_position_pct
         lim = get_active_limits()
-        max_pos_pct = lim.max_position_pct
-        if max_pos_pct > 1:
-            max_pos_pct = 0.05
+        max_pos_pct = normalize_max_position_pct(lim.max_position_pct)
         global_max_lev = float(lim.max_leverage)
-        min_lev_floor = float(getattr(lim, "min_leverage", 1) or 1)
     except Exception:
         max_pos_pct = 0.05
         global_max_lev = 3.0
-        min_lev_floor = 1.0
 
     risk = signal.get("risk") or {}
     leverage = float(signal.get("leverage") or risk.get("recommended_leverage") or 1)
-    leverage = max(min_lev_floor, min(leverage, global_max_lev))
+    leverage = max(1.0, min(leverage, global_max_lev))
     lev_reasons = signal.get("leverage_reasons") or risk.get("leverage_reasons") or []
 
     if risk.get("position_size_pct"):
-        max_pos_pct = min(max_pos_pct, float(risk["position_size_pct"]))
+        max_pos_pct = min(max_pos_pct, normalize_max_position_pct(float(risk["position_size_pct"])))
     open_n = await _shadow_open_count(redis, SHADOW_OPEN_IDS[0])
     leader = SHADOW_OPEN_IDS[0] if SHADOW_OPEN_IDS else "SHADOW_A"
     sizing_cap = _shadow_equity_usd(leader)
@@ -970,8 +980,6 @@ async def simulate_tick(redis: aioredis.Redis, symbol: str):
     margin_usd = base_usd * min(confidence, 0.85) * size_mult
     if open_n >= SHADOW_MAX_OPEN * 0.8:
         margin_usd *= 0.85
-    if margin_usd <= 0:
-        return
     port_pct = margin_usd / sizing_cap if sizing_cap > 0 else 0
     notional_usd = margin_usd * leverage
     owner = await _shadow_owner(redis, symbol) if SHADOW_ONE_PER_SYMBOL else None
@@ -1022,14 +1030,35 @@ async def simulate_tick(redis: aioredis.Redis, symbol: str):
             rotated = await _try_rotate_shadow_slot(redis, shadow_id, symbol, confidence)
             if not rotated or await _shadow_open_count(redis, shadow_id) >= SHADOW_MAX_OPEN:
                 continue
+        pf = trader.portfolios.get(shadow_id)
+        entry_margin = margin_usd
+        if pf:
+            free = float(pf.capital)
+            if entry_margin > free:
+                await _sync_shadow_capital(redis)
+                free = float(pf.capital)
+            if entry_margin > free and free >= 50:
+                log.warning(
+                    f"[SHADOW SIZE] {shadow_id} {symbol} "
+                    f"hedef=${entry_margin:.0f} serbest=${free:.0f} — serbest nakit kullaniliyor"
+                )
+                entry_margin = free * 0.98
+            elif entry_margin > free:
+                log.warning(
+                    f"[SHADOW SKIP] {shadow_id} {symbol} yetersiz nakit: "
+                    f"hedef=${entry_margin:.0f} serbest=${free:.0f}"
+                )
+                continue
+        entry_port_pct = entry_margin / sizing_cap if sizing_cap > 0 else 0
+        entry_notional = entry_margin * leverage
         open_side = "BUY" if direction == "long" else "SELL_SHORT"
-        result = trader.execute(shadow_id, symbol, open_side, price, margin_usd, leverage=leverage)
+        result = trader.execute(shadow_id, symbol, open_side, price, entry_margin, leverage=leverage)
         if not result:
             pf = trader.portfolios.get(shadow_id)
             free = float(pf.capital) if pf else 0.0
             log.warning(
                 f"[SHADOW SKIP] {shadow_id} {symbol} acilamadi: "
-                f"margin=${margin_usd:.0f} free=${free:.0f} equity=${sizing_cap:.0f}"
+                f"margin=${entry_margin:.0f} free=${free:.0f} equity=${sizing_cap:.0f}"
             )
             continue
         await redis.set(
@@ -1038,8 +1067,8 @@ async def simulate_tick(redis: aioredis.Redis, symbol: str):
                 "direction": direction,
                 "price": price,
                 "entry_price": price,
-                "size_usd": margin_usd,
-                "margin_usd": margin_usd,
+                "size_usd": entry_margin,
+                "margin_usd": entry_margin,
                 "time": time.time(),
                 "entry_time": time.time(),
                 "entry_signal": signal,
@@ -1049,11 +1078,11 @@ async def simulate_tick(redis: aioredis.Redis, symbol: str):
                     "entry_confidence": confidence,
                     "leverage": leverage,
                     "leverage_reasons": lev_reasons[:6],
-                    "position_size_pct": round(port_pct, 5),
+                    "position_size_pct": round(entry_port_pct, 5),
                     "slot_budget_usd": round(slot_budget, 2),
                     "kelly_fraction": float(signal.get("kelly_fraction", 0) or 0),
                     "risk_reasons": (risk.get("reasons") or [])[:4],
-                    "notional_usd": round(notional_usd, 2),
+                    "notional_usd": round(entry_notional, 2),
                     "learn_note": learn_note[:80] if learn_note else "",
                     "entry_lesson": last_lesson[:200] if last_lesson else "",
                 },
@@ -1063,9 +1092,9 @@ async def simulate_tick(redis: aioredis.Redis, symbol: str):
         await _publish_portfolio(redis)
         log.info(
             f"[SHADOW OPEN] {shadow_id} {direction.upper()} {symbol} "
-            f"conf={confidence:.2f} margin=${margin_usd:.0f} ({port_pct*100:.1f}%) "
+            f"conf={confidence:.2f} margin=${entry_margin:.0f} ({entry_port_pct*100:.1f}%) "
             f"equity=${sizing_cap:.0f} base=${PORTFOLIO_VALUE:.0f} "
-            f"lev={leverage:.0f}x notional=${notional_usd:.0f} "
+            f"lev={leverage:.0f}x notional=${entry_notional:.0f} "
             f"sl={sl_pct}% tp={tp_pct}% learn={learn_note or '-'} "
             f"reasons={','.join(lev_reasons[:3])}"
         )
@@ -1223,12 +1252,11 @@ async def _trading_loop(redis: aioredis.Redis):
             await redis.set("system:heartbeat:shadow_system", str(time.time()), ex=120)
 
         try:
+            await _sync_shadow_capital(redis)
             await hydrate_paper_from_redis(redis)
             await _enforce_hard_stops(redis)
         except Exception as e:
             log.error(f"shadow hard_stop: {e}")
-
-        await _sync_shadow_capital(redis)
 
         ordered = await _ordered_symbols(redis, symbols)
         for symbol in ordered:

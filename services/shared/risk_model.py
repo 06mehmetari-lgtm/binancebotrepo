@@ -34,13 +34,13 @@ def evaluate_risk(
         cap = 10000.0
 
     try:
-        from risk_limits import get_active_limits, is_paper_unlimited
+        from risk_limits import get_active_limits, is_paper_unlimited, normalize_max_position_pct
 
         lim = get_active_limits()
-        max_pos = lim.max_position_pct / 100.0 if lim.max_position_pct > 1 else lim.max_position_pct
+        max_pos = normalize_max_position_pct(lim.max_position_pct)
         max_open = lim.max_open_positions
         global_max_lev = float(lim.max_leverage)
-        min_lev_floor = float(getattr(lim, "min_leverage", 1) or 1)
+        min_lev_floor = min(float(getattr(lim, "min_leverage", 1) or 1), global_max_lev)
         paper = is_paper_unlimited()
     except Exception:
         max_pos = 0.05

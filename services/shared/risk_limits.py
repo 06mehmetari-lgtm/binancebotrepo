@@ -46,7 +46,9 @@ class RiskLimits:
         return cls(
             max_leverage=float(raw.get("max_leverage", DEFAULTS["max_leverage"])),
             min_leverage=float(raw.get("min_leverage", DEFAULTS["min_leverage"])),
-            max_position_pct=float(raw.get("max_position_pct", DEFAULTS["max_position_pct"])),
+            max_position_pct=normalize_max_position_pct(
+                raw.get("max_position_pct", DEFAULTS["max_position_pct"])
+            ),
             max_daily_loss_pct=float(raw.get("max_daily_loss_pct", DEFAULTS["max_daily_loss_pct"])),
             max_open_positions=int(raw.get("max_open_positions", DEFAULTS["max_open_positions"])),
             min_signal_confidence=float(
@@ -90,6 +92,14 @@ class RiskLimits:
 _active = RiskLimits()
 
 
+def normalize_max_position_pct(raw: float) -> float:
+    """0.05 = %5; dashboard bazen 5 veya 50 gonderir."""
+    p = float(raw or DEFAULTS["max_position_pct"])
+    if p > 1.0:
+        p = p / 100.0
+    return max(0.001, min(p, 1.0))
+
+
 def is_paper_unlimited() -> bool:
     """DRY_RUN / PAPER_UNLIMITED: sanal para — agresif öğrenme modu."""
     if os.getenv("PAPER_UNLIMITED", "").lower() in ("1", "true", "yes"):
@@ -109,10 +119,12 @@ def apply_paper_overrides(lim: RiskLimits) -> RiskLimits:
         paper_conf = 0.58
         paper_open = 30
     paper_lev_cap = float(os.getenv("PAPER_MAX_LEVERAGE", "20"))
+    max_lev = min(max(lim.max_leverage, 3.0), paper_lev_cap)
+    min_lev = min(max(float(getattr(lim, "min_leverage", 1.0) or 1.0), 1.0), max_lev)
     return RiskLimits(
-        max_leverage=min(max(lim.max_leverage, 3.0), paper_lev_cap),
-        min_leverage=max(float(getattr(lim, "min_leverage", 5.0) or 5.0), 1.0),
-        max_position_pct=min(max(lim.max_position_pct, 0.05), 0.08),
+        max_leverage=max_lev,
+        min_leverage=min_lev,
+        max_position_pct=min(max(normalize_max_position_pct(lim.max_position_pct), 0.05), 0.08),
         max_daily_loss_pct=min(max(lim.max_daily_loss_pct, 0.03), 0.05),
         max_open_positions=max(lim.max_open_positions, paper_open),
         min_signal_confidence=max(paper_conf, min(lim.min_signal_confidence, 0.58)),

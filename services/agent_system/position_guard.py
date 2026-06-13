@@ -176,12 +176,20 @@ def evaluate_position(
             conf_meets,
             is_blacklisted,
             stale_flat_should_exit,
+            evaluate_position_exit,
+            update_ladder_tracking,
+            recovery_should_hold,
+            LOSS_TO_PROFIT_TARGET_PCT,
         )
     except ImportError:
         MAX_POSITION_HOLD_SEC = 3600
         STALE_VERDICT_HOLD_SEC = 1200
         is_blacklisted = lambda _s: False  # noqa: E731
         conf_meets = lambda c, m: c >= m  # noqa: E731
+        evaluate_position_exit = None  # type: ignore
+        update_ladder_tracking = lambda l, u, h: dict(l or {})  # noqa: E731
+        recovery_should_hold = lambda **_k: (False, "")  # noqa: E731
+        LOSS_TO_PROFIT_TARGET_PCT = 0.05
 
     if is_blacklisted(symbol) and hold_sec >= 60:
         return GuardDecision(
@@ -199,6 +207,48 @@ def evaluate_position(
 
     ladder = pos.get("ladder") or {}
     peak_upnl = float(ladder.get("peak_upnl_pct") or upnl)
+    ladder = update_ladder_tracking(ladder, upnl, hold_sec)
+    peak_upnl = float(ladder.get("peak_upnl_pct") or upnl)
+    checks["bounce_pct"] = ladder.get("bounce_from_trough_pct")
+    checks["recovery_armed"] = bool(ladder.get("recovery_armed"))
+
+    if crisis >= 4 or drift == "SHOCK":
+        return GuardDecision(
+            symbol, source, direction, "emergency_close", "critical",
+            f"Kriz L{crisis} / drift {drift} — anında çıkış",
+            upnl, v_conf, trade_action, checks, time.time(),
+        )
+
+    if upnl <= -EMERGENCY_LOSS_PCT:
+        return GuardDecision(
+            symbol, source, direction, "emergency_close", "critical",
+            f"Acil zarar limiti %{EMERGENCY_LOSS_PCT} aşıldı ({upnl:.2f}%)",
+            upnl, v_conf, trade_action, checks, time.time(),
+        )
+
+    if evaluate_position_exit is not None:
+        smart_action, smart_reason, smart_kind = evaluate_position_exit(
+            hold_sec=hold_sec,
+            upnl=upnl,
+            direction=direction,
+            ladder=ladder,
+            sl_pct=float(ladder.get("stop_loss_pct") or MAX_LOSS_PCT),
+            tp_pct=float(ladder.get("take_profit_pct") or TAKE_PROFIT_PCT),
+            sig_dir=sig_dir,
+            sig_conf=sig_conf,
+            v_dir=v_dir,
+            v_conf=v_conf,
+            crisis_level=crisis,
+        )
+        if smart_action in ("close", "emergency_close"):
+            urg = "critical" if smart_action == "emergency_close" else (
+                "high" if smart_kind in ("sl", "tp", "trail", "recovery_profit") else "medium"
+            )
+            return GuardDecision(
+                symbol, source, direction, smart_action, urg,
+                smart_reason,
+                upnl, v_conf, trade_action, {**checks, "exit_kind": smart_kind}, time.time(),
+            )
 
     if hold_sec >= STALE_VERDICT_HOLD_SEC and v_conf < 0.05:
         return GuardDecision(
@@ -217,11 +267,26 @@ def evaluate_position(
         v_conf=v_conf,
     )
     if should_stale:
-        return GuardDecision(
-            symbol, source, direction, "close", "medium",
-            f"stale_flat_verdict — {stale_why} ({hold_sec:.0f}s)",
-            upnl, v_conf, trade_action, checks, time.time(),
+        rec, rec_why = recovery_should_hold(
+            hold_sec=hold_sec,
+            upnl=upnl,
+            peak_upnl=peak_upnl,
+            trough_upnl=float(ladder.get("trough_upnl_pct") or upnl),
+            bounce_pct=float(ladder.get("bounce_from_trough_pct") or 0),
+            sig_dir=sig_dir,
+            direction=direction,
+            sig_conf=sig_conf,
+            v_dir=v_dir,
+            v_conf=v_conf,
+            ladder=ladder,
         )
+        if not rec:
+            return GuardDecision(
+                symbol, source, direction, "close", "medium",
+                f"stale_flat_verdict — {stale_why} ({hold_sec:.0f}s)",
+                upnl, v_conf, trade_action, checks, time.time(),
+            )
+        checks["recovery_defer"] = rec_why
 
     try:
         from risk_limits import get_active_limits
@@ -243,20 +308,12 @@ def evaluate_position(
     action = "hold"
     urgency = "low"
     reason = f"İzleniyor — AI güven {v_conf:.0%}, PnL {upnl:+.2f}%"
-
-    if crisis >= 4 or drift == "SHOCK":
-        return GuardDecision(
-            symbol, source, direction, "emergency_close", "critical",
-            f"Kriz L{crisis} / drift {drift} — anında çıkış",
-            upnl, v_conf, trade_action, checks, time.time(),
+    if ladder.get("recovery_armed"):
+        reason = (
+            f"Toparlanma modu — dip {float(ladder.get('trough_upnl_pct') or 0):+.2f}% "
+            f"→ hedef +{LOSS_TO_PROFIT_TARGET_PCT:.2f}% (şimdi {upnl:+.2f}%)"
         )
-
-    if upnl <= -EMERGENCY_LOSS_PCT:
-        return GuardDecision(
-            symbol, source, direction, "emergency_close", "critical",
-            f"Acil zarar limiti %{EMERGENCY_LOSS_PCT} aşıldı ({upnl:.2f}%)",
-            upnl, v_conf, trade_action, checks, time.time(),
-        )
+        urgency = "medium"
 
     if upnl > peak_upnl:
         peak_upnl = upnl
@@ -267,11 +324,19 @@ def evaluate_position(
         breakeven_armed = True
         checks["breakeven_armed"] = True
     if breakeven_armed and upnl <= BREAKEVEN_FLOOR_PCT and hold_sec >= 120:
-        return GuardDecision(
-            symbol, source, direction, "close", "high",
-            f"Breakeven stop — zirve {peak_upnl:+.2f}% → {upnl:+.2f}%",
-            upnl, v_conf, trade_action, checks, time.time(),
+        rec, _ = recovery_should_hold(
+            hold_sec=hold_sec, upnl=upnl, peak_upnl=peak_upnl,
+            trough_upnl=float(ladder.get("trough_upnl_pct") or upnl),
+            bounce_pct=float(ladder.get("bounce_from_trough_pct") or 0),
+            sig_dir=sig_dir, direction=direction, sig_conf=sig_conf,
+            v_dir=v_dir, v_conf=v_conf, ladder=ladder,
         )
+        if not rec:
+            return GuardDecision(
+                symbol, source, direction, "close", "high",
+                f"Breakeven stop — zirve {peak_upnl:+.2f}% → {upnl:+.2f}%",
+                upnl, v_conf, trade_action, checks, time.time(),
+            )
 
     tp_pct = float(ladder.get("take_profit_pct") or TAKE_PROFIT_PCT)
     if upnl >= tp_pct:
@@ -325,6 +390,29 @@ def evaluate_position(
             pass
         elif paper_mode and hold_sec < PAPER_MIN_HOLD_SEC and upnl > -EMERGENCY_LOSS_PCT:
             pass
+        elif upnl < 0:
+            rec, rec_why = recovery_should_hold(
+                hold_sec=hold_sec, upnl=upnl, peak_upnl=peak_upnl,
+                trough_upnl=float(ladder.get("trough_upnl_pct") or upnl),
+                bounce_pct=float(ladder.get("bounce_from_trough_pct") or 0),
+                sig_dir=sig_dir, direction=direction, sig_conf=sig_conf,
+                v_dir=v_dir, v_conf=v_conf, ladder=ladder,
+            )
+            if rec:
+                reason = f"AI FLAT ertelendi — {rec_why}"
+                urgency = "medium"
+            elif peak_upnl >= TRAIL_MIN_PEAK_PCT and upnl > 0:
+                return GuardDecision(
+                    symbol, source, direction, "close", "high",
+                    f"Kâr koruma — zirve {peak_upnl:+.2f}%, çıkış {upnl:+.2f}% (AI FLAT)",
+                    upnl, v_conf, trade_action, checks, time.time(),
+                )
+            else:
+                return GuardDecision(
+                    symbol, source, direction, "close", "high",
+                    "AI çıkış (FLAT) — toparlanma yok",
+                    upnl, v_conf, trade_action, checks, time.time(),
+                )
         elif peak_upnl >= TRAIL_MIN_PEAK_PCT and upnl > 0:
             return GuardDecision(
                 symbol, source, direction, "close", "high",
@@ -349,6 +437,29 @@ def evaluate_position(
             pass
         elif paper_mode and hold_sec < PAPER_MIN_HOLD_SEC:
             pass
+        elif upnl < 0:
+            rec, rec_why = recovery_should_hold(
+                hold_sec=hold_sec, upnl=upnl, peak_upnl=peak_upnl,
+                trough_upnl=float(ladder.get("trough_upnl_pct") or upnl),
+                bounce_pct=float(ladder.get("bounce_from_trough_pct") or 0),
+                sig_dir=sig_dir, direction=direction, sig_conf=sig_conf,
+                v_dir=v_dir, v_conf=v_conf, ladder=ladder,
+            )
+            if rec:
+                reason = f"AI FLAT zararda ertelendi — {rec_why}"
+                urgency = "medium"
+            elif peak_upnl >= TRAIL_MIN_PEAK_PCT and upnl > 0:
+                return GuardDecision(
+                    symbol, source, direction, "close", "high",
+                    f"Kâr koruma — zirve {peak_upnl:+.2f}% (AI FLAT, hâlâ +{upnl:+.2f}%)",
+                    upnl, v_conf, trade_action, checks, time.time(),
+                )
+            else:
+                return GuardDecision(
+                    symbol, source, direction, "close", "high",
+                    f"AI FLAT ({v_conf:.0%}) — toparlanma yok, kapat",
+                    upnl, v_conf, trade_action, checks, time.time(),
+                )
         elif peak_upnl >= TRAIL_MIN_PEAK_PCT and upnl > 0:
             return GuardDecision(
                 symbol, source, direction, "close", "high",
@@ -375,11 +486,21 @@ def evaluate_position(
         )
 
     if upnl <= -MAX_LOSS_PCT:
-        return GuardDecision(
-            symbol, source, direction, "close", "high",
-            f"Koruyucu zarar kes %{MAX_LOSS_PCT} ({upnl:.2f}%)",
-            upnl, v_conf, trade_action, checks, time.time(),
+        rec, rec_why = recovery_should_hold(
+            hold_sec=hold_sec, upnl=upnl, peak_upnl=peak_upnl,
+            trough_upnl=float(ladder.get("trough_upnl_pct") or upnl),
+            bounce_pct=float(ladder.get("bounce_from_trough_pct") or 0),
+            sig_dir=sig_dir, direction=direction, sig_conf=sig_conf,
+            v_dir=v_dir, v_conf=v_conf, ladder=ladder,
         )
+        if not rec:
+            return GuardDecision(
+                symbol, source, direction, "close", "high",
+                f"Koruyucu zarar kes %{MAX_LOSS_PCT} ({upnl:.2f}%)",
+                upnl, v_conf, trade_action, checks, time.time(),
+            )
+        reason = f"Zarar kes ertelendi — {rec_why}"
+        urgency = "medium"
 
     if crisis >= 2 and upnl < 0:
         return GuardDecision(
@@ -745,8 +866,8 @@ async def run_guard_cycle(
 
         ladder = pos.get("ladder") or {}
         peak = float(ladder.get("peak_upnl_pct") or 0)
-        if dec.unrealized_pct > peak:
-            ladder["peak_upnl_pct"] = round(dec.unrealized_pct, 4)
+        if dec.unrealized_pct > peak or ladder.get("trough_upnl_pct") is None:
+            ladder = update_ladder_tracking(ladder, dec.unrealized_pct, float(dec.checks.get("hold_sec") or 0))
             if dec.unrealized_pct >= BREAKEVEN_ACTIVATE_PCT:
                 ladder["breakeven_armed"] = True
             pos["ladder"] = ladder
