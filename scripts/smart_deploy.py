@@ -354,29 +354,33 @@ def main() -> int:
         return 1
     print(f"  OK ({fmt_duration(time.time() - t0)})")
 
-    print("\n[3/4] VPS git pull + script...")
+    print("\n[3/4] VPS git sync...")
     t0 = time.time()
-    sftp = c.open_sftp()
-    try:
-        sftp.mkdir(f"{prom_dir}/scripts")
-    except OSError:
-        pass
-    try:
-        sftp.mkdir(f"{prom_dir}/deploy")
-    except OSError:
-        pass
-    sftp.put(str(REMOTE_SCRIPT), f"{prom_dir}/scripts/smart_deploy_remote.py")
-    sftp.put(str(VERSION_FILE), f"{prom_dir}/deploy/VERSION.json")
-    sftp.close()
-
-    _, o, e = c.exec_command(
-        f"cd {prom_dir} && git pull origin master 2>&1 | tail -5",
-        timeout=120,
+    sync_cmd = (
+        f"cd {prom_dir} && "
+        f"git fetch origin master 2>&1 && "
+        f"git reset --hard origin/master 2>&1 && "
+        f"git rev-parse --short HEAD"
     )
-    pull_out = o.read().decode("utf-8", errors="replace")
-    print(pull_out or e.read().decode("utf-8", errors="replace"))
-    print(f"  OK ({fmt_duration(time.time() - t0)})")
+    _, o, e = c.exec_command(sync_cmd, timeout=180)
+    sync_out = (o.read() + e.read()).decode("utf-8", errors="replace").strip()
+    lines = [ln.strip() for ln in sync_out.splitlines() if ln.strip()]
+    vps_sha = lines[-1] if lines else ""
+    print(sync_out[-600:] if len(sync_out) > 600 else sync_out)
 
+    if not vps_sha or len(vps_sha) > 20 or not all(c in "0123456789abcdef" for c in vps_sha.lower()):
+        total_timer.stop()
+        print("  HATA: VPS git sync basarisiz")
+        return 1
+
+    if vps_sha[:7] != short_sha[:7]:
+        total_timer.stop()
+        print(f"  HATA: VPS SHA ({vps_sha}) != PC ({short_sha}) — kod yansimadi")
+        print("  Cozum: VPS'te manuel: cd /root/prometheus && git fetch && git reset --hard origin/master")
+        return 1
+    print(f"  OK — VPS {vps_sha} ({fmt_duration(time.time() - t0)})")
+
+    pc_esc = json.dumps(pending_files, ensure_ascii=False).replace("'", "'\\''")
     vps_only, _ = estimate_from_plan(local_plan, history)
     print(f"\n[4/4] Akilli deploy (on tahmin ~{fmt_duration(vps_only)})...")
     print("-" * 68)
@@ -389,7 +393,10 @@ def main() -> int:
         return 1
     channel.settimeout(3600)
     channel.exec_command(
-        f"cd {prom_dir} && python3 -u scripts/smart_deploy_remote.py"
+        f"cd {prom_dir} && "
+        f"DEPLOY_EXPECTED_SHA={short_sha} "
+        f"DEPLOY_PC_FILES='{pc_esc}' "
+        f"python3 -u scripts/smart_deploy_remote.py"
     )
     buf: list[str] = []
     deadline = time.time() + 3600
@@ -403,6 +410,9 @@ def main() -> int:
                     if parsed:
                         deploy_plan = parsed
                         vps_est, vps_detail = estimate_total_seconds(parsed, history)
+                        if not parsed.get("update_live") and not parsed.get("update_build"):
+                            vps_est = PHASE_GIT_S + PHASE_SSH_S + PHASE_PULL_S + 90
+                            vps_detail = "kod degismedi"
                         total_timer.calibrate(vps_est, f"VPS: {vps_detail}")
                         plan_applied = True
                 sys.stdout.write(chunk)
@@ -447,8 +457,12 @@ def main() -> int:
     if accuracy:
         print(f"  Tahmin: {accuracy}")
     if "SMART_DEPLOY_DONE" in out:
+        applied = (deploy_plan or {}).get("update_live", []) + (deploy_plan or {}).get("update_build", [])
+        if pending_files and not applied:
+            print("  UYARI: PC'de dosya vardi ama VPS'te hic servis guncellenmedi!")
+            print("  Dashboard ana sayfasinda 'Deploy durumu' paneline bakin.")
         print(f"  BASARILI — Dashboard: v{version}")
-        print("  Son deploy saati dashboard ustunde gorunur")
+        print("  Son deploy saati: ana sayfa + ust menu")
         print(f"  http://{host}:3000")
     elif "SMART_DEPLOY_PARTIAL" in out:
         print(f"  KISMI BASARI — v{version} (hatalar yukarida)")

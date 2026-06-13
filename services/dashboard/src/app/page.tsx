@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { LiveEquityChart, type CurvePoint } from '@/components/LiveEquityChart'
 import { RecentTradesFeed } from '@/components/RecentTradesFeed'
+import DeployStatusPanel from './components/DeployStatusPanel'
 import { useStreamInvalidate } from '@/hooks/useStream'
 
 interface Market { symbol: string; rsi_14: number; direction: string; confidence: number; regime: string; crisis_level: number; kelly_fraction: number; drift_status: string }
@@ -247,6 +248,8 @@ export default function Home() {
 
   return (
     <div className="space-y-5">
+      <DeployStatusPanel />
+
       <div className="flex items-center justify-between">
         <h1 className="text-white font-bold text-base">Overview — Canlı İzleme</h1>
         <span className="text-xs text-gray-600 flex items-center gap-1.5">

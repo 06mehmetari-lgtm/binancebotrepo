@@ -36,9 +36,16 @@ interface DeployInfo {
   commit_short?: string
   deployed_at_iso?: string
   status?: string
+  summary_tr?: string
+  code_applied?: boolean
+  git_sync_ok?: boolean
   services_ok?: string[]
   services_failed?: string[]
   files_changed?: string[]
+  pc_files_pending?: string[]
+  skipped?: string[]
+  vps_sha?: string
+  expected_sha?: string
 }
 
 interface Notification { id: string; type: string; title: string; body: string; level: string; ts: number; symbol?: string }
@@ -92,13 +99,16 @@ function fmtDeployTime(iso?: string): string {
 
 function DeployVersionBadge({ deploy }: { deploy: DeployInfo | null | undefined }) {
   if (!deploy?.version) return null
-  const ok = deploy.status === 'ok'
+  const ok = deploy.status === 'ok' || deploy.code_applied
   const partial = deploy.status === 'partial'
-  const color = ok
-    ? 'text-green-400 border-green-700/50 bg-green-950/40'
-    : partial
-      ? 'text-yellow-400 border-yellow-700/50 bg-yellow-950/40'
-      : 'text-gray-400 border-gray-700/50 bg-gray-900/40'
+  const failed = deploy.status === 'sync_failed' || deploy.git_sync_ok === false
+  const color = failed
+    ? 'text-red-400 border-red-700/50 bg-red-950/40'
+    : ok
+      ? 'text-green-400 border-green-700/50 bg-green-950/40'
+      : partial
+        ? 'text-yellow-400 border-yellow-700/50 bg-yellow-950/40'
+        : 'text-orange-400 border-orange-700/50 bg-orange-950/40'
   const deployTime = fmtDeployTime(deploy.deployed_at_iso)
   const failed = (deploy.services_failed ?? []).length
   const title = [

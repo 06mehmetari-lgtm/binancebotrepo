@@ -336,6 +336,88 @@ def redis_pw() -> str:
     return ""
 
 
+def deploy_env() -> tuple[str, list[str]]:
+    expected = os.environ.get("DEPLOY_EXPECTED_SHA", "").strip()
+    raw = os.environ.get("DEPLOY_PC_FILES", "[]").strip()
+    try:
+        pc_files = json.loads(raw) if raw else []
+    except json.JSONDecodeError:
+        pc_files = []
+    if not isinstance(pc_files, list):
+        pc_files = []
+    return expected, pc_files
+
+
+def build_deploy_record(
+    *,
+    version_meta: dict,
+    new_sha: str,
+    files: list[str],
+    deploy_plan: dict,
+    ok_list: list[dict],
+    fail_list: list[dict],
+    skipped: list[str],
+    fleet_summary: dict,
+    healed: list[dict] | None = None,
+) -> dict:
+    expected, pc_files = deploy_env()
+    git_sync_ok = (not expected) or new_sha.startswith(expected[:12]) or expected.startswith(new_sha[:12])
+    applied = [
+        x["service"] for x in ok_list
+        if x.get("action") in ("live_cp+restart", "build+up")
+    ]
+    code_applied = bool(applied)
+
+    if not git_sync_ok:
+        status = "sync_failed"
+    elif code_applied:
+        status = "partial" if fail_list else "ok"
+    elif files:
+        status = "no_apply"
+    else:
+        status = "no_changes"
+    if fleet_summary.get("down_services") and status == "ok":
+        status = "partial"
+
+    if not git_sync_ok:
+        summary_tr = (
+            f"Kod yansimadi: VPS git ({new_sha[:12]}) ile beklenen ({expected[:12]}) eslesmiyor"
+        )
+    elif code_applied:
+        summary_tr = f"Guncellenen: {', '.join(applied)}"
+    elif files:
+        summary_tr = "Dosya degisti ama hicbir servis guncellenemedi"
+    elif pc_files:
+        summary_tr = (
+            f"PC'de {len(pc_files)} dosya vardi; VPS'te ayni commit — servis guncellenmedi"
+        )
+    else:
+        summary_tr = "Kod degismedi — servisler ayakta birakildi"
+
+    return {
+        "version": version_meta.get("version", new_sha),
+        "commit": version_meta.get("commit", new_sha),
+        "commit_short": new_sha,
+        "deployed_at": time.time(),
+        "deployed_at_iso": time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime()),
+        "files_changed": files,
+        "pc_files_pending": pc_files,
+        "services_ok": [x["service"] for x in ok_list],
+        "services_failed": [x.get("service", "?") for x in fail_list],
+        "details_ok": ok_list,
+        "details_failed": fail_list,
+        "skipped": skipped,
+        "plan": deploy_plan,
+        "fleet": fleet_summary,
+        "code_applied": code_applied,
+        "git_sync_ok": git_sync_ok,
+        "vps_sha": new_sha,
+        "expected_sha": expected or new_sha,
+        "summary_tr": summary_tr,
+        "status": status,
+    }
+
+
 def redis_set(key: str, payload: dict) -> None:
     rp = redis_pw()
     if not rp:
@@ -555,23 +637,25 @@ def main() -> int:
     log("\n  GUNCELLENECEK (kod degisti):")
     if not services:
         log("    (dosya degismedi — sadece kapali servisler kaldirilacak)")
-        redis_set("system:deploy:version", {
-            "version": version_meta.get("version", new_sha),
-            "commit": version_meta.get("commit", new_sha),
-            "commit_short": new_sha,
-            "deployed_at": time.time(),
-            "deployed_at_iso": time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime()),
-            "files_changed": files,
-            "services_ok": [h["service"] for h in healed],
-            "services_failed": [h["service"] for h in heal_failed],
-            "fleet": {
+        fleet_after = scan_fleet()
+        deploy_record = build_deploy_record(
+            version_meta=version_meta,
+            new_sha=new_sha,
+            files=files,
+            deploy_plan=deploy_plan,
+            ok_list=[{**h, "service": h["service"]} for h in healed],
+            fail_list=[{**h, "service": h.get("service", "?")} for h in heal_failed],
+            skipped=skipped,
+            fleet_summary={
                 "before_up": up_n, "before_down": down_n,
-                "after_up": sum(1 for r in scan_fleet() if r["up"]),
-                "down_services": [r["service"] for r in scan_fleet() if not r["up"]],
+                "after_up": sum(1 for r in fleet_after if r["up"]),
+                "down_services": [r["service"] for r in fleet_after if not r["up"]],
             },
-            "status": "ok" if not heal_failed else "partial",
-            "note": "kod degismedi, fleet heal",
-        })
+            healed=healed,
+        )
+        deploy_record["note"] = "kod degismedi, fleet heal"
+        redis_set("system:deploy:version", deploy_record)
+        log(f"\n  {deploy_record.get('summary_tr', '')}")
         LAST_SHA_FILE.write_text(new_sha, encoding="utf-8")
         if heal_failed:
             log("\n  YAPILAMAYANLAR:")
@@ -618,28 +702,24 @@ def main() -> int:
         "heartbeat_wait": hb_wait,
     }
 
-    deploy_record = {
-        "version": version_meta.get("version", new_sha),
-        "commit": version_meta.get("commit", new_sha),
-        "commit_short": new_sha,
-        "deployed_at": time.time(),
-        "deployed_at_iso": time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime()),
-        "files_changed": files,
-        "services_ok": [x["service"] for x in ok_list],
-        "services_failed": [x.get("service", "?") for x in fail_list],
-        "details_ok": ok_list,
-        "details_failed": fail_list,
-        "skipped": skipped,
-        "fleet": fleet_summary,
-        "status": "ok" if not fail_list and not fleet_summary["down_services"] else (
-            "partial" if ok_list or fleet_summary["after_up"] > up_n else "failed"
-        ),
-    }
+    deploy_record = build_deploy_record(
+        version_meta=version_meta,
+        new_sha=new_sha,
+        files=files,
+        deploy_plan=deploy_plan,
+        ok_list=ok_list,
+        fail_list=fail_list,
+        skipped=skipped,
+        fleet_summary=fleet_summary,
+    )
+    if fleet_summary["down_services"] and deploy_record["status"] == "ok":
+        deploy_record["status"] = "partial"
     redis_set("system:deploy:version", deploy_record)
     LAST_SHA_FILE.write_text(new_sha, encoding="utf-8")
 
     log("\n" + "=" * 68)
     log(f"  DEPLOY {deploy_record['status'].upper()} — v{deploy_record['version']}")
+    log(f"  {deploy_record.get('summary_tr', '')}")
     log("=" * 68)
 
     if ok_list:
