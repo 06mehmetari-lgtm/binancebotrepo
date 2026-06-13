@@ -592,6 +592,7 @@ async def simulate_tick(redis: aioredis.Redis, symbol: str):
         return
     signal = json.loads(sig_raw)
     direction = signal.get("direction")
+    confidence = float(signal.get("confidence", 0.5))
     if direction == "flat" or not signal.get("is_valid"):
         return
 
@@ -614,7 +615,6 @@ async def simulate_tick(redis: aioredis.Redis, symbol: str):
     if price <= 0:
         return
 
-    confidence = float(signal.get("confidence", 0.5))
     decision = signal.get("decision") or {}
     sl_pct = float(decision.get("stop_loss_pct") or signal.get("stop_loss_pct") or 1.2)
     tp_tiers = decision.get("take_profit_tiers_pct") or signal.get("take_profit_tiers") or profit_tiers()

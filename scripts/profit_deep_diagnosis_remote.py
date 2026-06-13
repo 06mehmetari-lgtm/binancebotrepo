@@ -103,14 +103,21 @@ def load_profit_rules() -> dict:
         return {"error": str(exc)}
 
 
-def ticker_price(raw: str | None) -> float:
+def ticker_price(raw: str | None, feat_raw: str | None = None) -> float:
     t = jparse(raw)
-    if not t:
-        return 0.0
-    td = t.get("data", t) if isinstance(t, dict) else {}
-    bid = float(td.get("b", td.get("c", 0)) or 0)
-    ask = float(td.get("a", bid) or bid)
-    return (bid + ask) / 2 if bid and ask else bid
+    if t:
+        td = t.get("data", t) if isinstance(t, dict) else {}
+        bid = float(td.get("b", td.get("c", 0)) or 0)
+        ask = float(td.get("a", bid) or bid)
+        if bid > 0:
+            return (bid + ask) / 2 if ask else bid
+    feat = jparse(feat_raw)
+    if feat:
+        for key in ("close", "last_price", "mark_price"):
+            p = float(feat.get(key, 0) or 0)
+            if p > 0:
+                return p
+    return 0.0
 
 
 def classify_shadow_block(
@@ -395,7 +402,10 @@ def main() -> None:
     for b, n in block_all.most_common(10):
         log(f"    {n:4d}x  {b}")
     if alim_uygun_list:
-        log("  Uygun ama slot yok (ilk 10):")
+        if open_n >= max_open:
+            log("  Uygun ama slot yok (ilk 10):")
+        else:
+            log(f"  Uygun sinyaller ({open_n}/{max_open} slot dolu) — shadow acmiyorsa WS/fiyat/bug:")
         for sym, d, c in sorted(alim_uygun_list, key=lambda x: -x[2])[:10]:
             log(f"    {sym:14s} {d:5s} conf={c:.0%}")
 
@@ -428,7 +438,10 @@ def main() -> None:
         block = classify_shadow_block(sig, sym, cooled, open_n, max_open, rules)
         if sym in open_positions:
             block = f"ACIK_{open_positions[sym].get('direction', '?')}"
-        price = ticker_price(detail_raw.get(f"binance:ticker:{sym.lower()}"))
+        price = ticker_price(
+            detail_raw.get(f"binance:ticker:{sym.lower()}"),
+            detail_raw.get(f"features:latest:{sym}"),
+        )
         log(decision_row(sym, sig, verdict, learn, block, price))
 
     if near_miss:
@@ -446,7 +459,7 @@ def main() -> None:
             pos = jparse(pos_raw.get(pk)) or {}
             sym = pos.get("symbol", pk.split(":")[-1])
             sid = pk.split(":")[2] if pk.count(":") >= 2 else "?"
-            opened = float(pos.get("opened_at", pos.get("entry_time", 0)) or 0)
+            opened = float(pos.get("time", pos.get("opened_at", pos.get("entry_time", 0))) or 0)
             hold = int(time.time() - opened) if opened else 0
             kalan = max(0, max_hold - hold)
             log(f"  {sid}/{sym}: hold={hold}s kalan_max={kalan}s "
@@ -478,7 +491,10 @@ def main() -> None:
         entry = float(p.get("entry_price", 0))
         opened = float(p.get("opened_at", p.get("entry_time", 0)) or 0)
         hold = int(time.time() - opened) if opened else int(p.get("hold_seconds", 0) or 0)
-        price = ticker_price(detail_raw.get(f"binance:ticker:{sym.lower()}"))
+        price = ticker_price(
+            detail_raw.get(f"binance:ticker:{sym.lower()}"),
+            detail_raw.get(f"features:latest:{sym}"),
+        )
         upnl = 0.0
         if entry > 0 and price > 0:
             upnl = (
@@ -600,10 +616,13 @@ def main() -> None:
 
     ticker_zero = sum(
         1 for sym in sample_syms
-        if ticker_price(detail_raw.get(f"binance:ticker:{sym.lower()}")) <= 0
+        if ticker_price(
+            detail_raw.get(f"binance:ticker:{sym.lower()}"),
+            detail_raw.get(f"features:latest:{sym}"),
+        ) <= 0
     )
     log(f"\n[10] VERI KALITESI")
-    log(f"  Ornekte fiyat=0:   {ticker_zero}/{len(sample_syms)} (WS/ticker kopuk olabilir)")
+    log(f"  Ornekte fiyat=0:   {ticker_zero}/{len(sample_syms)} (WS kopuksa features.close kullanilir)")
     log(f"  Feature eksik:     {no_feature}")
     log(f"  Sinyal eksik:      {no_signal}")
 
@@ -614,7 +633,13 @@ def main() -> None:
             f"KRITIK: Shadow {open_n}/{max_open} dolu — yeni alim IMKANSIZ. "
             f"Acik: {', '.join(open_syms)}. Kapanis veya max_hold beklenmeli."
         )
-    if len(alim_uygun_list) > 0 and open_n >= max_open:
+    if len(alim_uygun_list) > 0 and open_n < max_open:
+        actions.append(
+            f"KRITIK: {len(alim_uygun_list)} ALIM_UYGUN ama sadece {open_n}/{max_open} acik — "
+            f"sinyal VAR, shadow acmiyor (WS/fiyat veya kod hatasi). "
+            f"En iyi: {alim_uygun_list[0][0]} {alim_uygun_list[0][2]:.0%}"
+        )
+    elif len(alim_uygun_list) > 0 and open_n >= max_open:
         actions.append(
             f"{len(alim_uygun_list)} ALIM_UYGUN sinyal var ama slot yok — "
             f"en iyi: {alim_uygun_list[0][0]} {alim_uygun_list[0][1]} {alim_uygun_list[0][2]:.0%}"

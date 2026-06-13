@@ -153,6 +153,9 @@ async def compute_features(redis: aioredis.Redis, symbol: str) -> dict | None:
         features.update(crypto_feats)
         features["symbol"] = symbol
         features["timestamp"] = time.time()
+        if history:
+            features["close"] = float(history[-1][3])
+            features["last_price"] = features["close"]
 
         if symbol not in drift_detectors:
             drift_detectors[symbol] = DriftDetector()

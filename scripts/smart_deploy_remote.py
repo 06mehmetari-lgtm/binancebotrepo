@@ -77,9 +77,9 @@ SHARED_FILE_TARGETS: dict[str, list[tuple[str, str]]] = {
         ("signal_engine", "prometheus_signal"),
         ("immunity_system", "prometheus_immunity"),
     ],
-    "services/shared/portfolio_try.py": [
+    "services/shared/price_resolver.py": [
         ("shadow_system", "prometheus_shadow"),
-        ("oms", "prometheus_oms"),
+        ("agent_system", "prometheus_agents"),
     ],
     "services/shared/llm_providers.py": [
         ("agent_system", "prometheus_agents"),
