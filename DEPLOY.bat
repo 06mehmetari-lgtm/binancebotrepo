@@ -4,7 +4,7 @@ cd /d "%~dp0"
 echo.
 echo ================================================================
 echo   PROMETHEUS DEPLOY — tek tik
-echo   Git push + akilli servis guncelleme + dashboard versiyon
+echo   Git push + akilli servis guncelleme + geri sayim
 echo ================================================================
 echo.
 set "PY="

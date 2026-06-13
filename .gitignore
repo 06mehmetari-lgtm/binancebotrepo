@@ -4,6 +4,7 @@
 .env.*.local
 scripts/_remote_*.py
 scripts/.deploy.secrets
+scripts/.deploy_timing.json
 
 # Python
 __pycache__/

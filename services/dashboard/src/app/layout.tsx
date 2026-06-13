@@ -72,6 +72,24 @@ function TickerChip({ sym, entry }: { sym: string; entry: TickerEntry }) {
   )
 }
 
+function fmtDeployTime(iso?: string): string {
+  if (!iso) return '—'
+  const normalized = iso.includes('T')
+    ? iso
+    : iso.replace(' UTC', 'Z').replace(' ', 'T')
+  const d = new Date(normalized)
+  if (Number.isNaN(d.getTime())) return iso
+  return d.toLocaleString('tr-TR', {
+    timeZone: 'Europe/Istanbul',
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  })
+}
+
 function DeployVersionBadge({ deploy }: { deploy: DeployInfo | null | undefined }) {
   if (!deploy?.version) return null
   const ok = deploy.status === 'ok'
@@ -81,12 +99,12 @@ function DeployVersionBadge({ deploy }: { deploy: DeployInfo | null | undefined 
     : partial
       ? 'text-yellow-400 border-yellow-700/50 bg-yellow-950/40'
       : 'text-gray-400 border-gray-700/50 bg-gray-900/40'
-  const services = (deploy.services_ok ?? []).slice(0, 4).join(', ')
+  const deployTime = fmtDeployTime(deploy.deployed_at_iso)
   const failed = (deploy.services_failed ?? []).length
   const title = [
     `v${deploy.version}`,
     deploy.commit_short ? `sha ${deploy.commit_short}` : '',
-    deploy.deployed_at_iso ?? '',
+    deploy.deployed_at_iso ? `UTC: ${deploy.deployed_at_iso}` : '',
     deploy.services_ok?.length ? `OK: ${deploy.services_ok.join(', ')}` : '',
     failed ? `HATA: ${(deploy.services_failed ?? []).join(', ')}` : '',
     deploy.files_changed?.length ? `${deploy.files_changed.length} dosya` : '',
@@ -94,11 +112,12 @@ function DeployVersionBadge({ deploy }: { deploy: DeployInfo | null | undefined 
   return (
     <span
       title={title}
-      className={`hidden md:inline text-[10px] font-mono px-2 py-0.5 rounded border ${color} max-w-[200px] truncate`}
+      className={`inline-flex flex-col leading-tight text-[10px] font-mono px-2 py-0.5 rounded border ${color}`}
     >
-      v{deploy.version}
-      {services ? ` · ${services}` : ''}
-      {failed > 0 ? ` · !${failed}` : ''}
+      <span className="truncate max-w-[220px]">v{deploy.version}</span>
+      <span className="text-[9px] opacity-80 truncate max-w-[220px]">
+        Son deploy: {deployTime}
+      </span>
     </span>
   )
 }
@@ -340,6 +359,11 @@ function Nav() {
             </div>
             <div className="absolute bottom-6 left-4 right-4 text-xs text-gray-700 space-y-1 border-t border-gray-800/60 pt-4">
               <p>USDM Perpetual Futures · v2.1</p>
+              {meta?.deploy?.deployed_at_iso && (
+                <p className="text-gray-500 font-mono">
+                  Son deploy: {fmtDeployTime(meta.deploy.deployed_at_iso)}
+                </p>
+              )}
               <span className="inline-flex items-center font-bold px-2 py-0.5 rounded bg-yellow-900/40 text-yellow-400 border border-yellow-700/50">PAPER MODE</span>
             </div>
           </div>

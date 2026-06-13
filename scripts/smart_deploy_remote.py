@@ -519,11 +519,20 @@ def main() -> int:
         if len(files) > 30:
             log(f"    ... +{len(files)-30} daha")
 
+    affected_set = set(services.keys())
+    deploy_plan = {
+        "update_live": sorted(s for s, i in services.items() if i.get("mode") != "build"),
+        "update_build": sorted(s for s, i in services.items() if i.get("mode") == "build"),
+        "heal_down": down_n,
+        "skipped": sum(1 for r in fleet_before if r["up"] and r["service"] not in affected_set),
+        "first_deploy": (not old_sha) and bool(services),
+    }
+    log(f"DEPLOY_PLAN: {json.dumps(deploy_plan, separators=(',', ':'))}")
+
     ok_list: list[dict] = []
     fail_list: list[dict] = []
 
     # ── 1) Kapali servisleri kaldir (ayaktakilere dokunma) ──
-    affected_set = set(services.keys())
     healed, heal_failed = heal_fleet(affected_set)
     if healed:
         log(f"\n  Kaldirilan (kapaliydi): {len(healed)} servis")
