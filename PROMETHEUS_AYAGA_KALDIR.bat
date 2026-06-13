@@ -6,7 +6,11 @@ REM ============================================================
 REM  PROMETHEUS — TEK TIK DEPLOY
 REM  PROMETHEUS_AYAGA_KALDIR.bat         → QUICK (~15-45 dk, timeout 3 saat)
 REM  PROMETHEUS_AYAGA_KALDIR.bat skip    → EN HIZLI (~3 dk, build yok)
+REM  PROMETHEUS_AYAGA_KALDIR.bat minimal → 4 servis (~5-12 dk, dashboard yok)
 REM  PROMETHEUS_AYAGA_KALDIR.bat full    → 17 servis (~30-60 dk, timeout 4 saat)
+REM  ROLLING_DEPLOY.bat                   → Faz1 hemen + Faz2 arka plan build (ONERILEN)
+REM  HOT_PATCH.bat                       → build YOK (~1-3 dk, kod kopyala)
+REM  HIZLI_DEPLOY.bat                    → 4 servis build (~5-12 dk)
 REM ============================================================
 
 cd /d "%~dp0"
@@ -65,7 +69,12 @@ if not errorlevel 1 (
 echo.
 if /i "%MODE%"=="skip" goto deploy_skip
 if /i "%MODE%"=="full" goto deploy_full
+if /i "%MODE%"=="minimal" goto deploy_minimal
 goto deploy_quick
+
+:deploy_minimal
+echo [DEPLOY] MINIMAL - 4 servis build, dashboard YOK, ~5-12 dk
+goto deploy_run
 
 :deploy_skip
 echo [DEPLOY] SKIP - build YOK, git pull + restart, ~3 dk
@@ -93,7 +102,9 @@ if "!EXIT_CODE!"=="0" (
 ) else (
     echo ================================================================
     echo   HATA — hizli tekrar: PROMETHEUS_AYAGA_KALDIR.bat skip
-    echo   kod degisti:         PROMETHEUS_AYAGA_KALDIR.bat
+    echo   kod degisti (hizli):  HOT_PATCH.bat  veya  HIZLI_DEPLOY.bat
+    echo   kod degisti (4 svc):   PROMETHEUS_AYAGA_KALDIR.bat minimal
+    echo   kod degisti (10 svc):  PROMETHEUS_AYAGA_KALDIR.bat
     echo   tum servis:          PROMETHEUS_AYAGA_KALDIR.bat full
     echo ================================================================
 )

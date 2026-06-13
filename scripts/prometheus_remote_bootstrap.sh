@@ -6,7 +6,7 @@ set -euo pipefail
 PROM_DIR="${PROMETHEUS_DIR:-/root/prometheus}"
 LOG="/tmp/prometheus_bootstrap.log"
 BUILD_LOG="/tmp/prometheus_build.log"
-MODE="${DEPLOY_MODE:-quick}"          # quick | full | skip
+MODE="${DEPLOY_MODE:-quick}"          # quick | full | skip | minimal
 NO_CACHE="${BUILD_NO_CACHE:-0}"      # 1 = docker build --no-cache
 
 exec > >(tee -a "$LOG") 2>&1
@@ -125,6 +125,9 @@ BUILD_SERVICES_QUICK=(
   data_ingestion context_engine feature_engine signal_engine agent_system learning_engine
   shadow_system oms immunity_system dashboard
 )
+BUILD_SERVICES_MINIMAL=(
+  shadow_system agent_system signal_engine oms
+)
 
 CACHE_FLAG=""
 [ "$NO_CACHE" = "1" ] && CACHE_FLAG="--no-cache"
@@ -138,6 +141,8 @@ if [ "$MODE" = "skip" ]; then
 else
   if [ "$MODE" = "quick" ]; then
     BUILD_LIST=("${BUILD_SERVICES_QUICK[@]}")
+  elif [ "$MODE" = "minimal" ]; then
+    BUILD_LIST=("${BUILD_SERVICES_MINIMAL[@]}")
   else
     BUILD_LIST=("${BUILD_SERVICES_FULL[@]}")
   fi

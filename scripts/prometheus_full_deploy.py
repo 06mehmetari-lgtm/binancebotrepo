@@ -32,7 +32,7 @@ DEFAULT_DIR = "/root/prometheus"
 DEFAULT_REPO = "https://github.com/06mehmetari-lgtm/binancebotrepo.git"
 CONNECT_TIMEOUT = 45
 # VPS dashboard npm build yavas sunucuda 40+ dk surebilir — quick icin genis buffer
-TIMEOUT_BY_MODE = {"skip": 900, "quick": 10800, "full": 14400}
+TIMEOUT_BY_MODE = {"skip": 900, "minimal": 2400, "quick": 10800, "full": 14400}
 DEFAULT_DEPLOY_MODE = "quick"
 
 
@@ -133,7 +133,7 @@ def upload_bootstrap(client) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Prometheus VPS tam deploy")
-    parser.add_argument("--mode", choices=("full", "quick", "skip"), default=None)
+    parser.add_argument("--mode", choices=("full", "quick", "skip", "minimal"), default=None)
     parser.add_argument("--timeout", type=int, default=None, help="SSH bootstrap zaman asimi (saniye)")
     parser.add_argument("--no-cache", action="store_true")
     parser.add_argument("--host", default=None)
