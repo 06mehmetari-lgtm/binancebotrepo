@@ -99,10 +99,10 @@ function fmtDeployTime(iso?: string): string {
 
 function DeployVersionBadge({ deploy }: { deploy: DeployInfo | null | undefined }) {
   if (!deploy?.version) return null
-  const ok = deploy.status === 'ok' || deploy.code_applied
+  const syncFailed = deploy.status === 'sync_failed' || deploy.git_sync_ok === false
   const partial = deploy.status === 'partial'
-  const failed = deploy.status === 'sync_failed' || deploy.git_sync_ok === false
-  const color = failed
+  const ok = deploy.status === 'ok' || deploy.code_applied
+  const color = syncFailed
     ? 'text-red-400 border-red-700/50 bg-red-950/40'
     : ok
       ? 'text-green-400 border-green-700/50 bg-green-950/40'
@@ -110,13 +110,13 @@ function DeployVersionBadge({ deploy }: { deploy: DeployInfo | null | undefined 
         ? 'text-yellow-400 border-yellow-700/50 bg-yellow-950/40'
         : 'text-orange-400 border-orange-700/50 bg-orange-950/40'
   const deployTime = fmtDeployTime(deploy.deployed_at_iso)
-  const failed = (deploy.services_failed ?? []).length
+  const failedCount = (deploy.services_failed ?? []).length
   const title = [
     `v${deploy.version}`,
     deploy.commit_short ? `sha ${deploy.commit_short}` : '',
     deploy.deployed_at_iso ? `UTC: ${deploy.deployed_at_iso}` : '',
     deploy.services_ok?.length ? `OK: ${deploy.services_ok.join(', ')}` : '',
-    failed ? `HATA: ${(deploy.services_failed ?? []).join(', ')}` : '',
+    failedCount ? `HATA: ${(deploy.services_failed ?? []).join(', ')}` : '',
     deploy.files_changed?.length ? `${deploy.files_changed.length} dosya` : '',
   ].filter(Boolean).join(' | ')
   return (
