@@ -11,12 +11,13 @@ type Props = {
   openCount: number
   maxOpen: number
   streamLive: boolean
+  pollingActive?: boolean
   tradingHalted?: boolean
 }
 
-export function MotorEngineBar({ openCount, maxOpen, streamLive, tradingHalted }: Props) {
+export function MotorEngineBar({ openCount, maxOpen, streamLive, pollingActive, tradingHalted }: Props) {
   const pct = maxOpen > 0 ? Math.round((openCount / maxOpen) * 100) : 0
-  const motorOn = !tradingHalted && streamLive
+  const motorOn = !tradingHalted && (streamLive || pollingActive !== false)
 
   return (
     <div className={`rounded-xl border p-4 ${

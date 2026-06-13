@@ -68,12 +68,18 @@ function TickerChip({ sym, entry }: { sym: string; entry: TickerEntry }) {
   const short = sym.replace('USDT', '')
   const arrowColor = entry.direction === 'long' ? 'text-green-400' : entry.direction === 'short' ? 'text-red-400' : 'text-gray-500'
   const arrow = entry.direction === 'long' ? '▲' : entry.direction === 'short' ? '▼' : '—'
+  const confPct = entry.confidence && entry.confidence >= 0.55
+    ? `${Math.round(entry.confidence * 100)}%`
+    : null
   return (
     <a href={`/coin/${sym}`}
       className="flex items-center gap-1 px-2 py-1 rounded bg-gray-800/60 hover:bg-gray-700/60 transition-colors border border-gray-700/40 cursor-pointer">
       <span className="text-gray-400 text-xs font-semibold">{short}</span>
       <span className="text-white text-xs font-mono tabular-nums">{fmtTickerPrice(entry.price, sym)}</span>
       <span className={`text-xs leading-none ${arrowColor}`}>{arrow}</span>
+      {entry.direction === 'flat' && confPct && (
+        <span className="text-[10px] text-gray-500 font-mono">{confPct}</span>
+      )}
       {!entry.live && <span className="text-gray-700 text-[10px]">○</span>}
     </a>
   )
@@ -215,7 +221,7 @@ function Nav() {
 
     fetchTicker()
     fetchNotifications()
-    const t1 = setInterval(fetchTicker, 30000)
+    const t1 = setInterval(fetchTicker, 5000)
     const t2 = setInterval(fetchNotifications, 60000)
     return () => { clearInterval(t1); clearInterval(t2) }
   }, [fetchTicker, fetchNotifications])

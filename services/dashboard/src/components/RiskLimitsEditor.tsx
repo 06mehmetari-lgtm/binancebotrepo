@@ -5,6 +5,7 @@ import type { RiskLimitsConfig } from '@/lib/risk-limits-config'
 import { RISK_LIMITS_DEFAULTS } from '@/lib/risk-limits-config'
 
 type FormState = {
+  min_leverage: string
   max_leverage: string
   max_position_pct: string
   max_daily_loss_pct: string
@@ -16,6 +17,7 @@ type FormState = {
 
 function limitsToForm(l: RiskLimitsConfig): FormState {
   return {
+    min_leverage: String(l.min_leverage ?? 5),
     max_leverage: String(l.max_leverage),
     max_position_pct: String(Math.round(l.max_position_pct * 1000) / 10),
     max_daily_loss_pct: String(Math.round(l.max_daily_loss_pct * 1000) / 10),
@@ -28,6 +30,7 @@ function limitsToForm(l: RiskLimitsConfig): FormState {
 
 function formToPayload(f: FormState) {
   return {
+    min_leverage: parseFloat(f.min_leverage),
     max_leverage: parseFloat(f.max_leverage),
     max_position_pct: parseFloat(f.max_position_pct) / 100,
     max_daily_loss_pct: parseFloat(f.max_daily_loss_pct) / 100,
@@ -105,6 +108,7 @@ export default function RiskLimitsEditor({
   const maxOpen = parseInt(form.max_open_positions, 10) || 3
 
   const fields: { key: keyof FormState; label: string }[] = [
+    { key: 'min_leverage', label: 'Min kaldıraç (×) — taban' },
     { key: 'max_leverage', label: 'Max kaldıraç (×)' },
     { key: 'max_position_pct', label: 'Max pozisyon (%)' },
     { key: 'max_daily_loss_pct', label: 'Max günlük kayıp (%)' },
@@ -120,7 +124,7 @@ export default function RiskLimitsEditor({
         <div>
           <h2 className="text-orange-400 font-bold text-sm">⚙ Dinamik risk limitleri</h2>
           <p className="text-gray-500 text-xs mt-1">
-            Kayıt → PostgreSQL + Redis. Immunity, sinyal motoru ve OMS buradan okur.
+            Kayıt → PostgreSQL + Redis. Sinyal motoru analiz kaldıracını min–max aralığına oturtur.
             {source && <span className="text-gray-600"> Kaynak: {source}</span>}
             {updatedAt && <span className="text-gray-600"> · {updatedAt}</span>}
           </p>

@@ -315,6 +315,7 @@ async def generate_signal(redis: aioredis.Redis, symbol: str) -> dict | None:
                 drift_status=str(context.get("drift_status", features.get("drift_status", "STABLE"))),
                 dissent_risk=dissent,
                 global_max=lim.max_leverage,
+                min_leverage=float(getattr(lim, "min_leverage", 1) or 1),
                 direction=final_dir,
                 is_valid=is_valid and final_dir in ("long", "short"),
             )
@@ -324,7 +325,8 @@ async def generate_signal(redis: aioredis.Redis, symbol: str) -> dict | None:
                     int(risk["recommended_leverage"]),
                     int(lim.max_leverage),
                 )
-            signal_dict["leverage"] = int(lev_rec["leverage"])
+            min_lev = int(max(1, getattr(lim, "min_leverage", 1) or 1))
+            signal_dict["leverage"] = max(min_lev, int(lev_rec["leverage"]))
             signal_dict["leverage_reasons"] = lev_rec.get("reasons", [])
             signal_dict["leverage_meta"] = {
                 "base_lev": lev_rec.get("base_lev"),

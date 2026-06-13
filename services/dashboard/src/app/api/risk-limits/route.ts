@@ -19,6 +19,7 @@ export async function GET() {
 export async function POST(req: Request) {
   const body = await req.json().catch(() => ({}))
   const input = {
+    min_leverage: Number(body.min_leverage),
     max_leverage: Number(body.max_leverage),
     max_position_pct: Number(body.max_position_pct),
     max_daily_loss_pct: Number(body.max_daily_loss_pct),
@@ -37,6 +38,7 @@ export async function POST(req: Request) {
   const pool = getPostgresPool()
   try {
     const res = await pool.query(UPSERT_SQL, [
+      input.min_leverage,
       input.max_leverage,
       input.max_position_pct,
       input.max_daily_loss_pct,

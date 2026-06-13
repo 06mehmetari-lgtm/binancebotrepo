@@ -500,12 +500,70 @@ def live_update(svc: str, container: str, reasons: list[str]) -> tuple[bool, str
     return True, "docker cp OK"
 
 
+def prepare_dashboard_build_env() -> list[str]:
+    """Dusuk RAM VPS: takilan build oncesi swap + stale process temizligi."""
+    paused: list[str] = []
+    log("BUILD_PREP: dashboard — bellek/swap hazirligi")
+    run(
+        "pkill -f 'docker compose build.*dashboard' 2>/dev/null || true",
+        timeout=15,
+    )
+    _, mem = run("free -m 2>/dev/null | awk '/Mem:/{printf \"total=%s used=%s free=%s\", $2,$3,$4}'", timeout=10)
+    if mem.strip():
+        log(f"BUILD_PREP: RAM {mem.strip()}")
+    run(
+        "bash -c 'sw=$(free -m | awk \"/Swap:/{print \\$2}\"); "
+        "if [ \"${sw:-0}\" -lt 1024 ] && [ ! -f /swapfile ]; then "
+        "fallocate -l 2G /swapfile 2>/dev/null && chmod 600 /swapfile && "
+        "mkswap /swapfile 2>/dev/null && swapon /swapfile 2>/dev/null && echo SWAP_OK; "
+        "elif [ \"${sw:-0}\" -lt 1024 ]; then swapon /swapfile 2>/dev/null && echo SWAP_ON; "
+        "else echo SWAP_OK; fi' 2>/dev/null || true",
+        timeout=90,
+    )
+    for heavy in ("neat_evolution", "rl_agent", "backtest", "scenario_engine"):
+        code, out = run(f"docker compose ps -q {heavy} 2>/dev/null", timeout=20)
+        if code == 0 and out.strip():
+            run(f"docker compose stop {heavy} 2>/dev/null || true", timeout=60)
+            paused.append(heavy)
+    if paused:
+        log(f"BUILD_PREP: build icin duraklatildi: {', '.join(paused)}")
+    return paused
+
+
+def resume_paused_services(paused: list[str]) -> None:
+    if not paused:
+        return
+    svc = " ".join(paused)
+    run(f"docker compose start {svc} 2>/dev/null || true", timeout=120)
+    log(f"BUILD_PREP: yeniden baslatildi: {svc}")
+
+
+def prune_docker_disk_safe() -> None:
+    """
+    Build SONRASI guvenli disk temizligi.
+    Build ONCESI tum imajlari silmek YAVASLATIR (npm/next layer cache kaybolur).
+    """
+    log("\n[DISK] Docker temizlik (build sonrasi, guvenli)")
+    run("docker image prune -f 2>/dev/null | tail -3 || true", timeout=120)
+    run(
+        "docker builder prune -f --filter 'until=72h' 2>/dev/null | tail -2 || true",
+        timeout=180,
+    )
+    _, df = run("docker system df --format 'images={{.Images}} cache={{.BuildCache}}' 2>/dev/null", timeout=30)
+    if df.strip():
+        log(f"  Docker disk: {df.strip()}")
+    _, disk = run("df -h / 2>/dev/null | tail -1 | awk '{print $3\"/\"$2\" (\"$5\" dolu)\"}'", timeout=15)
+    if disk.strip():
+        log(f"  Disk /: {disk.strip()}")
+
+
 def verify_dashboard_bundle() -> tuple[bool, str]:
     """Yeni UI gercekten yuklendi mi — cache build yakalamak icin."""
     time.sleep(12)
     checks = (
         ("/api/status", "200"),
         ("/api/deploy-version", "200"),
+        ("/api/portfolio/capital", "200"),
         ("/", "200"),
     )
     for path, want in checks:
@@ -516,17 +574,24 @@ def verify_dashboard_bundle() -> tuple[bool, str]:
         got = out.strip()
         if got != want:
             return False, f"{path} HTTP {got} (beklenen {want}) — eski image/cache olabilir"
-    return True, "dashboard API + ana sayfa OK"
+    _, cap_body = run(
+        "curl -sS -m 20 http://127.0.0.1:3000/api/portfolio/capital",
+        timeout=30,
+    )
+    if "usd_cap" not in (cap_body or ""):
+        return False, "/api/portfolio/capital JSON eksik — KASA API yuklenmemis"
+    return True, "dashboard API + KASA endpoint OK"
 
 
 def build_service(svc: str) -> tuple[bool, str]:
     log(f"BUILD_START: {svc}")
+    paused: list[str] = []
+    if svc == "dashboard":
+        paused = prepare_dashboard_build_env()
     _, sha_out = run(["git", "rev-parse", "HEAD"])
     cachebust = sha_out.splitlines()[-1][:12] if sha_out else str(int(time.time()))
-    no_cache = "--no-cache" if svc == "dashboard" else ""
-    build_cmd = (
-        f"docker compose build {no_cache} --build-arg CACHEBUST={cachebust} {svc}"
-    ).strip()
+    # --no-cache her seferinde 25+ dk takilma yaratiyor (dusuk RAM VPS); layer cache kullan
+    build_cmd = f"docker compose build --build-arg CACHEBUST={cachebust} {svc}"
     log(f"BUILD_CMD: {build_cmd}")
     proc = subprocess.Popen(
         build_cmd,
@@ -562,10 +627,14 @@ def build_service(svc: str) -> tuple[bool, str]:
                     log(f"BUILD_PROGRESS: {svc} next_start %{60}")
                 elif "Compiled successfully" in line:
                     log(f"BUILD_PROGRESS: {svc} compiled %{78}")
+                elif "Linting and checking validity" in line:
+                    log(f"BUILD_PROGRESS: {svc} lint %{72}")
                 elif "Collecting page data" in line or "Generating static pages" in line:
                     log(f"BUILD_PROGRESS: {svc} pages %{85}")
                 elif "Collecting build traces" in line or "Finalizing page optimization" in line:
                     log(f"BUILD_PROGRESS: {svc} traces %{92}")
+                elif "Killed" in line or "SIGKILL" in line or "ENOMEM" in line:
+                    log(f"BUILD_WARN: {svc} bellek/OOM isareti — {line[:120]}")
                 elif "exporting to image" in line.lower():
                     log(f"BUILD_PROGRESS: {svc} export %{90}")
                 elif "Successfully built" in line or re.search(r"naming to .+dashboard", line, re.I):
@@ -575,18 +644,24 @@ def build_service(svc: str) -> tuple[bool, str]:
                 break
             elif time.time() - last_hb >= 45:
                 elapsed = int(time.time() - build_start)
-                log(f"BUILD_HEARTBEAT: {svc} elapsed {elapsed}s still_running")
+                log(f"BUILD_HEARTBEAT: {svc} elapsed {elapsed}s still_running (Next.js dusuk RAM'de 5-15dk normal)")
                 last_hb = time.time()
     except Exception as exc:
         proc.kill()
+        if svc == "dashboard":
+            resume_paused_services(paused)
         return False, str(exc)[:300]
     code = proc.wait(timeout=3600)
     tail = "\n".join(lines[-20:])
     if code != 0:
         log(f"BUILD_FAIL: {svc}")
+        if svc == "dashboard":
+            resume_paused_services(paused)
         return False, tail[:400]
     log(f"BUILD_DONE: {svc}")
     code2, out2 = run(f"docker compose up -d {svc} 2>&1", timeout=120)
+    if svc == "dashboard":
+        resume_paused_services(paused)
     if code2 != 0:
         return False, out2[:300]
     if svc == "dashboard":
@@ -802,6 +877,7 @@ def main() -> int:
                 log(f"    ✗ {x.get('service','?')} — {x.get('error','')[:120]}")
             log("\nSMART_DEPLOY_PARTIAL")
             return 1
+        prune_docker_disk_safe()
         log("\nSMART_DEPLOY_DONE")
         return 0
 
@@ -882,6 +958,7 @@ def main() -> int:
         log("\nSMART_DEPLOY_PARTIAL")
         return 1
 
+    prune_docker_disk_safe()
     log("\nSMART_DEPLOY_DONE")
     return 0
 

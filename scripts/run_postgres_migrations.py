@@ -137,7 +137,7 @@ def sync_risk_limits_redis() -> tuple[bool, str]:
     code, out = run(
         f"docker compose exec -T postgres psql -U {PG_USER} -d {DB_NAME} -t -A -c "
         "\"SELECT row_to_json(t)::text FROM ("
-        "SELECT max_leverage, max_position_pct, max_daily_loss_pct, max_open_positions,"
+        "SELECT max_leverage, min_leverage, max_position_pct, max_daily_loss_pct, max_open_positions,"
         " min_signal_confidence, min_immunity_confidence, max_trades_per_day,"
         " EXTRACT(EPOCH FROM updated_at) AS updated_at, updated_by"
         " FROM system_risk_limits WHERE id = 1) t;\""

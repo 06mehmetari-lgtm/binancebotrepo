@@ -109,7 +109,82 @@ def _locked_margin(p) -> float:
     )
 
 
-async def _sync_shadow_capital(redis: aioredis.Redis) -> float:
+async def _locked_margin_redis(redis: aioredis.Redis, shadow_id: str) -> float:
+    total = 0.0
+    cursor = 0
+    prefix = f"shadow:positions:{shadow_id}:"
+    while True:
+        cursor, keys = await redis.scan(cursor, match=f"{prefix}*", count=100)
+        for key in keys:
+            k = key.decode() if isinstance(key, bytes) else key
+            raw = await redis.get(k)
+            if not raw:
+                continue
+            try:
+                pos = json.loads(raw)
+                total += float(pos.get("margin_usd", pos.get("size_usd", 0)) or 0)
+            except (json.JSONDecodeError, TypeError, ValueError):
+                pass
+        if cursor == 0:
+            break
+    return total
+
+
+async def hydrate_paper_from_redis(redis: aioredis.Redis) -> None:
+    """Restart sonrasi Redis acik pozisyonlarini paper trader ile esle (sermaye tutarliligi)."""
+    for sid in SHADOW_IDS:
+        p = trader.portfolios.get(sid)
+        if not p:
+            continue
+        p.positions.clear()
+        locked = 0.0
+        restored = 0
+        cursor = 0
+        prefix = f"shadow:positions:{sid}:"
+        while True:
+            cursor, keys = await redis.scan(cursor, match=f"{prefix}*", count=100)
+            for key in keys:
+                k = key.decode() if isinstance(key, bytes) else key
+                sym = k.rsplit(":", 1)[-1]
+                raw = await redis.get(k)
+                if not raw:
+                    continue
+                try:
+                    rd = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                margin = float(rd.get("margin_usd", rd.get("size_usd", 0)) or 0)
+                price = float(rd.get("price", 0) or 0)
+                ladder = rd.get("ladder") or {}
+                lev = float(ladder.get("leverage", rd.get("leverage", 1)) or 1)
+                direction = str(rd.get("direction", "long"))
+                if margin <= 0 or price <= 0:
+                    continue
+                notional = margin * lev
+                p.positions[sym] = {
+                    "qty": notional / price,
+                    "entry_price": price,
+                    "entry_time": float(rd.get("time", time.time())),
+                    "entry_capital": margin,
+                    "margin_usd": margin,
+                    "leverage": lev,
+                    "notional_usd": notional,
+                    "direction": direction,
+                }
+                locked += margin
+                restored += 1
+            if cursor == 0:
+                break
+        equity_target = float(p.initial_capital) if p.initial_capital > 0 else float(p.capital) + locked
+        if restored > 0:
+            p.capital = max(0.0, equity_target - locked)
+            log.info(
+                f"[HYDRATE] {sid} pozisyon={restored} locked=${locked:.0f} "
+                f"free=${p.capital:.0f} equity=${p.capital + locked:.0f}"
+            )
+
+
+async def _sync_shadow_capital(redis: aioredis.Redis, *, force: bool = False) -> float:
     """Dashboard/Redis bakiyesi → shadow paper sermayesi."""
     global PORTFOLIO_VALUE, trader, _last_cap_updated_at
     cap_updated_at = 0.0
@@ -137,15 +212,16 @@ async def _sync_shadow_capital(redis: aioredis.Redis) -> float:
             usd = PORTFOLIO_VALUE
     if usd > 0:
         PORTFOLIO_VALUE = usd
-        force_reset = cap_updated_at > _last_cap_updated_at and cap_updated_at > 0
-        if force_reset:
+        force_reset = force or (cap_updated_at > _last_cap_updated_at and cap_updated_at > 0)
+        if force_reset and cap_updated_at > 0:
             _last_cap_updated_at = cap_updated_at
         leader = SHADOW_OPEN_IDS[0] if SHADOW_OPEN_IDS else "SHADOW_A"
         for sid in SHADOW_IDS:
             p = trader.portfolios.get(sid)
             if not p:
                 continue
-            locked = _locked_margin(p)
+            locked_redis = await _locked_margin_redis(redis, sid)
+            locked = max(_locked_margin(p), locked_redis)
             live = float(p.capital) + locked
             if force_reset and sid == leader:
                 p.initial_capital = usd
@@ -153,6 +229,14 @@ async def _sync_shadow_capital(redis: aioredis.Redis) -> float:
                 log.info(
                     f"[CAPITAL RESET] {sid} dashboard=${usd:.0f} "
                     f"was_equity=${live:.0f} free=${p.capital:.0f} locked=${locked:.0f}"
+                )
+            elif usd > live * 1.02 and sid == leader and locked > 0:
+                # Kasa > canli equity: dashboard tabanini uygula (kilitli margin korunur)
+                p.initial_capital = usd
+                p.capital = max(0.0, usd - locked)
+                log.info(
+                    f"[CAPITAL TOPUP] {sid} kasa=${usd:.0f} > equity=${live:.0f} "
+                    f"free=${p.capital:.0f} locked=${locked:.0f}"
                 )
             elif p.initial_capital != usd:
                 ratio = usd / p.initial_capital if p.initial_capital else 1.0
@@ -743,13 +827,15 @@ async def simulate_tick(redis: aioredis.Redis, symbol: str):
         if max_pos_pct > 1:
             max_pos_pct = 0.05
         global_max_lev = float(lim.max_leverage)
+        min_lev_floor = float(getattr(lim, "min_leverage", 1) or 1)
     except Exception:
         max_pos_pct = 0.05
         global_max_lev = 3.0
+        min_lev_floor = 1.0
 
     risk = signal.get("risk") or {}
     leverage = float(signal.get("leverage") or risk.get("recommended_leverage") or 1)
-    leverage = max(1.0, min(leverage, global_max_lev))
+    leverage = max(min_lev_floor, min(leverage, global_max_lev))
     lev_reasons = signal.get("leverage_reasons") or risk.get("leverage_reasons") or []
 
     if risk.get("position_size_pct"):
@@ -816,45 +902,52 @@ async def simulate_tick(redis: aioredis.Redis, symbol: str):
                 continue
         open_side = "BUY" if direction == "long" else "SELL_SHORT"
         result = trader.execute(shadow_id, symbol, open_side, price, margin_usd, leverage=leverage)
-        if result:
-            await redis.set(
-                pos_key,
-                json.dumps({
-                    "direction": direction,
-                    "price": price,
-                    "size_usd": margin_usd,
-                    "margin_usd": margin_usd,
-                    "time": time.time(),
-                    "entry_signal": signal,
-                    "ladder": {
-                        "take_profit_pct": tp_pct,
-                        "stop_loss_pct": sl_pct,
-                        "entry_confidence": confidence,
-                        "leverage": leverage,
-                        "leverage_reasons": lev_reasons[:6],
-                        "position_size_pct": round(port_pct, 5),
-                        "slot_budget_usd": round(slot_budget, 2),
-                        "kelly_fraction": float(signal.get("kelly_fraction", 0) or 0),
-                        "risk_reasons": (risk.get("reasons") or [])[:4],
-                        "notional_usd": round(notional_usd, 2),
-                        "learn_note": learn_note[:80] if learn_note else "",
-                        "entry_lesson": last_lesson[:200] if last_lesson else "",
-                    },
-                }),
-                ex=86400,
+        if not result:
+            pf = trader.portfolios.get(shadow_id)
+            free = float(pf.capital) if pf else 0.0
+            log.warning(
+                f"[SHADOW SKIP] {shadow_id} {symbol} acilamadi: "
+                f"margin=${margin_usd:.0f} free=${free:.0f} equity=${sizing_cap:.0f}"
             )
-            await _publish_portfolio(redis)
-            log.info(
-                f"[SHADOW OPEN] {shadow_id} {direction.upper()} {symbol} "
-                f"conf={confidence:.2f} margin=${margin_usd:.0f} ({port_pct*100:.1f}%) "
-                f"equity=${sizing_cap:.0f} base=${PORTFOLIO_VALUE:.0f} "
-                f"lev={leverage:.0f}x notional=${notional_usd:.0f} "
-                f"sl={sl_pct}% tp={tp_pct}% learn={learn_note or '-'} "
-                f"reasons={','.join(lev_reasons[:3])}"
-            )
-            await _publish_live_equity(redis)
-            if SHADOW_ONE_PER_SYMBOL:
-                break
+            continue
+        await redis.set(
+            pos_key,
+            json.dumps({
+                "direction": direction,
+                "price": price,
+                "size_usd": margin_usd,
+                "margin_usd": margin_usd,
+                "time": time.time(),
+                "entry_signal": signal,
+                "ladder": {
+                    "take_profit_pct": tp_pct,
+                    "stop_loss_pct": sl_pct,
+                    "entry_confidence": confidence,
+                    "leverage": leverage,
+                    "leverage_reasons": lev_reasons[:6],
+                    "position_size_pct": round(port_pct, 5),
+                    "slot_budget_usd": round(slot_budget, 2),
+                    "kelly_fraction": float(signal.get("kelly_fraction", 0) or 0),
+                    "risk_reasons": (risk.get("reasons") or [])[:4],
+                    "notional_usd": round(notional_usd, 2),
+                    "learn_note": learn_note[:80] if learn_note else "",
+                    "entry_lesson": last_lesson[:200] if last_lesson else "",
+                },
+            }),
+            ex=86400,
+        )
+        await _publish_portfolio(redis)
+        log.info(
+            f"[SHADOW OPEN] {shadow_id} {direction.upper()} {symbol} "
+            f"conf={confidence:.2f} margin=${margin_usd:.0f} ({port_pct*100:.1f}%) "
+            f"equity=${sizing_cap:.0f} base=${PORTFOLIO_VALUE:.0f} "
+            f"lev={leverage:.0f}x notional=${notional_usd:.0f} "
+            f"sl={sl_pct}% tp={tp_pct}% learn={learn_note or '-'} "
+            f"reasons={','.join(lev_reasons[:3])}"
+        )
+        await _publish_live_equity(redis)
+        if SHADOW_ONE_PER_SYMBOL:
+            break
 
 
 async def report_loop(redis: aioredis.Redis):
@@ -914,6 +1007,22 @@ async def capital_refresh_loop(redis: aioredis.Redis):
         await asyncio.sleep(30)
 
 
+async def portfolio_capital_listener(redis: aioredis.Redis):
+    """Dashboard KASA kaydi → aninda paper sermaye sifirla."""
+    pubsub = redis.pubsub()
+    await pubsub.subscribe("ch:portfolio:updated")
+    log.info("shadow listening ch:portfolio:updated")
+    async for msg in pubsub.listen():
+        if msg.get("type") != "message":
+            continue
+        try:
+            await _sync_shadow_capital(redis, force=True)
+            await hydrate_paper_from_redis(redis)
+            log.info("shadow capital applied from dashboard KASA update")
+        except Exception as e:
+            log.warning(f"portfolio capital listener: {e}")
+
+
 async def heartbeat_loop(redis: aioredis.Redis) -> None:
     while True:
         await redis.set("system:heartbeat:shadow_system", str(time.time()), ex=120)
@@ -928,6 +1037,7 @@ async def main():
     redis = await aioredis.from_url(REDIS_URL)
     await redis.set("system:heartbeat:shadow_system", str(time.time()), ex=120)
     await _sync_shadow_capital(redis)
+    await hydrate_paper_from_redis(redis)
     n = await dedupe_shadow_positions(redis)
     if n:
         log.warning(f"shadow dedupe: removed {n} duplicate position key(s)")
@@ -944,6 +1054,7 @@ async def main():
         except ImportError:
             log.warning("risk_limits module missing — using defaults in simulate_tick")
 
+    redis_cap = await aioredis.from_url(REDIS_URL)
     await asyncio.gather(
         heartbeat_loop(redis),
         _trading_loop(redis),
@@ -952,6 +1063,7 @@ async def main():
         guard_listener(redis_guard),
         limits_refresh_loop(),
         capital_refresh_loop(redis),
+        portfolio_capital_listener(redis_cap),
     )
 
 

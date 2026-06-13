@@ -18,6 +18,7 @@ REDIS_CHANNEL = "ch:risk_limits:updated"
 
 DEFAULTS: dict[str, float | int] = {
     "max_leverage": 3.0,
+    "min_leverage": 5.0,
     "max_position_pct": 0.05,
     "max_daily_loss_pct": 0.02,
     "max_open_positions": 30,
@@ -30,6 +31,7 @@ DEFAULTS: dict[str, float | int] = {
 @dataclass
 class RiskLimits:
     max_leverage: float = 3.0
+    min_leverage: float = 5.0
     max_position_pct: float = 0.05
     max_daily_loss_pct: float = 0.02
     max_open_positions: int = 30
@@ -43,6 +45,7 @@ class RiskLimits:
     def from_dict(cls, raw: dict[str, Any]) -> RiskLimits:
         return cls(
             max_leverage=float(raw.get("max_leverage", DEFAULTS["max_leverage"])),
+            min_leverage=float(raw.get("min_leverage", DEFAULTS["min_leverage"])),
             max_position_pct=float(raw.get("max_position_pct", DEFAULTS["max_position_pct"])),
             max_daily_loss_pct=float(raw.get("max_daily_loss_pct", DEFAULTS["max_daily_loss_pct"])),
             max_open_positions=int(raw.get("max_open_positions", DEFAULTS["max_open_positions"])),
@@ -65,6 +68,10 @@ class RiskLimits:
         errors: list[str] = []
         if not 1 <= self.max_leverage <= 125:
             errors.append("max_leverage 1–125 arası olmalı")
+        if not 1 <= self.min_leverage <= 125:
+            errors.append("min_leverage 1–125 arası olmalı")
+        if self.min_leverage > self.max_leverage:
+            errors.append("min_leverage max_leverage'den büyük olamaz")
         if not 0.001 <= self.max_position_pct <= 1.0:
             errors.append("max_position_pct 0.1%–100% arası (0.001–1.0)")
         if not 0.001 <= self.max_daily_loss_pct <= 1.0:
@@ -104,6 +111,7 @@ def apply_paper_overrides(lim: RiskLimits) -> RiskLimits:
     paper_lev_cap = float(os.getenv("PAPER_MAX_LEVERAGE", "20"))
     return RiskLimits(
         max_leverage=min(max(lim.max_leverage, 3.0), paper_lev_cap),
+        min_leverage=max(float(getattr(lim, "min_leverage", 5.0) or 5.0), 1.0),
         max_position_pct=min(max(lim.max_position_pct, 0.05), 0.08),
         max_daily_loss_pct=min(max(lim.max_daily_loss_pct, 0.03), 0.05),
         max_open_positions=max(lim.max_open_positions, paper_open),
@@ -139,16 +147,18 @@ def parse_redis_raw(raw: str | bytes | None) -> RiskLimits | None:
 
 
 def _row_to_limits(row: tuple) -> RiskLimits:
+def _row_to_limits(row: tuple) -> RiskLimits:
     return RiskLimits(
         max_leverage=float(row[0]),
-        max_position_pct=float(row[1]),
-        max_daily_loss_pct=float(row[2]),
-        max_open_positions=int(row[3]),
-        min_signal_confidence=float(row[4]),
-        min_immunity_confidence=float(row[5]),
-        max_trades_per_day=int(row[6]),
-        updated_at=float(row[7]) if row[7] is not None else time.time(),
-        updated_by=str(row[8] or "system"),
+        min_leverage=float(row[1]),
+        max_position_pct=float(row[2]),
+        max_daily_loss_pct=float(row[3]),
+        max_open_positions=int(row[4]),
+        min_signal_confidence=float(row[5]),
+        min_immunity_confidence=float(row[6]),
+        max_trades_per_day=int(row[7]),
+        updated_at=float(row[8]) if row[8] is not None else time.time(),
+        updated_by=str(row[9] or "system"),
     )
 
 
@@ -215,11 +225,12 @@ async def publish_to_redis(redis, limits: RiskLimits) -> None:
 
 UPSERT_SQL = """
 INSERT INTO system_risk_limits (
-  id, max_leverage, max_position_pct, max_daily_loss_pct, max_open_positions,
+  id, max_leverage, min_leverage, max_position_pct, max_daily_loss_pct, max_open_positions,
   min_signal_confidence, min_immunity_confidence, max_trades_per_day, updated_by
-) VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8)
+) VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9)
 ON CONFLICT (id) DO UPDATE SET
   max_leverage = EXCLUDED.max_leverage,
+  min_leverage = EXCLUDED.min_leverage,
   max_position_pct = EXCLUDED.max_position_pct,
   max_daily_loss_pct = EXCLUDED.max_daily_loss_pct,
   max_open_positions = EXCLUDED.max_open_positions,
@@ -228,13 +239,13 @@ ON CONFLICT (id) DO UPDATE SET
   max_trades_per_day = EXCLUDED.max_trades_per_day,
   updated_by = EXCLUDED.updated_by,
   updated_at = NOW()
-RETURNING max_leverage, max_position_pct, max_daily_loss_pct, max_open_positions,
+RETURNING max_leverage, min_leverage, max_position_pct, max_daily_loss_pct, max_open_positions,
   min_signal_confidence, min_immunity_confidence, max_trades_per_day,
   EXTRACT(EPOCH FROM updated_at) AS updated_at, updated_by
 """
 
 SELECT_SQL = """
-SELECT max_leverage, max_position_pct, max_daily_loss_pct, max_open_positions,
+SELECT max_leverage, min_leverage, max_position_pct, max_daily_loss_pct, max_open_positions,
   min_signal_confidence, min_immunity_confidence, max_trades_per_day,
   EXTRACT(EPOCH FROM updated_at) AS updated_at, updated_by
 FROM system_risk_limits WHERE id = 1

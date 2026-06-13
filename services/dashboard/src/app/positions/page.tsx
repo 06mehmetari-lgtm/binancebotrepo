@@ -346,6 +346,7 @@ export default function PositionsPage() {
         openCount={positions.length}
         maxOpen={maxOpenLimit}
         streamLive={streamLive}
+        pollingActive
         tradingHalted={trading_halted}
       />
 

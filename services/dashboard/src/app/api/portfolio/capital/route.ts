@@ -48,6 +48,7 @@ export async function GET() {
     const limits = limitsRes.limits
     const slot = sizing_base / Math.max(limits.max_open_positions, 1)
     const maxMargin = sizing_base * limits.max_position_pct
+    const exampleLev = Math.max(limits.min_leverage ?? 5, 3)
     let meta: Record<string, unknown> = {}
     if (capRaw) {
       try {
@@ -72,7 +73,8 @@ export async function GET() {
         max_leverage: limits.max_leverage,
         example_65conf_3x: {
           margin_usd: +(Math.min(maxMargin, slot * 0.92) * 0.65).toFixed(2),
-          notional_usd: +(Math.min(maxMargin, slot * 0.92) * 0.65 * 3).toFixed(2),
+          notional_usd: +(Math.min(maxMargin, slot * 0.92) * 0.65 * exampleLev).toFixed(2),
+          leverage: exampleLev,
         },
       },
     })

@@ -14,7 +14,7 @@ type CapitalData = {
     max_margin_per_position_usd: number
     max_open_positions: number
     max_leverage?: number
-    example_65conf_3x?: { margin_usd: number; notional_usd: number }
+    example_65conf_3x?: { margin_usd: number; notional_usd: number; leverage?: number }
   }
 }
 
@@ -150,12 +150,13 @@ export default function PortfolioCapitalEditor({
             <p className="text-white font-mono font-bold">${sizing.max_margin_per_position_usd.toLocaleString()}</p>
           </div>
           <div className="bg-gray-950 rounded-lg p-2 border border-gray-800">
-            <p className="text-gray-500">Örnek alım (conf 65%, 3x)</p>
+            <p className="text-gray-500 text-[10px]">Örnek alım (conf 65%, min lev)</p>
             <p className="text-white font-mono">
               ${sizing.example_65conf_3x?.margin_usd?.toLocaleString() ?? '—'} margin
             </p>
             <p className="text-violet-400 font-mono text-[10px]">
               ≈ ${sizing.example_65conf_3x?.notional_usd?.toLocaleString() ?? '—'} notional
+              {sizing.example_65conf_3x?.leverage ? ` @ ${sizing.example_65conf_3x.leverage}x` : ''}
             </p>
           </div>
           <div className="bg-gray-950 rounded-lg p-2 border border-emerald-900/50">
@@ -169,8 +170,8 @@ export default function PortfolioCapitalEditor({
             <p className="text-gray-500 text-[10px]">
               Ayarlanan kasa: <span className="text-blue-300 font-mono">${cap.toLocaleString()}</span>
               {' · '}Boyutlandırma tabanı: <span className="text-white font-mono">${sizingBase.toLocaleString()}</span>
-              {liveEq < cap * 0.5 && (
-                <span className="text-orange-400"> — equity düşük, alımlar küçük (ör. ~$4). Kasayı yükseltin veya kâr biriktirin.</span>
+              {liveEq < cap * 0.85 && cap - liveEq > 1000 && (
+                <span className="text-orange-400"> — equity kasanın altında; kâr biriktirin veya kasayı yeniden kaydedin.</span>
               )}
             </p>
           </div>

@@ -57,6 +57,7 @@ def recommend_leverage(
     drift_status: str = "STABLE",
     dissent_risk: float | str | None = None,
     global_max: float = 3.0,
+    min_leverage: float = 1.0,
     direction: str = "flat",
     is_valid: bool = True,
 ) -> dict:
@@ -141,6 +142,10 @@ def recommend_leverage(
     if lev > gmax:
         reasons.append(f"global_cap_{gmax:.0f}x")
     lev = int(min(lev, gmax))
+    floor = max(1, int(min_leverage))
+    if floor > 1 and lev < floor and direction in ("long", "short") and is_valid:
+        lev = int(min(floor, gmax))
+        reasons.append(f"min_leverage_floor_{floor}x")
 
     return {
         "leverage": lev,

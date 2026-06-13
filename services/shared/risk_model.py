@@ -40,11 +40,13 @@ def evaluate_risk(
         max_pos = lim.max_position_pct / 100.0 if lim.max_position_pct > 1 else lim.max_position_pct
         max_open = lim.max_open_positions
         global_max_lev = float(lim.max_leverage)
+        min_lev_floor = float(getattr(lim, "min_leverage", 1) or 1)
         paper = is_paper_unlimited()
     except Exception:
         max_pos = 0.05
         max_open = 3
         global_max_lev = 3.0
+        min_lev_floor = 1.0
         paper = True
 
     risk_score = 0.0
@@ -186,6 +188,7 @@ def evaluate_risk(
                 atr_pct=atr_dec,
                 drift_status=drift,
                 global_max=global_max_lev,
+                min_leverage=min_lev_floor,
                 direction=direction,
                 is_valid=approved,
             )

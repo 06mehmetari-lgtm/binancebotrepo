@@ -206,6 +206,7 @@ CREATE TRIGGER trg_rule_genomes_updated_at
 CREATE TABLE system_risk_limits (
     id                      SMALLINT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
     max_leverage            DOUBLE PRECISION NOT NULL DEFAULT 3.0,
+    min_leverage            DOUBLE PRECISION NOT NULL DEFAULT 5.0,
     max_position_pct        DOUBLE PRECISION NOT NULL DEFAULT 0.05,
     max_daily_loss_pct      DOUBLE PRECISION NOT NULL DEFAULT 0.02,
     max_open_positions      INTEGER NOT NULL DEFAULT 3,

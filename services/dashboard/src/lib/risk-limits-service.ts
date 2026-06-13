@@ -77,6 +77,7 @@ export function limitsToApiShape(limits: RiskLimitsConfig) {
     min_immunity_confidence: limits.min_immunity_confidence,
     max_trades_per_day: limits.max_trades_per_day,
     max_leverage: limits.max_leverage,
+    min_leverage: limits.min_leverage ?? 5,
     max_open_positions: limits.max_open_positions,
   }
 }
