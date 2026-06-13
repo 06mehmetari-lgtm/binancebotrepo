@@ -48,7 +48,8 @@ async def resolve_market_price(redis, symbol: str) -> float:
     pipe.get(f"binance:ticker:{sym_l}")
     pipe.get(f"features:latest:{sym}")
     pipe.lindex(f"binance:kline:{sym_l}", 0)
-    ticker_raw, feat_raw, kline_raw = await pipe.execute()
+    pipe.get(f"klines:1h:{sym}")
+    ticker_raw, feat_raw, kline_raw, klines_1h_raw = await pipe.execute()
 
     price = mid_from_ticker_raw(ticker_raw)
     if price > 0:
@@ -65,6 +66,16 @@ async def resolve_market_price(redis, symbol: str) -> float:
             if isinstance(payload, dict) and payload.get("k"):
                 return float(payload["k"].get("c", 0) or 0)
             return _price_from_dict(payload)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            pass
+
+    if klines_1h_raw:
+        try:
+            arr = json.loads(klines_1h_raw)
+            if isinstance(arr, list) and arr:
+                last = arr[-1]
+                if isinstance(last, dict):
+                    return float(last.get("close", 0) or 0)
         except (json.JSONDecodeError, TypeError, ValueError):
             pass
     return 0.0

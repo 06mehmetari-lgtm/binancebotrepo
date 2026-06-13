@@ -523,17 +523,19 @@ async def _enforce_hard_stops(redis: aioredis.Redis) -> None:
                 pos = json.loads(pos_raw)
             except json.JSONDecodeError:
                 continue
-            price = await resolve_market_price(redis, sym)
-            if price <= 0:
-                continue
-            entry = float(pos.get("price", pos.get("entry_price", 0)))
+            entry = float(pos.get("price", pos.get("entry_price", 0)) or 0)
             direction = str(pos.get("direction", "long"))
-            upnl = _upnl_pct(direction, entry, price)
-            ladder = dict(pos.get("ladder") or {})
-            sl_pct = float(ladder.get("stop_loss_pct") or SHADOW_HARD_STOP_PCT)
-            tp_pct = float(ladder.get("take_profit_pct") or profit_tiers()[0])
             opened = float(pos.get("time", pos.get("entry_time", 0)) or 0)
             hold_sec = time.time() - opened if opened > 0 else 0
+
+            price = await resolve_market_price(redis, sym)
+            if price <= 0 and entry > 0:
+                price = entry
+
+            ladder = dict(pos.get("ladder") or {})
+            upnl = _upnl_pct(direction, entry, price) if price > 0 and entry > 0 else 0.0
+            sl_pct = float(ladder.get("stop_loss_pct") or SHADOW_HARD_STOP_PCT)
+            tp_pct = float(ladder.get("take_profit_pct") or profit_tiers()[0])
 
             peak = float(ladder.get("peak_upnl_pct") or upnl)
             if upnl > peak:
@@ -542,6 +544,35 @@ async def _enforce_hard_stops(redis: aioredis.Redis) -> None:
                 ladder["breakeven_armed"] = True
             if ladder != pos.get("ladder"):
                 await _persist_shadow_ladder(redis, shadow_id, sym, ladder)
+
+            close_price = price if price > 0 else entry
+            if close_price <= 0:
+                continue
+
+            if hold_sec >= MAX_POSITION_HOLD_SEC:
+                await _force_close_shadow(
+                    redis, shadow_id, sym, pos, close_price,
+                    f"max_hold {MAX_POSITION_HOLD_SEC // 60}dk ({upnl:+.2f}%)",
+                )
+                continue
+
+            if hold_sec >= STALE_VERDICT_HOLD_SEC:
+                sig_raw = await redis.get(f"signal:latest:{sym}")
+                sig_dir = "flat"
+                if sig_raw:
+                    try:
+                        sig_dir = json.loads(sig_raw).get("direction", "flat")
+                    except json.JSONDecodeError:
+                        pass
+                if sig_dir == "flat" or sig_dir != direction:
+                    await _force_close_shadow(
+                        redis, shadow_id, sym, pos, close_price,
+                        f"stale_flat_verdict ({hold_sec:.0f}s, {upnl:+.2f}%)",
+                    )
+                    continue
+
+            if price <= 0:
+                continue
 
             if ladder.get("breakeven_armed") and upnl <= BREAKEVEN_FLOOR_PCT and hold_sec >= 120:
                 await _force_close_shadow(
@@ -558,24 +589,6 @@ async def _enforce_hard_stops(redis: aioredis.Redis) -> None:
                     redis, shadow_id, sym, pos, price,
                     f"take_profit %{tp_pct:.1f} ({upnl:+.2f}%)",
                 )
-            elif hold_sec >= MAX_POSITION_HOLD_SEC:
-                await _force_close_shadow(
-                    redis, shadow_id, sym, pos, price,
-                    f"max_hold {MAX_POSITION_HOLD_SEC // 60}dk ({upnl:+.2f}%)",
-                )
-            elif hold_sec >= STALE_VERDICT_HOLD_SEC:
-                sig_raw = await redis.get(f"signal:latest:{sym}")
-                sig_dir = "flat"
-                if sig_raw:
-                    try:
-                        sig_dir = json.loads(sig_raw).get("direction", "flat")
-                    except json.JSONDecodeError:
-                        pass
-                if sig_dir == "flat" or sig_dir != direction:
-                    await _force_close_shadow(
-                        redis, shadow_id, sym, pos, price,
-                        f"stale_flat_verdict ({hold_sec:.0f}s, {upnl:+.2f}%)",
-                    )
         if cursor == 0:
             break
 
@@ -819,6 +832,25 @@ async def main():
     )
 
 
+async def _ordered_symbols(redis: aioredis.Redis, symbols: list[str]) -> list[str]:
+    """Önce geçerli yüksek conf sinyaller — 12 ALIM_UYGUN önce işlensin."""
+    hot: list[tuple[float, str]] = []
+    for sym in symbols:
+        raw = await redis.get(f"signal:latest:{sym}")
+        if not raw:
+            continue
+        try:
+            sig = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if sig.get("direction") in ("long", "short") and sig.get("is_valid"):
+            hot.append((float(sig.get("confidence", 0)), sym))
+    hot.sort(reverse=True)
+    hot_syms = [s for _, s in hot]
+    rest = [s for s in symbols if s not in hot_syms]
+    return hot_syms + rest
+
+
 async def _trading_loop(redis: aioredis.Redis):
     symbols: list[str] = []
     last_refresh = 0.0
@@ -836,7 +868,8 @@ async def _trading_loop(redis: aioredis.Redis):
         except Exception as e:
             log.error(f"shadow hard_stop: {e}")
 
-        for symbol in symbols:
+        ordered = await _ordered_symbols(redis, symbols)
+        for symbol in ordered:
             try:
                 await simulate_tick(redis, symbol)
             except Exception as e:

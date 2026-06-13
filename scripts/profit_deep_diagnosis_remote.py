@@ -103,7 +103,7 @@ def load_profit_rules() -> dict:
         return {"error": str(exc)}
 
 
-def ticker_price(raw: str | None, feat_raw: str | None = None) -> float:
+def ticker_price(raw: str | None, feat_raw: str | None = None, klines_raw: str | None = None) -> float:
     t = jparse(raw)
     if t:
         td = t.get("data", t) if isinstance(t, dict) else {}
@@ -115,6 +115,13 @@ def ticker_price(raw: str | None, feat_raw: str | None = None) -> float:
     if feat:
         for key in ("close", "last_price", "mark_price"):
             p = float(feat.get(key, 0) or 0)
+            if p > 0:
+                return p
+    kl = jparse(klines_raw)
+    if isinstance(kl, list) and kl:
+        last = kl[-1]
+        if isinstance(last, dict):
+            p = float(last.get("close", 0) or 0)
             if p > 0:
                 return p
     return 0.0
@@ -420,6 +427,8 @@ def main() -> None:
             f"agents:verdict:{sym}",
             f"learn:profile:{sym}",
             f"binance:ticker:{sym.lower()}",
+            f"features:latest:{sym}",
+            f"klines:1h:{sym}",
             f"trade:cooldown:shadow:{sym.upper()}",
         ):
             if k not in detail_raw:
@@ -441,6 +450,7 @@ def main() -> None:
         price = ticker_price(
             detail_raw.get(f"binance:ticker:{sym.lower()}"),
             detail_raw.get(f"features:latest:{sym}"),
+            detail_raw.get(f"klines:1h:{sym}"),
         )
         log(decision_row(sym, sig, verdict, learn, block, price))
 
@@ -494,6 +504,7 @@ def main() -> None:
         price = ticker_price(
             detail_raw.get(f"binance:ticker:{sym.lower()}"),
             detail_raw.get(f"features:latest:{sym}"),
+            detail_raw.get(f"klines:1h:{sym}"),
         )
         upnl = 0.0
         if entry > 0 and price > 0:
@@ -619,6 +630,7 @@ def main() -> None:
         if ticker_price(
             detail_raw.get(f"binance:ticker:{sym.lower()}"),
             detail_raw.get(f"features:latest:{sym}"),
+            detail_raw.get(f"klines:1h:{sym}"),
         ) <= 0
     )
     log(f"\n[10] VERI KALITESI")
