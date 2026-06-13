@@ -162,19 +162,30 @@ else
 fi
 
 # ── 5) Paper / risk scriptleri ─────────────────
-echo "=== [5/10] Paper + risk limitleri ==="
-chmod +x scripts/*.sh 2>/dev/null || true
-./scripts/patch-paper-hold.sh 2>/dev/null || true
-./scripts/enable-paper-unlimited.sh 2>/dev/null || true
-./scripts/sync-risk-limits-redis.sh 2>/dev/null || true
+if [ "$MODE" = "skip" ]; then
+  echo "=== [5/10] Paper + risk (SKIP — rebuild yok, sadece redis + restart) ==="
+  chmod +x scripts/*.sh 2>/dev/null || true
+  ./scripts/enable-paper-unlimited.sh 2>/dev/null || true
+  ./scripts/sync-risk-limits-redis.sh 2>/dev/null || true
+else
+  echo "=== [5/10] Paper + risk limitleri ==="
+  chmod +x scripts/*.sh 2>/dev/null || true
+  ./scripts/patch-paper-hold.sh 2>/dev/null || true
+  ./scripts/enable-paper-unlimited.sh 2>/dev/null || true
+  ./scripts/sync-risk-limits-redis.sh 2>/dev/null || true
+fi
 
 # ── 6) Tüm servisleri başlat ───────────────────
 echo "=== [6/10] Servisleri başlat ==="
-docker compose up -d \
-  data_ingestion sentiment macro feature_engine context_engine \
-  agent_system signal_engine learning_engine shadow_system oms immunity_system \
-  dashboard backtest autopsy rag_memory neat_evolution rl_agent scenario_engine \
-  prometheus_monitor grafana 2>&1 | tail -25
+if [ "$MODE" = "skip" ]; then
+  docker compose up -d --no-recreate 2>&1 | tail -15
+else
+  docker compose up -d \
+    data_ingestion sentiment macro feature_engine context_engine \
+    agent_system signal_engine learning_engine shadow_system oms immunity_system \
+    dashboard backtest autopsy rag_memory neat_evolution rl_agent scenario_engine \
+    prometheus_monitor grafana 2>&1 | tail -25
+fi
 sleep 12
 
 # ── 7) Redis: LLM + portföy ────────────────────
@@ -234,17 +245,29 @@ print("redis ok")
 PYEOF
 
 # ── 8) Zombie + restarting fix ─────────────────
-echo "=== [8/10] Container saglik duzeltme ==="
-bash scripts/fix-docker-zombie.sh 2>/dev/null || true
-for c in $(docker compose ps -a --format '{{.Name}}' 2>/dev/null); do
-  st=$(docker inspect --format '{{.State.Status}}' "$c" 2>/dev/null || echo unknown)
-  if [ "$st" = "restarting" ] || [ "$st" = "exited" ]; then
-    echo "  restart $c ($st)"
-    docker restart "$c" 2>/dev/null || docker compose up -d "$c" 2>/dev/null || true
-  fi
-done
-sleep 6
-docker compose up -d 2>&1 | tail -8 || true
+if [ "$MODE" = "skip" ]; then
+  echo "=== [8/10] Hafif saglik (SKIP — docker down/restart daemon YOK) ==="
+  for c in $(docker compose ps -a --format '{{.Name}}' 2>/dev/null); do
+    st=$(docker inspect --format '{{.State.Status}}' "$c" 2>/dev/null || echo unknown)
+    if [ "$st" = "restarting" ] || [ "$st" = "exited" ]; then
+      echo "  restart $c ($st)"
+      docker restart "$c" 2>/dev/null || docker compose up -d "$c" 2>/dev/null || true
+    fi
+  done
+  sleep 3
+else
+  echo "=== [8/10] Container saglik duzeltme ==="
+  bash scripts/fix-docker-zombie.sh 2>/dev/null || true
+  for c in $(docker compose ps -a --format '{{.Name}}' 2>/dev/null); do
+    st=$(docker inspect --format '{{.State.Status}}' "$c" 2>/dev/null || echo unknown)
+    if [ "$st" = "restarting" ] || [ "$st" = "exited" ]; then
+      echo "  restart $c ($st)"
+      docker restart "$c" 2>/dev/null || docker compose up -d "$c" 2>/dev/null || true
+    fi
+  done
+  sleep 6
+  docker compose up -d 2>&1 | tail -8 || true
+fi
 
 # ── 9) Sağlık kontrolü ─────────────────────────
 echo "=== [9/10] Sağlık kontrolü ==="

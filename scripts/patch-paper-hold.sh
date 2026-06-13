@@ -158,7 +158,14 @@ if not changed:
     print("Zaten güncel — değişiklik yok")
 else:
     print("Uygulandı:", ", ".join(changed))
+    Path("/tmp/patch_paper_hold_changed").write_text("1")
 PY
+
+if [[ ! -f /tmp/patch_paper_hold_changed ]]; then
+  echo "==> Rebuild atlandı (kod zaten güncel)"
+  exit 0
+fi
+rm -f /tmp/patch_paper_hold_changed
 
 grep -q "PAPER_MIN_HOLD_SEC" "$GUARD" && grep -q "paper_hold" "$SIGNAL" || {
   echo "Patch doğrulaması başarısız"
@@ -166,7 +173,7 @@ grep -q "PAPER_MIN_HOLD_SEC" "$GUARD" && grep -q "paper_hold" "$SIGNAL" || {
 }
 
 echo "==> Rebuild agent_system + signal_engine"
-docker compose build --no-cache agent_system signal_engine
+docker compose build agent_system signal_engine
 docker compose up -d agent_system signal_engine
 
 echo "==> Doğrula"

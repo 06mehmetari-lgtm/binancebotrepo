@@ -31,7 +31,7 @@ DEFAULT_USER = "root"
 DEFAULT_DIR = "/root/prometheus"
 DEFAULT_REPO = "https://github.com/06mehmetari-lgtm/binancebotrepo.git"
 CONNECT_TIMEOUT = 45
-TIMEOUT_BY_MODE = {"skip": 900, "quick": 3600, "full": 7200}
+TIMEOUT_BY_MODE = {"skip": 600, "quick": 3600, "full": 7200}
 DEFAULT_DEPLOY_MODE = "quick"
 
 
