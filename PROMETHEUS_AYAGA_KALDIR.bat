@@ -4,9 +4,9 @@ setlocal EnableDelayedExpansion
 
 REM ============================================================
 REM  PROMETHEUS — TEK TIK DEPLOY
-REM  PROMETHEUS_AYAGA_KALDIR.bat         → QUICK (~10 dk, varsayilan)
+REM  PROMETHEUS_AYAGA_KALDIR.bat         → QUICK (~15-45 dk, timeout 3 saat)
 REM  PROMETHEUS_AYAGA_KALDIR.bat skip    → EN HIZLI (~3 dk, build yok)
-REM  PROMETHEUS_AYAGA_KALDIR.bat full    → 17 servis (~25 dk paralel)
+REM  PROMETHEUS_AYAGA_KALDIR.bat full    → 17 servis (~30-60 dk, timeout 4 saat)
 REM ============================================================
 
 cd /d "%~dp0"
@@ -66,9 +66,9 @@ echo.
 if /i "%MODE%"=="skip" (
     echo [DEPLOY] SKIP — build YOK, git pull + restart (~3 dk)
 ) else if /i "%MODE%"=="full" (
-    echo [DEPLOY] FULL — 17 servis PARALEL build (~25 dk)
+    echo [DEPLOY] FULL — 17 servis PARALEL build (~30-60 dk, timeout 4 saat)
 ) else (
-    echo [DEPLOY] QUICK — 9 kritik servis PARALEL build (~10 dk)
+    echo [DEPLOY] QUICK — 10 kritik servis PARALEL build (~15-45 dk, timeout 3 saat)
 )
 echo.
 

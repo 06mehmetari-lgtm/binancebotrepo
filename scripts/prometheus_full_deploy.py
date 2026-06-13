@@ -31,7 +31,8 @@ DEFAULT_USER = "root"
 DEFAULT_DIR = "/root/prometheus"
 DEFAULT_REPO = "https://github.com/06mehmetari-lgtm/binancebotrepo.git"
 CONNECT_TIMEOUT = 45
-TIMEOUT_BY_MODE = {"skip": 600, "quick": 3600, "full": 7200}
+# VPS dashboard npm build yavas sunucuda 40+ dk surebilir — quick icin genis buffer
+TIMEOUT_BY_MODE = {"skip": 900, "quick": 10800, "full": 14400}
 DEFAULT_DEPLOY_MODE = "quick"
 
 
@@ -51,6 +52,7 @@ def load_secrets() -> dict[str, str]:
         "OPENROUTER_API_KEY",
         "VPS_PROJECT_DIR",
         "DEPLOY_MODE",
+        "DEPLOY_TIMEOUT",
         "BUILD_NO_CACHE",
     ):
         if os.environ.get(key):
@@ -132,6 +134,7 @@ def upload_bootstrap(client) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Prometheus VPS tam deploy")
     parser.add_argument("--mode", choices=("full", "quick", "skip"), default=None)
+    parser.add_argument("--timeout", type=int, default=None, help="SSH bootstrap zaman asimi (saniye)")
     parser.add_argument("--no-cache", action="store_true")
     parser.add_argument("--host", default=None)
     parser.add_argument("--dir", default=None)
@@ -146,7 +149,9 @@ def main() -> int:
     mode = args.mode or secrets.get("DEPLOY_MODE", DEFAULT_DEPLOY_MODE)
     if mode not in TIMEOUT_BY_MODE:
         mode = DEFAULT_DEPLOY_MODE
-    bootstrap_timeout = TIMEOUT_BY_MODE[mode]
+    raw_timeout = (secrets.get("DEPLOY_TIMEOUT") or "").strip()
+    custom_timeout = int(raw_timeout) if raw_timeout.isdigit() else 0
+    bootstrap_timeout = args.timeout or custom_timeout or TIMEOUT_BY_MODE[mode]
     no_cache = "1" if args.no_cache or secrets.get("BUILD_NO_CACHE") == "1" else "0"
 
     if not password:
@@ -173,8 +178,8 @@ def main() -> int:
     print(" PROMETHEUS — TAM VPS DEPLOY")
     print(f" Sunucu : {user}@{host}")
     print(f" Dizin  : {prom_dir}")
-    print(f" Mod    : {mode} (skip=~3dk | quick=~10dk | full=~25dk paralel)")
-    print(f" Timeout: {bootstrap_timeout}s")
+    print(f" Mod    : {mode} (skip=~3dk | quick=~15-45dk | full=~30-60dk)")
+    print(f" Timeout: {bootstrap_timeout}s ({bootstrap_timeout // 60} dk)")
     print("=" * 60)
 
     client = paramiko.SSHClient()
@@ -243,14 +248,35 @@ def main() -> int:
     stream_command(client, f"chmod 600 {remote_env}", 15)
 
     cmd = f"set -a && source {remote_env} && set +a && bash {BOOTSTRAP_REMOTE}"
+    out = ""
     try:
         code, out = stream_command(client, cmd, bootstrap_timeout)
     except TimeoutError as exc:
-        print(f"\nZAMAN AŞIMI: {exc}")
-        print("Sunucuda log: /tmp/prometheus_bootstrap.log")
-        print("Build log: /tmp/prometheus_build.log")
-        client.close()
-        return 1
+        print(f"\nZAMAN ASIMI (PC tarafi): {exc}")
+        print("Sunucuda build hala calisiyor olabilir — log kontrol ediliyor...")
+        try:
+            _, log_out = stream_command(
+                client,
+                "tail -30 /tmp/prometheus_bootstrap.log 2>/dev/null; "
+                "grep -q BOOTSTRAP_DONE /tmp/prometheus_bootstrap.log 2>/dev/null && echo REMOTE_DONE || echo REMOTE_STILL_RUNNING",
+                60,
+            )
+            if "REMOTE_DONE" in log_out:
+                print("\nNOT: Sunucuda bootstrap TAMAMLANMIS — PC baglantisi erken kesildi.")
+                print("     DURUM_KONTROL.bat ile dogrulayin.")
+                code = 0
+                out = log_out + "\nBOOTSTRAP_DONE"
+            else:
+                print("Sunucuda hala calisiyor veya hata var.")
+                print("  Log: tail -f /tmp/prometheus_bootstrap.log")
+                print("  Build: tail -f /tmp/prometheus_build.log")
+                client.close()
+                return 1
+        except Exception as check_exc:
+            print(f"Log kontrol hatasi: {check_exc}")
+            print("Sunucuda log: /tmp/prometheus_bootstrap.log")
+            client.close()
+            return 1
 
     # Son durum + otomatik iyilestirme
     post_cmd = f"""
