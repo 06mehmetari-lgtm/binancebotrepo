@@ -299,6 +299,41 @@ async def generate_signal(redis: aioredis.Redis, symbol: str) -> dict | None:
         signal_dict["risk"] = risk
         signal_dict["stop_loss_pct"] = risk.get("stop_loss_pct")
         signal_dict["take_profit_tiers"] = risk.get("take_profit_tiers")
+        try:
+            from leverage_model import recommend_leverage
+            from risk_limits import get_active_limits
+
+            atr_raw = float(features.get("atr_pct", features.get("atr_14", 0)) or 0)
+            atr_dec = atr_raw / 100.0 if atr_raw > 0.5 else atr_raw
+            dissent = verdict.get("dissent_risk") if verdict else None
+            lim = get_active_limits()
+            lev_rec = recommend_leverage(
+                confidence=final_conf,
+                crisis_level=int(context.get("crisis_level", 0) or 0),
+                regime=str(context.get("regime", "unknown")),
+                atr_pct=atr_dec,
+                drift_status=str(context.get("drift_status", features.get("drift_status", "STABLE"))),
+                dissent_risk=dissent,
+                global_max=lim.max_leverage,
+                direction=final_dir,
+                is_valid=is_valid and final_dir in ("long", "short"),
+            )
+            if is_valid and final_dir in ("long", "short") and risk.get("recommended_leverage"):
+                lev_rec["leverage"] = min(
+                    int(lev_rec["leverage"]),
+                    int(risk["recommended_leverage"]),
+                    int(lim.max_leverage),
+                )
+            signal_dict["leverage"] = int(lev_rec["leverage"])
+            signal_dict["leverage_reasons"] = lev_rec.get("reasons", [])
+            signal_dict["leverage_meta"] = {
+                "base_lev": lev_rec.get("base_lev"),
+                "confidence_cap": lev_rec.get("confidence_cap"),
+                "crisis_mult": lev_rec.get("crisis_mult"),
+            }
+        except ImportError:
+            signal_dict["leverage"] = int(risk.get("recommended_leverage", 1) or 1)
+            signal_dict["leverage_reasons"] = risk.get("leverage_reasons", [])
         if is_valid and final_dir in ("long", "short") and not risk.get("approved"):
             is_valid = False
             reason = f"risk:{','.join(risk.get('reasons', []))}"

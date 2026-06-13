@@ -45,6 +45,15 @@ export function PositionDecisionPanel({ pos }: { pos: PositionDecision }) {
           {pos.direction === 'long' ? '▲ LONG' : '▼ SHORT'}
         </span>
         <span className="text-gray-500">Kaynak: <span className="text-white">{pos.source}</span></span>
+        {pos.leverage != null && (
+          <span className="text-violet-400 font-bold">{pos.leverage}x kaldıraç</span>
+        )}
+        {pos.entry_at_label && (
+          <span className="text-gray-500">Alım: <span className="text-gray-300">{pos.entry_at_label}</span></span>
+        )}
+        {pos.notional_usd != null && (
+          <span className="text-gray-500">Notional: <span className="text-violet-300 font-mono">${pos.notional_usd}</span></span>
+        )}
         {pos.trade_action && (
           <span className="text-orange-400">Anlık aksiyon: {pos.trade_action}</span>
         )}

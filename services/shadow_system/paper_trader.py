@@ -79,7 +79,15 @@ class PaperTrader:
             for sid in ["SHADOW_A", "SHADOW_B", "SHADOW_C"]
         }
 
-    def execute(self, shadow_id: str, symbol: str, side: str, price: float, size_usd: float) -> dict | None:
+    def execute(
+        self,
+        shadow_id: str,
+        symbol: str,
+        side: str,
+        price: float,
+        size_usd: float,
+        leverage: float = 1.0,
+    ) -> dict | None:
         """
         side:
           "BUY"        — open long position
@@ -93,39 +101,68 @@ class PaperTrader:
 
         if side in ("BUY", "SELL_SHORT"):
             direction = "long" if side == "BUY" else "short"
-            if size_usd <= 0 or size_usd > p.capital:
+            lev = max(1.0, float(leverage or 1.0))
+            margin_usd = size_usd
+            if margin_usd <= 0 or margin_usd > p.capital:
                 return None
-            qty = size_usd / price
+            notional = margin_usd * lev
+            qty = notional / price
             p.positions[symbol] = {
-                "qty": qty, "entry_price": price,
-                "entry_time": time.time(), "entry_capital": size_usd,
+                "qty": qty,
+                "entry_price": price,
+                "entry_time": time.time(),
+                "entry_capital": margin_usd,
+                "margin_usd": margin_usd,
+                "leverage": lev,
+                "notional_usd": notional,
                 "direction": direction,
             }
-            p.capital -= size_usd
-            logger.debug(f"[{shadow_id}] OPEN {direction.upper()} {symbol} qty={qty:.6f} @ {price:.4f}")
-            return {"action": "OPENED", "symbol": symbol, "qty": qty, "direction": direction}
+            p.capital -= margin_usd
+            logger.debug(
+                f"[{shadow_id}] OPEN {direction.upper()} {symbol} "
+                f"lev={lev:.0f}x margin=${margin_usd:.0f} notional=${notional:.0f} @ {price:.4f}"
+            )
+            return {
+                "action": "OPENED",
+                "symbol": symbol,
+                "qty": qty,
+                "direction": direction,
+                "leverage": lev,
+                "margin_usd": margin_usd,
+                "notional_usd": notional,
+            }
 
         elif side in ("SELL", "BUY_COVER"):
             pos = p.positions.get(symbol)
             if not pos:
                 return None
             pos_direction = pos.get("direction", "long")
+            lev = max(1.0, float(pos.get("leverage", 1.0) or 1.0))
+            margin = float(pos.get("margin_usd", pos.get("entry_capital", 0)) or 0)
+            notional = float(pos.get("notional_usd", margin * lev) or margin * lev)
             if pos_direction == "long":
                 pnl_pct = (price - pos["entry_price"]) / pos["entry_price"]
             else:
                 pnl_pct = (pos["entry_price"] - price) / pos["entry_price"]
 
-            # Round-trip fee: 0.10% per side (0.20% total) — matches OMS portfolio_try
-            fee_rt = float(__import__("os").getenv("TRADE_FEE_PCT_PER_SIDE", "0.001")) * 2
-            pnl_pct -= fee_rt
-            exit_value = pos["entry_capital"] * (1 + pnl_pct)
-            p.capital += exit_value
+            side_fee = float(__import__("os").getenv("TRADE_FEE_PCT_PER_SIDE", "0.001"))
+            fee_entry = notional * side_fee
+            fee_exit = notional * side_fee
+            gross_usd = margin * lev * pnl_pct
+            net_usd = gross_usd - fee_entry - fee_exit
+            net_pct = (net_usd / margin) if margin > 0 else pnl_pct - (side_fee * 2 * lev)
+            p.capital += margin + net_usd
             trade = {
                 "symbol": symbol, "shadow_id": shadow_id,
                 "direction": pos_direction,
                 "entry_price": pos["entry_price"], "exit_price": price,
-                "pnl_pct": round(pnl_pct, 6),
-                "pnl_usdt": round(exit_value - pos["entry_capital"], 4),
+                "leverage": lev,
+                "margin_usd": margin,
+                "notional_usd": notional,
+                "pnl_pct": round(net_pct, 6),
+                "pnl_usdt": round(net_usd, 4),
+                "gross_pnl_usd": round(gross_usd, 4),
+                "fee_total_usd": round(fee_entry + fee_exit, 4),
                 "hold_seconds": round(time.time() - pos["entry_time"], 1),
                 "closed_at": round(time.time(), 3),
             }

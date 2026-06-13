@@ -51,17 +51,28 @@ async def execute_market_order(
     price: float,
     *,
     opening: bool = True,
+    leverage: float = 1.0,
 ) -> dict | None:
     """Place USDT-M futures market order. amount = base asset quantity."""
     ex = get_executor()
     if not ex or price <= 0 or size_usd < 10:
         return None
-    amount = round(size_usd / price, 8)
+    lev = max(1, int(round(leverage)))
+    notional = size_usd * lev
+    amount = round(notional / price, 8)
     if amount <= 0:
         return None
     side = _ccxt_side(direction, opening)
     try:
         loop = asyncio.get_event_loop()
+        if opening and lev > 1:
+            try:
+                await loop.run_in_executor(
+                    None, lambda: ex.set_leverage(lev, symbol)
+                )
+                log.info("Set leverage %sx for %s", lev, symbol)
+            except Exception as e:
+                log.warning("set_leverage %s %sx failed: %s", symbol, lev, e)
         result = await loop.run_in_executor(
             None, lambda: ex.market_order(symbol, side, amount)
         )
@@ -77,8 +88,8 @@ async def execute_market_order(
             "status": result.get("status"),
         })
         log.info(
-            "LIVE ORDER %s %s %s qty=%.6f (~$%.2f)",
-            symbol, side.upper(), "OPEN" if opening else "CLOSE", amount, size_usd,
+            "LIVE ORDER %s %s %s qty=%.6f margin=$%.2f lev=%sx notional=$%.2f",
+            symbol, side.upper(), "OPEN" if opening else "CLOSE", amount, size_usd, lev, notional,
         )
         return result
     except Exception as e:

@@ -167,6 +167,172 @@ def classify_shadow_block(
     return "ALIM_UYGUN"
 
 
+def parse_risk_limits(risk: dict) -> dict:
+    max_lev = float(risk.get("max_leverage", 3) or 3)
+    max_pos = float(risk.get("max_position_pct", 0.05) or 0.05)
+    if max_pos > 1:
+        max_pos = max_pos / 100 if max_pos <= 100 else 0.05
+    return {
+        "max_leverage": min(max_lev, 3.0),
+        "max_position_pct": max_pos,
+        "max_open_positions": int(risk.get("max_open_positions", 30) or 30),
+    }
+
+
+def portfolio_value_usd(portfolio: dict) -> float:
+    for key in ("equity", "current_equity", "portfolio_value"):
+        v = float(portfolio.get(key, 0) or 0)
+        if v > 0:
+            return v
+    for line in Path(".env").read_text(encoding="utf-8").splitlines():
+        if line.startswith("PORTFOLIO_VALUE="):
+            try:
+                return float(line.split("=", 1)[1].strip().strip('"').strip("'"))
+            except ValueError:
+                break
+    return 10_000.0
+
+
+def expected_shadow_size(
+    pv: float,
+    max_open: int,
+    max_pos_pct: float,
+    confidence: float,
+    leverage: float,
+    open_n: int,
+) -> float:
+    slot_budget = pv / max(max_open, 1)
+    base_usd = min(pv * max_pos_pct, slot_budget * 0.92)
+    size = base_usd * min(confidence, 0.85) * min(leverage / 3.0, 1.0)
+    if open_n >= max_open * 0.8:
+        size *= 0.85
+    return size
+
+
+def trade_side_label(direction: str) -> str:
+    return "BUY" if direction == "long" else "SELL_SHORT"
+
+
+def close_side_label(direction: str) -> str:
+    return "SELL" if direction == "long" else "BUY_COVER"
+
+
+def audit_position_decision(
+    pos: dict,
+    ladder: dict,
+    sig: dict | None,
+    rules: dict,
+    risk_lim: dict,
+    pv: float,
+    price: float,
+    hold: int,
+    max_hold: int,
+) -> dict:
+    direction = str(pos.get("direction", "long"))
+    size = float(pos.get("size_usd", 0) or 0)
+    entry = float(pos.get("entry_price", pos.get("price", 0)) or 0)
+    min_c = float(rules.get("shadow_min_conf", 0.62))
+    max_pos = float(risk_lim.get("max_position_pct", 0.05))
+    max_lev = float(risk_lim.get("max_leverage", 3))
+
+    entry_conf = float(ladder.get("entry_confidence", 0) or 0)
+    if not entry_conf and sig:
+        entry_conf = float(sig.get("confidence", 0) or 0)
+    lev = float(ladder.get("leverage", max_lev) or max_lev)
+    port_pct = float(ladder.get("position_size_pct", 0) or 0)
+    if port_pct <= 0 and pv > 0 and size > 0:
+        port_pct = size / pv
+    notional = float(ladder.get("notional_usd", 0) or 0)
+    if notional <= 0 and size > 0:
+        notional = size * lev
+
+    sl = float(ladder.get("stop_loss_pct", 0) or 0)
+    tp = float(ladder.get("take_profit_pct", 0) or 0)
+    if not sl and sig:
+        dec = sig.get("decision") or {}
+        sl = float(dec.get("stop_loss_pct") or sig.get("stop_loss_pct") or 1.2)
+    if not tp and sig:
+        dec = sig.get("decision") or {}
+        tp_list = dec.get("take_profit_tiers_pct") or sig.get("take_profit_tiers") or [1.5]
+        tp = float(tp_list[0] if tp_list else 1.5)
+    rr = tp / sl if sl > 0 else 0
+
+    upnl = 0.0
+    if entry > 0 and price > 0:
+        upnl = (
+            (price - entry) / entry * 100
+            if direction == "long"
+            else (entry - price) / entry * 100
+        )
+
+    checks: list[str] = []
+    if entry_conf >= min_c:
+        checks.append("conf_OK")
+    elif entry_conf > 0:
+        checks.append(f"conf_dusuk_{entry_conf:.0%}")
+    else:
+        checks.append("conf_eski_kayit")
+
+    if port_pct <= max_pos * 1.12:
+        checks.append("size_OK")
+    elif port_pct > 0:
+        checks.append(f"size_yuksek_{port_pct:.1%}")
+
+    if rr >= 1.25 or rr == 0:
+        checks.append("rr_OK" if rr >= 1.25 else "rr_bilinmiyor")
+    else:
+        checks.append(f"rr_dusuk_{rr:.2f}")
+
+    if lev <= 3:
+        checks.append(f"lev_{lev:.0f}x_OK")
+    else:
+        checks.append(f"lev_{lev:.0f}x_ASIRI")
+
+    sig_dir = str((sig or {}).get("direction", "?"))
+    if sig_dir in ("long", "short") and sig_dir != direction:
+        checks.append("UYARI_sinyal_ters")
+    elif sig_dir == direction:
+        checks.append("yon_OK")
+
+    exit_next: list[str] = []
+    if sl > 0:
+        exit_next.append(f"stop@{-sl:.1f}% (simdi {upnl:+.2f}%)")
+    if tp > 0:
+        exit_next.append(f"tp@+{tp:.1f}% (simdi {upnl:+.2f}%)")
+    if ladder.get("breakeven_armed"):
+        exit_next.append("breakeven_aktif")
+    if hold >= max_hold:
+        exit_next.append("max_hold_TETIK")
+    elif max_hold - hold < 600:
+        exit_next.append(f"max_hold_{max_hold - hold}s")
+    stale = int(rules.get("stale_verdict_sec", 1200))
+    if sig_dir == "flat" and hold >= stale:
+        exit_next.append("stale_flat_HAZIR")
+
+    ok_count = sum(1 for c in checks if c.endswith("_OK") or "lev_" in c and "_OK" in c)
+    verdict = "DOGRU" if ok_count >= 4 and "UYARI" not in " ".join(checks) else "KONTROL"
+
+    return {
+        "direction": direction,
+        "side": trade_side_label(direction),
+        "close_side": close_side_label(direction),
+        "size": size,
+        "port_pct": port_pct,
+        "leverage": lev,
+        "notional": notional,
+        "sl": sl,
+        "tp": tp,
+        "rr": rr,
+        "entry_conf": entry_conf,
+        "upnl": upnl,
+        "checks": checks,
+        "exit_next": exit_next,
+        "verdict": verdict,
+        "risk_reasons": ladder.get("risk_reasons") or [],
+        "kelly": float(ladder.get("kelly_fraction", 0) or 0),
+    }
+
+
 def decision_row(
     sym: str,
     sig: dict | None,
@@ -253,6 +419,9 @@ def main() -> None:
     leaderboard = jparse(meta_raw.get("shadow:leaderboard")) or {}
     ws_status = jparse(meta_raw.get("ws:status")) or {}
 
+    risk_lim = parse_risk_limits(risk)
+    pv = portfolio_value_usd(portfolio)
+
     uni_counts = universe.get("counts") or {}
     symbols: list[str] = list(universe.get("symbols") or [])
     if not symbols:
@@ -274,6 +443,10 @@ def main() -> None:
     log(f"  Cooldown:          {rules.get('cooldown_sec', 600)}s")
     if rules.get("blacklist"):
         log(f"  Blacklist:         {', '.join(rules['blacklist'][:8])}")
+    log(f"  Max leverage:      {risk_lim['max_leverage']:.0f}x (immunity cap 3x)")
+    log(f"  Max pozisyon:      {risk_lim['max_position_pct']*100:.1f}% portfoy / islem")
+    log(f"  Portfoy baz:       ${pv:,.0f}")
+    log(f"  Slot butcesi:      ${pv / max(max_open, 1):,.0f} (portfoy/{max_open})")
     log(f"  Trading halted:    {halted.get('halted', False)}")
     log(f"  WS:                {ws_status.get('status', '?')} "
         f"({ws_status.get('symbols', '?')} sembol)")
@@ -352,29 +525,43 @@ def main() -> None:
         log(f"    {n:4d}x  {reason}")
 
     log("\n[3] GECERLI SINYALLER — TAM LISTE")
-    log(f"  {'SYMBOL':14s} {'YON':5s} {'CONF':6s} {'REGIME':12s} {'CRISIS':6s}")
-    log("  " + "-" * 50)
+    log(f"  {'SYMBOL':14s} {'YON':5s} {'CONF':6s} {'LEV':4s} {'REGIME':12s} {'CRISIS':6s}")
+    log("  " + "-" * 58)
     detail_syms = [s for s, _ in valid_long[:15]] + [s for s, _ in valid_short[:15]]
     detail_keys: list[str] = []
     for sym in detail_syms:
         detail_keys.extend([
             f"agents:verdict:{sym}",
+            f"context:latest:{sym}",
             f"learn:profile:{sym}",
             f"binance:ticker:{sym.lower()}",
             f"trade:cooldown:shadow:{sym.upper()}",
         ])
     detail_raw = mget_map(detail_keys, "gecerli-detay")
 
+    def ctx_fields(sym: str) -> tuple[str, str]:
+        ctx = jparse(detail_raw.get(f"context:latest:{sym}")) or {}
+        feat = features.get(sym) or {}
+        regime = str(
+            ctx.get("regime")
+            or ctx.get("regime_label")
+            or feat.get("regime")
+            or feat.get("regime_label")
+            or "?"
+        )[:12]
+        crisis = ctx.get("crisis_level", feat.get("crisis_level", feat.get("vix_proxy", "?")))
+        return regime, str(crisis)
+
     for sym, conf in valid_long[:15]:
-        feat = features.get(sym) or {}
-        regime = str(feat.get("regime", feat.get("regime_label", "?")))[:12]
-        crisis = feat.get("crisis_level", feat.get("vix_proxy", "?"))
-        log(f"  {sym:14s} long  {conf:5.0%} {regime:12s} {crisis}")
+        regime, crisis = ctx_fields(sym)
+        sig = signals.get(sym) or {}
+        lev = int(sig.get("leverage") or (sig.get("risk") or {}).get("recommended_leverage") or 1)
+        log(f"  {sym:14s} long  {conf:5.0%} {lev:3d}x {regime:12s} {crisis}")
     for sym, conf in valid_short[:15]:
-        feat = features.get(sym) or {}
-        regime = str(feat.get("regime", feat.get("regime_label", "?")))[:12]
-        crisis = feat.get("crisis_level", feat.get("vix_proxy", "?"))
-        log(f"  {sym:14s} short {conf:5.0%} {regime:12s} {crisis}")
+        regime, crisis = ctx_fields(sym)
+        sig = signals.get(sym) or {}
+        lev = int(sig.get("leverage") or (sig.get("risk") or {}).get("recommended_leverage") or 1)
+        log(f"  {sym:14s} short {conf:5.0%} {lev:3d}x {regime:12s} {crisis}")
 
     log("\n[4] ALIM KAPISI — TUM EVREN TARAMASI")
     open_positions = {p["symbol"]: p for p in (portfolio.get("positions") or [])}
@@ -462,18 +649,28 @@ def main() -> None:
     log("\n[6] SHADOW SLOT ANALIZI")
     pos_keys_raw = rc("KEYS", "shadow:positions:*")
     pos_keys = [k for k in pos_keys_raw.splitlines() if k and k != "(nil)"]
+    shadow_pos_map: dict[str, dict] = {}
     if pos_keys:
         pos_raw = mget_map(pos_keys, "shadow-pos")
         log(f"  Redis shadow pozisyon key: {len(pos_keys)}")
-        for pk in sorted(pos_keys)[:12]:
+        for pk in sorted(pos_keys)[:max_open]:
             pos = jparse(pos_raw.get(pk)) or {}
             sym = pos.get("symbol", pk.split(":")[-1])
+            shadow_pos_map[sym] = pos
             sid = pk.split(":")[2] if pk.count(":") >= 2 else "?"
             opened = float(pos.get("time", pos.get("opened_at", pos.get("entry_time", 0))) or 0)
             hold = int(time.time() - opened) if opened else 0
             kalan = max(0, max_hold - hold)
-            log(f"  {sid}/{sym}: hold={hold}s kalan_max={kalan}s "
-                f"entry={float(pos.get('entry_price',0)):.4f}")
+            entry = float(pos.get("price", pos.get("entry_price", 0)) or 0)
+            ladder = pos.get("ladder") or {}
+            lev = float(ladder.get("leverage", risk_lim["max_leverage"]) or risk_lim["max_leverage"])
+            size = float(pos.get("size_usd", 0) or 0)
+            log(
+                f"  {sid}/{sym}: {pos.get('direction','?')} hold={hold}s kalan_max={kalan}s "
+                f"entry={entry:.4f} size=${size:.0f} lev={lev:.0f}x "
+                f"sl={float(ladder.get('stop_loss_pct',0)):.1f}% "
+                f"tp={float(ladder.get('take_profit_pct',0)):.1f}%"
+            )
     else:
         log("  shadow:positions:* bos (portfolio uzerinden okunuyor)")
 
@@ -483,9 +680,11 @@ def main() -> None:
     for sym in open_syms:
         for k in (
             f"agents:verdict:{sym}",
+            f"context:latest:{sym}",
             f"learn:profile:{sym}",
             f"binance:ticker:{sym.lower()}",
             f"features:latest:{sym}",
+            f"klines:1h:{sym}",
         ):
             if k not in detail_raw:
                 open_extra.append(k)
@@ -497,6 +696,7 @@ def main() -> None:
         sig = signals.get(sym) or {}
         verdict = jparse(detail_raw.get(f"agents:verdict:{sym}")) or {}
         learn = jparse(detail_raw.get(f"learn:profile:{sym}")) or {}
+        ctx = jparse(detail_raw.get(f"context:latest:{sym}")) or {}
         feat = features.get(sym) or jparse(detail_raw.get(f"features:latest:{sym}")) or {}
         entry = float(p.get("entry_price", 0))
         opened = float(p.get("opened_at", p.get("entry_time", 0)) or 0)
@@ -506,6 +706,7 @@ def main() -> None:
             detail_raw.get(f"features:latest:{sym}"),
             detail_raw.get(f"klines:1h:{sym}"),
         )
+        ladder = dict(p.get("ladder") or shadow_pos_map.get(sym, {}).get("ladder") or {})
         upnl = 0.0
         if entry > 0 and price > 0:
             upnl = (
@@ -513,7 +714,7 @@ def main() -> None:
                 if p.get("direction") == "long"
                 else (entry - price) / entry * 100
             )
-        peak = float(p.get("peak_upnl_pct", p.get("peak_pnl_pct", 0)) or 0)
+        peak = float(p.get("peak_upnl_pct", p.get("peak_pnl_pct", ladder.get("peak_upnl_pct", 0))) or 0)
         kapanma = []
         if hold >= max_hold:
             kapanma.append(f"max_hold_asildi({hold}s)")
@@ -521,9 +722,11 @@ def main() -> None:
             kapanma.append(f"max_hold_{max_hold - hold}s")
         if sig.get("direction") == "flat" and hold > int(rules.get("stale_verdict_sec", 1200)):
             kapanma.append("stale_flat_verdict")
-        if upnl <= -1.0:
+        sl_pct = float(ladder.get("stop_loss_pct", 1.2) or 1.2)
+        tp_pct = float(ladder.get("take_profit_pct", 1.5) or 1.5)
+        if upnl <= -sl_pct:
             kapanma.append("hard_stop_yakin")
-        if upnl >= 1.2:
+        if upnl >= tp_pct:
             kapanma.append("tp_yakin")
         log(f"  {sym} {p.get('direction')} [{p.get('source')}] "
             f"entry={entry:.4f} now={price:.4f} upnl={upnl:+.2f}% peak={peak:+.2f}% hold={hold}s")
@@ -531,11 +734,69 @@ def main() -> None:
             f"valid={sig.get('is_valid', '?')}")
         log(f"    agent={verdict.get('direction','?')} conf={float(verdict.get('confidence',0)):.0%} "
             f"dissent={verdict.get('dissent_risk', '?')}")
-        log(f"    regime={feat.get('regime', '?')} crisis={feat.get('crisis_level', '?')}")
+        regime = ctx.get("regime", feat.get("regime", "?"))
+        crisis = ctx.get("crisis_level", feat.get("crisis_level", "?"))
+        log(f"    regime={regime} crisis={crisis}")
         if learn.get("avoid_hint"):
             log(f"    learn: {str(learn.get('avoid_hint'))[:70]}")
         if kapanma:
             log(f"    beklenen cikis: {', '.join(kapanma)}")
+
+    log(f"\n[7b] KALDIRAC & AL/SAT DENETIMI — acik {len(portfolio.get('positions') or [])} pozisyon")
+    log(
+        "  Paper shadow: margin kilitlenir, notional = margin × coin_kaldıracı. "
+        "Kaldıraç sinyal analizinden (ATR+crisis+conf+regime)."
+    )
+    log(
+        f"  Formul: size = min(port*{risk_lim['max_position_pct']*100:.0f}%, slot*0.92) "
+        f"* min(conf,85%) * min(lev/3,1)  |  acilis: BUY/SELL_SHORT, kapanis: SELL/BUY_COVER"
+    )
+    log(
+        f"  {'SYMBOL':12s} {'KAYNAK':6s} {'ISLEM':10s} {'$SIZE':>7s} {'PORT%':>6s} "
+        f"{'LEV':>4s} {'NOTION':>8s} {'SL%':>5s} {'TP%':>5s} {'RR':>4s} {'CONF':>5s} {'SONUC':8s}"
+    )
+    log("  " + "-" * 88)
+    for p in portfolio.get("positions") or []:
+        sym = p.get("symbol", "?")
+        sig = signals.get(sym) or {}
+        price = ticker_price(
+            detail_raw.get(f"binance:ticker:{sym.lower()}"),
+            detail_raw.get(f"features:latest:{sym}"),
+            detail_raw.get(f"klines:1h:{sym}"),
+        )
+        opened = float(p.get("opened_at", p.get("entry_time", 0)) or 0)
+        hold = int(time.time() - opened) if opened else 0
+        ladder = dict(p.get("ladder") or shadow_pos_map.get(sym, {}).get("ladder") or {})
+        audit = audit_position_decision(
+            p, ladder, sig, rules, risk_lim, pv, price, hold, max_hold
+        )
+        log(
+            f"  {sym:12s} {str(p.get('source','?'))[:6]:6s} {audit['side']:10s} "
+            f"${audit['size']:6.0f} {audit['port_pct']*100:5.1f}% "
+            f"{audit['leverage']:3.0f}x ${audit['notional']:7.0f} "
+            f"{audit['sl']:4.1f} {audit['tp']:4.1f} {audit['rr']:3.2f} "
+            f"{audit['entry_conf']:4.0%} {audit['verdict']:8s}"
+        )
+        log(f"    denetim: {', '.join(audit['checks'])}")
+        if audit["risk_reasons"]:
+            log(f"    risk: {', '.join(str(r) for r in audit['risk_reasons'][:3])}")
+        if audit["kelly"] > 0:
+            log(f"    kelly={audit['kelly']:.2%}")
+        log(f"    cikis tetik: {', '.join(audit['exit_next'][:4])}")
+        log(f"    kapanis tarafi: {audit['close_side']} (simdi upnl={audit['upnl']:+.2f}%)")
+
+    if not (portfolio.get("positions") or []):
+        exp_conf = 0.65
+        exp_size = expected_shadow_size(
+            pv, max_open, risk_lim["max_position_pct"], exp_conf,
+            risk_lim["max_leverage"], open_n,
+        )
+        log("  Acik pozisyon yok — ornek yeni alim boyutu (conf=65%):")
+        log(
+            f"    ${exp_size:.0f} = {exp_size/pv*100:.1f}% portfoy, "
+            f"notional~${exp_size * risk_lim['max_leverage']:.0f} @ "
+            f"{risk_lim['max_leverage']:.0f}x"
+        )
 
     log("\n[8] ISLEM GECMISI")
     raw_trades = rc("LRANGE", "oms:trade_history", "0", "499")
@@ -547,14 +808,21 @@ def main() -> None:
             pass
     all_trades.sort(key=lambda t: float(t.get("closed_at", 0)), reverse=True)
 
-    log(f"\n[8a] SON 15 ISLEM")
-    log(f"  {'SYMBOL':12s} {'YON':5s} {'PNL':>8s} {'$PNL':>9s} {'TUTMA':>7s} {'CIKIS':40s}")
-    log("  " + "-" * 78)
+    log(f"\n[8a] SON 15 ISLEM — al/sat + boyut")
+    log(
+        f"  {'SYMBOL':12s} {'YON':5s} {'$SIZE':>7s} {'LEV':>4s} {'PNL':>8s} "
+        f"{'$PNL':>9s} {'TUTMA':>7s} {'CIKIS':32s}"
+    )
+    log("  " + "-" * 88)
     for t in all_trades[:15]:
         sym = str(t.get("symbol", "?"))[:12]
-        exit_r = str(t.get("exit_reason") or t.get("close_reason") or "?")[:40]
+        exit_r = str(t.get("exit_reason") or t.get("close_reason") or "?")[:32]
+        ladder = t.get("ladder") or {}
+        size = float(t.get("size_usd", 0) or 0)
+        lev = float(ladder.get("leverage", risk_lim["max_leverage"]) or risk_lim["max_leverage"])
         log(
             f"  {sym:12s} {str(t.get('direction','?'))[:5]:5s} "
+            f"${size:6.0f} {lev:3.0f}x "
             f"{pct(float(t.get('pnl_pct',0))):>8s} "
             f"${float(t.get('pnl_usdt',0)):+8.2f} "
             f"{int(float(t.get('hold_seconds',0))):6d}s  {exit_r}"

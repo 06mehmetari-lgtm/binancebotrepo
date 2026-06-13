@@ -15,6 +15,9 @@ class BinanceExecutor:
         if os.getenv("BINANCE_TESTNET", "true").lower() in ("1", "true", "yes"):
             self.exchange.set_sandbox_mode(True)
 
+    def set_leverage(self, symbol: str, leverage: int) -> dict:
+        return self.exchange.set_leverage(leverage, symbol)
+
     def market_order(self, symbol: str, side: str, amount: float) -> dict:
         return self.exchange.create_market_order(symbol, side, amount)
 

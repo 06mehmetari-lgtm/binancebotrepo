@@ -39,10 +39,12 @@ def evaluate_risk(
         lim = get_active_limits()
         max_pos = lim.max_position_pct / 100.0 if lim.max_position_pct > 1 else lim.max_position_pct
         max_open = lim.max_open_positions
+        global_max_lev = float(lim.max_leverage)
         paper = is_paper_unlimited()
     except Exception:
         max_pos = 0.05
         max_open = 3
+        global_max_lev = 3.0
         paper = True
 
     risk_score = 0.0
@@ -169,6 +171,29 @@ def evaluate_risk(
     if not approved:
         reasons.append("risk_score_high" if risk_score >= 0.72 else "low_confidence")
 
+    lev_rec = {"leverage": 1, "reasons": ["risk_flat"]}
+    if direction in ("long", "short"):
+        try:
+            from leverage_model import recommend_leverage
+
+            atr_dec = float(feat.get("atr_pct", 0) or 0)
+            if atr_dec > 0.5:
+                atr_dec = atr_dec / 100.0
+            lev_rec = recommend_leverage(
+                confidence=confidence,
+                crisis_level=crisis,
+                regime=regime,
+                atr_pct=atr_dec,
+                drift_status=drift,
+                global_max=global_max_lev,
+                direction=direction,
+                is_valid=approved,
+            )
+            if not approved:
+                lev_rec["leverage"] = 1
+        except ImportError:
+            lev_rec = {"leverage": 1, "reasons": ["no_leverage_model"]}
+
     return {
         "approved": approved,
         "position_size_pct": round(base_size, 4),
@@ -177,6 +202,8 @@ def evaluate_risk(
         "take_profit_tiers": take_profit,
         "risk_score": round(min(1.0, risk_score), 3),
         "max_open_positions": max_open,
+        "recommended_leverage": int(lev_rec.get("leverage", 1)),
+        "leverage_reasons": lev_rec.get("reasons", []),
         "reasons": reasons or ["ok"],
     }
 

@@ -7,31 +7,38 @@ import { buildEquityCurve, PORTFOLIO_START } from '@/lib/build-equity-curve'
 export async function GET() {
   const redis = createRedis()
   try {
-    const [tradeHistRaw, dailyPnlRaw, snapshotsRaw, posData, tryCapRaw] = await Promise.all([
+    const [tradeHistRaw, dailyPnlRaw, snapshotsRaw, posData, tryCapRaw, capRaw] = await Promise.all([
       redis.lrange('oms:trade_history', 0, 499),
       redis.get('oms:daily_pnl'),
       redis.lrange('portfolio:pnl:snapshots', 0, 719),
       fetchOpenPositions(redis),
       redis.get('portfolio:try:v1'),
+      redis.get('portfolio:capital:v1'),
     ])
 
     let portfolioCap: {
       try_amount?: number
       usd_cap?: number
+      portfolio_usd?: number
       usd_try_rate?: number
       fee_per_side_pct?: number
     } | null = null
-    if (tryCapRaw) {
+    for (const raw of [capRaw, tryCapRaw]) {
+      if (!raw) continue
       try {
-        portfolioCap = JSON.parse(tryCapRaw)
+        const parsed = JSON.parse(raw)
+        portfolioCap = { ...portfolioCap, ...parsed }
+        break
       } catch {
-        portfolioCap = null
+        continue
       }
     }
     const startEquity =
       typeof portfolioCap?.usd_cap === 'number' && portfolioCap.usd_cap > 0
         ? portfolioCap.usd_cap
-        : PORTFOLIO_START
+        : typeof portfolioCap?.portfolio_usd === 'number' && portfolioCap.portfolio_usd > 0
+          ? portfolioCap.portfolio_usd
+          : PORTFOLIO_START
 
     const trades = tradeHistRaw
       .map(r => { try { return JSON.parse(r) } catch { return null } })

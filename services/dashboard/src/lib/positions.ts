@@ -54,7 +54,20 @@ export type PositionDecision = {
     stop_loss_pct?: number
     entry_confidence?: number
     entry_reason?: string
+    leverage?: number
+    leverage_reasons?: string[]
+    notional_usd?: number
+    margin_usd?: number
+    position_size_pct?: number
+    slot_budget_usd?: number
   }
+  leverage?: number
+  notional_usd?: number
+  margin_usd?: number
+  qty_estimate?: number
+  entry_at_label?: string
+  exit_plan?: string
+  leverage_reasons?: string[]
 }
 
 function priceFromFeatures(raw: string | null): number {
@@ -82,6 +95,9 @@ export function consolidatePositions(rows: PositionDecision[]): PositionDecision
         ...p,
         shadow_accounts: cur.shadow_accounts,
         sources_label: cur.shadow_accounts ? 'oms+shadow' : 'oms',
+        notional_usd: (p.notional_usd ?? 0) + (cur.notional_usd ?? 0),
+        margin_usd: (p.margin_usd ?? p.size_usd) + (cur.margin_usd ?? cur.size_usd),
+        leverage: Math.max(p.leverage ?? 1, cur.leverage ?? 1),
       })
       continue
     }
@@ -89,22 +105,54 @@ export function consolidatePositions(rows: PositionDecision[]): PositionDecision
       map.set(key, {
         ...cur,
         size_usd: cur.size_usd + p.size_usd,
+        margin_usd: (cur.margin_usd ?? cur.size_usd) + (p.margin_usd ?? p.size_usd),
+        notional_usd: (cur.notional_usd ?? 0) + (p.notional_usd ?? 0),
         shadow_accounts: (cur.shadow_accounts ?? 0) + 1,
         sources_label: 'oms+shadow',
+        leverage: Math.max(cur.leverage ?? 1, p.leverage ?? 1),
       })
       continue
     }
     map.set(key, {
       ...cur,
       size_usd: cur.size_usd + p.size_usd,
+      margin_usd: (cur.margin_usd ?? cur.size_usd) + (p.margin_usd ?? p.size_usd),
+      notional_usd: (cur.notional_usd ?? 0) + (p.notional_usd ?? 0),
       shadow_accounts: (cur.shadow_accounts ?? 1) + 1,
       sources_label: `shadow×${(cur.shadow_accounts ?? 1) + 1}`,
+      leverage: Math.max(cur.leverage ?? 1, p.leverage ?? 1),
     })
   }
   return Array.from(map.values())
 }
 
 function tickerMid(raw: string | null): number {
+  if (!ts) return '—'
+  return new Date(ts * 1000).toLocaleString('tr-TR', {
+    day: '2-digit',
+    month: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
+
+function buildExitPlan(
+  ladder: PositionDecision['ladder'],
+  guard: PositionDecision['guard'],
+  unrealizedPct: number,
+): string {
+  const parts: string[] = []
+  const sl = ladder?.stop_loss_pct
+  const tp = ladder?.take_profit_pct
+  if (sl) parts.push(`SL -${sl}%`)
+  if (tp) parts.push(`TP +${tp}%`)
+  if (guard?.action && guard.action !== 'hold') {
+    parts.push(`Guard: ${guard.action}`)
+  }
+  if (unrealizedPct <= -(sl ?? 1.2)) parts.push('STOP yakın')
+  if (unrealizedPct >= (tp ?? 1.5)) parts.push('TP yakın')
+  return parts.length ? parts.join(' · ') : 'SL/TP ladder'
+}
   if (!raw) return 0
   try {
     const t = JSON.parse(raw) as { data?: { b?: string; a?: string } }
@@ -214,15 +262,35 @@ export async function fetchOpenPositions(redis: Redis): Promise<{
     const direction = String(posObj.direction ?? 'long')
     const sizeUsd = Number(posObj.size_usd ?? 0)
 
+    const ladder = (posObj.ladder ?? {}) as PositionDecision['ladder']
+    const leverage = Math.max(
+      1,
+      Number(
+        ladder?.leverage ??
+          (entrySignal as { leverage?: number }).leverage ??
+          (currentSignal?.leverage as number | undefined) ??
+          1,
+      ),
+    )
+    const marginUsd = Number(
+      posObj.margin_usd ?? ladder?.margin_usd ?? posObj.size_usd ?? sizeUsd,
+    )
+    const notionalUsd = Number(
+      ladder?.notional_usd ?? marginUsd * leverage,
+    )
+
     let unrealizedPct = 0
     let unrealizedUsdt = 0
-    if (currentPrice > 0 && entryPrice > 0 && sizeUsd > 0) {
+    if (currentPrice > 0 && entryPrice > 0 && marginUsd > 0) {
       unrealizedPct =
         direction === 'long'
           ? ((currentPrice - entryPrice) / entryPrice) * 100
           : ((entryPrice - currentPrice) / entryPrice) * 100
-      unrealizedUsdt = sizeUsd * (unrealizedPct / 100)
+      unrealizedUsdt = marginUsd * leverage * (unrealizedPct / 100)
     }
+
+    const qtyEstimate =
+      entryPrice > 0 && notionalUsd > 0 ? notionalUsd / entryPrice : undefined
 
     const entryTime = Number(posObj.entry_time ?? posObj.time ?? 0)
     const ageSeconds = entryTime ? Date.now() / 1000 - entryTime : 0
@@ -259,12 +327,28 @@ export async function fetchOpenPositions(redis: Redis): Promise<{
 
     const aiConf = verdict?.confidence ?? Number(currentSignal?.confidence ?? 0)
 
+    const guardBlock = guardParsed
+        ? {
+            action: String(guardParsed.action ?? 'hold'),
+            urgency: String(guardParsed.urgency ?? 'low'),
+            reason: String(guardParsed.reason ?? ''),
+            unrealized_pct: Number(guardParsed.unrealized_pct ?? unrealizedPct),
+            ai_confidence: Number(guardParsed.ai_confidence ?? 0),
+            updated_at: Number(guardParsed.ts ?? 0),
+          }
+        : undefined
+
     positions.push({
       symbol: raws[i].symbol,
       direction,
-      size_usd: sizeUsd,
+      size_usd: marginUsd,
+      margin_usd: marginUsd,
+      notional_usd: +notionalUsd.toFixed(2),
+      leverage,
+      qty_estimate: qtyEstimate ? +qtyEstimate.toFixed(6) : undefined,
       entry_price: entryPrice,
       entry_time: entryTime || undefined,
+      entry_at_label: fmtEntryTime(entryTime),
       current_price: currentPrice > 0 ? currentPrice : null,
       unrealized_pct: +unrealizedPct.toFixed(3),
       unrealized_usdt: +unrealizedUsdt.toFixed(4),
@@ -277,20 +361,13 @@ export async function fetchOpenPositions(redis: Redis): Promise<{
       votes: Array.isArray(votes) ? votes : [],
       trade_action: currentSignal?.trade_action as string | undefined,
       open_reason: openReason,
-      ladder: posObj.ladder as PositionDecision['ladder'],
+      ladder,
+      leverage_reasons: ladder?.leverage_reasons,
+      exit_plan: buildExitPlan(ladder, guardBlock, unrealizedPct),
       regime,
       context_regime: regime,
       ai_confidence_pct: aiConf > 0 ? Math.round(aiConf * 100) : undefined,
-      guard: guardParsed
-        ? {
-            action: String(guardParsed.action ?? 'hold'),
-            urgency: String(guardParsed.urgency ?? 'low'),
-            reason: String(guardParsed.reason ?? ''),
-            unrealized_pct: Number(guardParsed.unrealized_pct ?? unrealizedPct),
-            ai_confidence: Number(guardParsed.ai_confidence ?? 0),
-            updated_at: Number(guardParsed.ts ?? 0),
-          }
-        : undefined,
+      guard: guardBlock,
     })
   }
 

@@ -2,6 +2,7 @@
 import { useEffect, useState, Fragment, useCallback, useMemo } from 'react'
 import { PositionDecisionPanel } from '@/components/PositionDecisionPanel'
 import RiskLimitsEditor from '@/components/RiskLimitsEditor'
+import PortfolioCapitalEditor from '@/components/PortfolioCapitalEditor'
 import { LiveEquityChart, type CurvePoint } from '@/components/LiveEquityChart'
 import { PositionBubbleChart, buildBubblePoints } from '@/components/PositionBubbleChart'
 import { useLiveEquity } from '@/hooks/useLiveEquity'
@@ -13,6 +14,19 @@ type Position = PositionDecision
 interface Trade {
   symbol: string; direction: string; entry_price: number; exit_price: number
   pnl_pct: number; pnl_usdt: number; size_usd: number; closed_at: number
+  leverage?: number; exit_reason?: string; close_reason?: string
+  hold_seconds?: number; fee_total_usd?: number; margin_usd?: number
+}
+
+interface ActivityEvent {
+  type?: string
+  symbol?: string
+  direction?: string
+  confidence?: number
+  ts?: number
+  timestamp?: number
+  message?: string
+  source?: string
 }
 
 interface PositionData {
@@ -59,6 +73,17 @@ function fmtTs(ts: number) {
   return new Date(ts * 1000).toLocaleDateString('tr-TR', { month: 'short', day: 'numeric' })
 }
 
+function fmtDateTime(ts: number) {
+  if (!ts) return '—'
+  return new Date(ts * 1000).toLocaleString('tr-TR', {
+    day: '2-digit',
+    month: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  })
+}
+
 function PnLBar({ pct }: { pct: number }) {
   const abs = Math.min(Math.abs(pct), 10)
   const width = (abs / 10) * 100
@@ -87,7 +112,7 @@ function EmptyState() {
       <div className="flex flex-wrap justify-center gap-2 mt-4 text-xs text-gray-600">
         <span className="bg-gray-800 px-2 py-1 rounded">Min confidence: 60%</span>
         <span className="bg-gray-800 px-2 py-1 rounded">Max 30 concurrent positions</span>
-        <span className="bg-gray-800 px-2 py-1 rounded">10.000 TL cap · %0,10 komisyon/yön</span>
+        <span className="bg-gray-800 px-2 py-1 rounded">Bakiye dashboard&apos;dan ayarlanır</span>
       </div>
     </div>
   )
@@ -106,14 +131,17 @@ export default function PositionsPage() {
   const [maxPositionPct, setMaxPositionPct] = useState(0.05)
   const [streamLive, setStreamLive] = useState(false)
   const [loadError, setLoadError] = useState('')
+  const [activity, setActivity] = useState<ActivityEvent[]>([])
 
   const fetchData = useCallback(async () => {
     try {
       const controller = new AbortController()
       const timer = setTimeout(() => controller.abort(), 20000)
-      const [posRes, portRes] = await Promise.all([
+      const [posRes, portRes, capRes, actRes] = await Promise.all([
         fetch('/api/positions', { signal: controller.signal, cache: 'no-store' }),
         fetch('/api/portfolio', { signal: controller.signal, cache: 'no-store' }),
+        fetch('/api/portfolio/capital', { signal: controller.signal, cache: 'no-store' }),
+        fetch('/api/activity', { signal: controller.signal, cache: 'no-store' }),
       ])
       clearTimeout(timer)
       if (posRes.ok) {
@@ -124,6 +152,11 @@ export default function PositionsPage() {
         setLoadError((body as { error?: string }).error ?? `positions API ${posRes.status}`)
       }
       if (portRes.ok) setPortfolio(await portRes.json())
+      if (capRes.ok) {
+        const cap = await capRes.json()
+        if (cap.usd_cap) setPortfolioValue(cap.usd_cap)
+      }
+      if (actRes.ok) setActivity(await actRes.json())
       setLastUpdate(new Date().toLocaleTimeString())
     } catch (e) {
       setLoadError(e instanceof Error && e.name === 'AbortError'
@@ -155,7 +188,6 @@ export default function PositionsPage() {
       .then(d => {
         if (d.limits?.max_open_positions) setMaxOpenLimit(d.limits.max_open_positions)
         if (d.limits?.max_position_pct) setMaxPositionPct(d.limits.max_position_pct)
-        if (d.limits?.portfolio_value_usd) setPortfolioValue(d.limits.portfolio_value_usd)
       })
       .catch(() => {})
     const t = setInterval(fetchData, 2000)
@@ -234,6 +266,42 @@ export default function PositionsPage() {
     [positions, trade_history],
   )
 
+  const tradeTimeline = useMemo(() => {
+    const items: { ts: number; label: string; kind: 'open' | 'close' | 'signal' | 'other' }[] = []
+    for (const p of positions) {
+      if (p.entry_time) {
+        items.push({
+          ts: p.entry_time,
+          kind: 'open',
+          label: `ALIM ${p.symbol} ${p.direction.toUpperCase()} ${p.leverage ?? 1}x · margin $${(p.margin_usd ?? p.size_usd).toFixed(0)} · ${p.entry_at_label ?? ''}`,
+        })
+      }
+    }
+    for (const t of trade_history) {
+      if (t.closed_at) {
+        const exit = t.exit_reason || t.close_reason || 'kapanış'
+        const lev = t.leverage ? ` ${t.leverage}x` : ''
+        items.push({
+          ts: t.closed_at,
+          kind: 'close',
+          label: `SATIŞ ${t.symbol} ${t.direction?.toUpperCase() ?? ''}${lev} · ${exit} · ${((t.pnl_pct ?? 0) * 100).toFixed(2)}%`,
+        })
+      }
+    }
+    for (const ev of activity) {
+      const ts = Number(ev.ts ?? ev.timestamp ?? 0)
+      if (!ts) continue
+      if (ev.type === 'signal' && ev.symbol) {
+        items.push({
+          ts: ts > 1e12 ? ts / 1000 : ts,
+          kind: 'signal',
+          label: `SİNYAL ${ev.symbol} ${String(ev.direction ?? '').toUpperCase()} conf ${Math.round((ev.confidence ?? 0) * 100)}%`,
+        })
+      }
+    }
+    return items.sort((a, b) => b.ts - a.ts).slice(0, 25)
+  }, [positions, trade_history, activity])
+
   if (loading && !data && !loadError) return (
     <div className="flex items-center justify-center mt-32 gap-3 text-gray-500">
       <span className="animate-spin text-orange-400">⚡</span>
@@ -261,7 +329,8 @@ export default function PositionsPage() {
   )
 
   const totalUnrealized = positions.reduce((s, p) => s + (p.unrealized_usdt ?? 0), 0)
-  const totalExposed = positions.reduce((s, p) => s + p.size_usd, 0)
+  const totalExposed = positions.reduce((s, p) => s + (p.margin_usd ?? p.size_usd), 0)
+  const totalNotional = positions.reduce((s, p) => s + (p.notional_usd ?? p.size_usd), 0)
   const winTrades = trade_history.filter(t => t.pnl_pct > 0).length
   const winRate = trade_history.length > 0 ? (winTrades / trade_history.length * 100) : 0
 
@@ -319,6 +388,8 @@ export default function PositionsPage() {
       {emergencyMsg && (
         <p className="text-xs text-orange-300 bg-orange-950/30 border border-orange-800/50 rounded-lg px-3 py-2">{emergencyMsg}</p>
       )}
+
+      <PortfolioCapitalEditor openCount={positions.length} maxOpen={maxOpenLimit} />
 
       <RiskLimitsEditor openCount={positions.length} />
 
@@ -442,7 +513,8 @@ export default function PositionsPage() {
           <div className="flex justify-between text-xs text-gray-400">
             <span>Capital Exposed</span>
             <span>
-              ${totalExposed.toFixed(0)} / ${portfolioValue.toLocaleString()} portföy (max ${(portfolioValue * maxPositionPct).toFixed(0)}/pozisyon)
+              Margin ${totalExposed.toFixed(0)} · Notional ${totalNotional.toFixed(0)} / ${portfolioValue.toLocaleString()} (
+              max ${(portfolioValue * maxPositionPct).toFixed(0)}/pozisyon)
             </span>
           </div>
           <div className="h-2 bg-gray-700 rounded-full overflow-hidden">
@@ -454,6 +526,31 @@ export default function PositionsPage() {
           <p className="text-xs text-gray-600">
             {(totalExposed / portfolioValue * 100).toFixed(2)}% portföy · Max {(maxPositionPct * 100).toFixed(0)}% / pozisyon
           </p>
+        </div>
+      )}
+
+      {/* İşlem akışı */}
+      {tradeTimeline.length > 0 && (
+        <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
+          <div className="px-4 py-3 border-b border-gray-800">
+            <h2 className="text-cyan-400 font-semibold text-sm uppercase tracking-wider">🕐 Alım / Satım akışı</h2>
+            <p className="text-gray-600 text-xs mt-0.5">Açılışlar, kapanışlar ve son sinyaller — log takibi</p>
+          </div>
+          <ul className="divide-y divide-gray-800/60 max-h-64 overflow-y-auto text-xs">
+            {tradeTimeline.map((item, i) => (
+              <li key={i} className="px-4 py-2 flex gap-3 hover:bg-gray-800/20">
+                <span className="text-gray-600 font-mono shrink-0 w-36">{fmtDateTime(item.ts)}</span>
+                <span className={
+                  item.kind === 'open' ? 'text-green-400' :
+                  item.kind === 'close' ? 'text-orange-400' :
+                  item.kind === 'signal' ? 'text-blue-400' : 'text-gray-400'
+                }>
+                  {item.kind === 'open' ? '▲' : item.kind === 'close' ? '▼' : '◆'}
+                </span>
+                <span className="text-gray-300">{item.label}</span>
+              </li>
+            ))}
+          </ul>
         </div>
       )}
 
@@ -472,15 +569,18 @@ export default function PositionsPage() {
               <thead>
                 <tr className="text-gray-500 border-b border-gray-800/60 text-xs bg-gray-900/60">
                   <th className="text-left px-4 py-2.5">Symbol</th>
-                  <th className="text-left px-4 py-2.5">Direction</th>
+                  <th className="text-left px-4 py-2.5">Dir</th>
+                  <th className="text-left px-4 py-2.5">Lev</th>
+                  <th className="text-left px-4 py-2.5">Alım zamanı</th>
                   <th className="text-left px-4 py-2.5">Entry</th>
-                  <th className="text-left px-4 py-2.5">Current</th>
-                  <th className="text-left px-4 py-2.5">Size</th>
-                  <th className="text-left px-4 py-2.5">Unrealized P&L</th>
-                  <th className="text-left px-4 py-2.5">Unrealized $</th>
-                  <th className="text-left px-4 py-2.5">Age</th>
-                  <th className="text-left px-4 py-2.5">Confidence</th>
-                  <th className="text-left px-4 py-2.5">Regime</th>
+                  <th className="text-left px-4 py-2.5">Now</th>
+                  <th className="text-left px-4 py-2.5">Margin</th>
+                  <th className="text-left px-4 py-2.5">Notional</th>
+                  <th className="text-left px-4 py-2.5">Qty≈</th>
+                  <th className="text-left px-4 py-2.5">uPnL</th>
+                  <th className="text-left px-4 py-2.5">$uPnL</th>
+                  <th className="text-left px-4 py-2.5">Çıkış planı</th>
+                  <th className="text-left px-4 py-2.5">Conf</th>
                   <th className="text-left px-4 py-2.5">AI</th>
                 </tr>
               </thead>
@@ -513,36 +613,39 @@ export default function PositionsPage() {
                         {pos.direction === 'long' ? '▲ LONG' : '▼ SHORT'}
                       </span>
                     </td>
+                    <td className="px-4 py-3">
+                      <span className="text-violet-400 font-bold font-mono">{pos.leverage ?? 1}x</span>
+                      {pos.leverage_reasons?.length ? (
+                        <span className="block text-[10px] text-gray-600 truncate max-w-[80px]" title={pos.leverage_reasons.join(', ')}>
+                          {pos.leverage_reasons[0]}
+                        </span>
+                      ) : null}
+                    </td>
+                    <td className="px-4 py-3 text-xs text-gray-400 font-mono whitespace-nowrap">
+                      {pos.entry_at_label ?? (pos.entry_time ? fmtDateTime(pos.entry_time) : '—')}
+                    </td>
                     <td className="px-4 py-3 font-mono text-xs text-gray-300">{fmtPrice(pos.entry_price)}</td>
                     <td className="px-4 py-3 font-mono text-xs text-white">{fmtPrice(pos.current_price)}</td>
-                    <td className="px-4 py-3 text-xs text-gray-300">${pos.size_usd.toFixed(0)}</td>
+                    <td className="px-4 py-3 text-xs text-gray-300 font-mono">${(pos.margin_usd ?? pos.size_usd).toFixed(0)}</td>
+                    <td className="px-4 py-3 text-xs text-violet-300 font-mono">${(pos.notional_usd ?? pos.size_usd).toFixed(0)}</td>
+                    <td className="px-4 py-3 text-xs text-gray-500 font-mono">{pos.qty_estimate?.toFixed(4) ?? '—'}</td>
                     <td className="px-4 py-3"><PnLBar pct={pos.unrealized_pct ?? 0} /></td>
                     <td className={`px-4 py-3 font-mono text-xs font-bold ${(pos.unrealized_usdt ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                       {(pos.unrealized_usdt ?? 0) >= 0 ? '+' : ''}${(pos.unrealized_usdt ?? 0).toFixed(2)}
                     </td>
-                    <td className="px-4 py-3 text-xs text-gray-500">
-                      {(pos.age_hours ?? 0) < 1 ? `${Math.round((pos.age_hours ?? 0) * 60)}m` : `${(pos.age_hours ?? 0).toFixed(1)}h`}
+                    <td className="px-4 py-3 text-[10px] text-gray-500 max-w-[140px]" title={pos.exit_plan}>
+                      {pos.exit_plan ?? '—'}
                     </td>
                     <td className="px-4 py-3 text-xs text-gray-400">
                       {confPct != null ? `${confPct}%` : '—'}
-                      {pos.verdict?.direction === 'flat' && (
-                        <span className="block text-[10px] text-yellow-500">FLAT</span>
-                      )}
                     </td>
-                    <td className={`px-4 py-3 text-xs ${
-                      regime === 'trending_up' ? 'text-green-400' :
-                      regime === 'trending_down' ? 'text-red-400' :
-                      regime === 'volatile' ? 'text-yellow-400' : 'text-blue-400'
-                    }`}>
-                      {regime}
-                    </td>
-                    <td className="px-4 py-3 text-xs text-gray-500 max-w-[200px] truncate" title={pos.open_reason}>
-                      {exp ? '▲' : '▼'} {pos.open_reason?.slice(0, 48) ?? '—'}
+                    <td className="px-4 py-3 text-xs text-gray-500 max-w-[180px] truncate" title={pos.open_reason}>
+                      {exp ? '▲' : '▼'} {pos.open_reason?.slice(0, 40) ?? '—'}
                     </td>
                   </tr>
                   {exp && (
                     <tr className="bg-gray-950/50">
-                      <td colSpan={10}>
+                      <td colSpan={14}>
                         <PositionDecisionPanel pos={pos} />
                       </td>
                     </tr>
@@ -570,17 +673,24 @@ export default function PositionsPage() {
               <thead>
                 <tr className="text-gray-500 border-b border-gray-800/60 text-xs bg-gray-900/60">
                   <th className="text-left px-4 py-2.5">Symbol</th>
-                  <th className="text-left px-4 py-2.5">Direction</th>
+                  <th className="text-left px-4 py-2.5">Dir</th>
+                  <th className="text-left px-4 py-2.5">Lev</th>
                   <th className="text-left px-4 py-2.5">Entry</th>
                   <th className="text-left px-4 py-2.5">Exit</th>
-                  <th className="text-left px-4 py-2.5">Size</th>
+                  <th className="text-left px-4 py-2.5">Margin</th>
                   <th className="text-left px-4 py-2.5">P&L %</th>
                   <th className="text-left px-4 py-2.5">P&L $</th>
-                  <th className="text-left px-4 py-2.5">Closed</th>
+                  <th className="text-left px-4 py-2.5">Tutma</th>
+                  <th className="text-left px-4 py-2.5">Satış zamanı</th>
+                  <th className="text-left px-4 py-2.5">Çıkış nedeni</th>
                 </tr>
               </thead>
               <tbody>
-                {trade_history.map((trade, i) => (
+                {trade_history.map((trade, i) => {
+                  const exitR = trade.exit_reason || trade.close_reason || '—'
+                  const pnlPct = Math.abs(trade.pnl_pct) <= 1 ? trade.pnl_pct * 100 : trade.pnl_pct
+                  const lev = trade.leverage ?? (trade as { ladder?: { leverage?: number } }).ladder?.leverage
+                  return (
                   <tr key={i}
                     className="border-b border-gray-800/40 hover:bg-gray-800/20 transition-colors cursor-pointer"
                     onClick={() => window.location.href = `/coin/${trade.symbol}`}>
@@ -590,22 +700,29 @@ export default function PositionsPage() {
                         {trade.direction === 'long' ? '▲' : '▼'} {trade.direction?.toUpperCase()}
                       </span>
                     </td>
+                    <td className="px-4 py-2.5 font-mono text-violet-400 text-xs">{lev ? `${lev}x` : '—'}</td>
                     <td className="px-4 py-2.5 font-mono text-xs text-gray-400">{fmtPrice(trade.entry_price)}</td>
                     <td className="px-4 py-2.5 font-mono text-xs text-gray-300">{fmtPrice(trade.exit_price)}</td>
-                    <td className="px-4 py-2.5 text-xs text-gray-400">${trade.size_usd?.toFixed(0) ?? '—'}</td>
+                    <td className="px-4 py-2.5 text-xs text-gray-400 font-mono">${trade.size_usd?.toFixed(0) ?? '—'}</td>
                     <td className="px-4 py-2.5">
-                      <span className={`font-mono text-xs font-bold ${trade.pnl_pct > 0 ? 'text-green-400' : 'text-red-400'}`}>
-                        {trade.pnl_pct > 0 ? '+' : ''}{(trade.pnl_pct * 100).toFixed(2)}%
+                      <span className={`font-mono text-xs font-bold ${pnlPct > 0 ? 'text-green-400' : 'text-red-400'}`}>
+                        {pnlPct > 0 ? '+' : ''}{pnlPct.toFixed(2)}%
                       </span>
                     </td>
                     <td className={`px-4 py-2.5 font-mono text-xs font-bold ${trade.pnl_usdt >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                       {trade.pnl_usdt >= 0 ? '+' : ''}${trade.pnl_usdt?.toFixed(2) ?? '—'}
                     </td>
-                    <td className="px-4 py-2.5 text-xs text-gray-600">
-                      {trade.closed_at ? timeAgo(trade.closed_at) : '—'}
+                    <td className="px-4 py-2.5 text-xs text-gray-500 font-mono">
+                      {trade.hold_seconds ? `${Math.round(trade.hold_seconds / 60)}dk` : '—'}
+                    </td>
+                    <td className="px-4 py-2.5 text-xs text-gray-500 font-mono whitespace-nowrap">
+                      {trade.closed_at ? fmtDateTime(trade.closed_at) : '—'}
+                    </td>
+                    <td className="px-4 py-2.5 text-xs text-orange-300/90 max-w-[200px] truncate" title={exitR}>
+                      {exitR}
                     </td>
                   </tr>
-                ))}
+                )})}
               </tbody>
             </table>
           </div>

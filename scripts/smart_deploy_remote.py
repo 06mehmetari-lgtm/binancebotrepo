@@ -81,6 +81,20 @@ SHARED_FILE_TARGETS: dict[str, list[tuple[str, str]]] = {
         ("shadow_system", "prometheus_shadow"),
         ("agent_system", "prometheus_agents"),
     ],
+    "services/shared/leverage_model.py": [
+        ("shadow_system", "prometheus_shadow"),
+        ("oms", "prometheus_oms"),
+        ("signal_engine", "prometheus_signal"),
+        ("immunity_system", "prometheus_immunity"),
+    ],
+    "services/shared/portfolio_cap.py": [
+        ("shadow_system", "prometheus_shadow"),
+        ("oms", "prometheus_oms"),
+        ("signal_engine", "prometheus_signal"),
+    ],
+    "services/shared/risk_model.py": [
+        ("signal_engine", "prometheus_signal"),
+    ],
     "services/shared/llm_providers.py": [
         ("agent_system", "prometheus_agents"),
         ("learning_engine", "prometheus_learning"),
@@ -473,12 +487,12 @@ def live_update(svc: str, container: str, reasons: list[str]) -> tuple[bool, str
         run(["docker", "cp", str(PROM_DIR / "services/oms/portfolio_sync.py"), f"{container}:/app/portfolio_sync.py"])
     if svc == "shadow_system":
         run(["docker", "cp", str(PROM_DIR / "services/oms/portfolio_sync.py"), f"{container}:/app/portfolio_sync.py"])
-        for shared in ("profit_rules.py", "risk_limits.py", "portfolio_try.py", "price_resolver.py"):
+        for shared in ("profit_rules.py", "risk_limits.py", "leverage_model.py", "risk_model.py", "portfolio_cap.py", "portfolio_try.py", "price_resolver.py"):
             sf = PROM_DIR / "services/shared" / shared
             if sf.is_file():
                 run(["docker", "cp", str(sf), f"{container}:/app/{shared}"])
     if svc == "agent_system":
-        for shared in ("profit_rules.py", "risk_limits.py", "price_resolver.py", "llm_providers.py", "groq_orchestrator.py",
+        for shared in ("profit_rules.py", "risk_limits.py", "leverage_model.py", "risk_model.py", "portfolio_cap.py", "price_resolver.py", "llm_providers.py", "groq_orchestrator.py",
                        "llm_status.py", "llm_runtime_keys.py", "llm_health.py", "proxy_pool.py", "position_plan.py"):
             sf = PROM_DIR / "services/shared" / shared
             if sf.is_file():

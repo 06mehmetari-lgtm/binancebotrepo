@@ -44,30 +44,38 @@ def _entry_reason_text(signal: dict) -> str:
 
 
 async def refresh_portfolio_cap(redis: aioredis.Redis) -> float:
-    """10.000 TL → USD (USDT/TRY); üst limit aşılamaz."""
+    """Dashboard bakiyesi veya TRY→USD üst limit."""
     global _portfolio_usd
     try:
-        from portfolio_try import (
-            fetch_usd_try_rate,
-            portfolio_try_amount,
-            portfolio_value_usd,
-            round_trip_fee_pct,
-        )
+        from portfolio_cap import load_cap_usd, CAPITAL_KEY
 
-        _portfolio_usd = portfolio_value_usd()
+        user_raw = await redis.get(CAPITAL_KEY)
+        if user_raw:
+            try:
+                data = json.loads(user_raw)
+                if data.get("source") == "dashboard":
+                    v = float(data.get("usd_cap", 0) or 0)
+                    if v > 0:
+                        _portfolio_usd = v
+                        return _portfolio_usd
+            except (json.JSONDecodeError, TypeError, ValueError):
+                pass
+        _portfolio_usd = await load_cap_usd(redis)
+        from portfolio_try import round_trip_fee_pct
+
         await redis.set(
             "portfolio:try:v1",
             json.dumps({
-                "try_amount": portfolio_try_amount(),
-                "usd_try": fetch_usd_try_rate(),
+                "usd_cap": _portfolio_usd,
                 "portfolio_usd": _portfolio_usd,
                 "fee_round_trip_pct": round_trip_fee_pct(),
                 "updated_at": time.time(),
+                "source": "oms_refresh",
             }),
-            ex=600,
+            ex=86400 * 7,
         )
     except Exception as e:
-        log.warning(f"portfolio TRY→USD refresh: {e}")
+        log.warning(f"portfolio cap refresh: {e}")
     return _portfolio_usd
 
 
@@ -445,6 +453,13 @@ async def process_signal(redis: aioredis.Redis, symbol: str):
     if size_usd < min_notional:
         return
 
+    leverage = float(signal.get("leverage") or (signal.get("risk") or {}).get("recommended_leverage") or 1)
+    try:
+        from risk_limits import get_active_limits
+        leverage = max(1.0, min(leverage, get_active_limits().max_leverage))
+    except Exception:
+        leverage = max(1.0, min(leverage, 3.0))
+
     if price <= 0:
         price = await get_price(redis, symbol)
     if price <= 0:
@@ -454,7 +469,7 @@ async def process_signal(redis: aioredis.Redis, symbol: str):
         "symbol": symbol,
         "side": "BUY" if direction == "long" else "SELL",
         "size_usd": size_usd,
-        "leverage": 1.0,
+        "leverage": leverage,
         "confidence": confidence,
         "signal_source": signal.get("source", "signal_engine"),
         "crisis_level": signal.get("crisis_level", 0),
@@ -480,7 +495,7 @@ async def process_signal(redis: aioredis.Redis, symbol: str):
     else:
         log.info(f"[LIVE] Executing {symbol} {direction.upper()} size=${size_usd:.2f} @ {price:.4f}")
         live_result = await execute_market_order(
-            symbol, direction, size_usd, price, opening=True,
+            symbol, direction, size_usd, price, opening=True, leverage=leverage,
         )
         if not live_result:
             log.error(f"[LIVE] Order failed — position not opened for {symbol}")
@@ -522,6 +537,9 @@ async def process_signal(redis: aioredis.Redis, symbol: str):
             "stop_loss_pct": sl_pct,
             "entry_confidence": confidence,
             "entry_reason": _entry_reason_text(signal),
+            "leverage": leverage,
+            "leverage_reasons": (signal.get("leverage_reasons") or [])[:6],
+            "notional_usd": round(size_usd * leverage, 2),
         },
         "fills": [{
             "tier": 1,

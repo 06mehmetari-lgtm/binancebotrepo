@@ -65,6 +65,7 @@ async def publish_portfolio_state(redis: aioredis.Redis) -> dict:
             "entry_time": pos.get("time"),
             "source": "shadow",
             "shadow_id": shadow_id,
+            "ladder": pos.get("ladder"),
         })
 
     # Tek sembol = tek kayıt (shadow A/B/C mükerrer sayılmasın)

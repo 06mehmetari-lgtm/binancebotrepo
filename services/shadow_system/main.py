@@ -102,23 +102,34 @@ trader = PaperTrader(initial_capital=PORTFOLIO_VALUE)
 
 
 async def _sync_shadow_capital(redis: aioredis.Redis) -> float:
-    """Align shadow paper capital with OMS 10k TRY → USD cap when available."""
-    global trader
+    """Dashboard/Redis bakiyesi → shadow paper sermayesi."""
+    global PORTFOLIO_VALUE, trader
     try:
+        from portfolio_cap import load_cap_usd
+
+        usd = await load_cap_usd(redis)
+    except ImportError:
         raw = await redis.get("portfolio:try:v1")
+        usd = 0.0
         if raw:
-            data = json.loads(raw)
-            usd = float(data.get("usd_cap", 0) or 0)
-            if usd > 0:
-                for sid in SHADOW_IDS:
-                    p = trader.portfolios.get(sid)
-                    if p and p.initial_capital != usd:
-                        ratio = usd / p.initial_capital if p.initial_capital else 1.0
-                        p.initial_capital = usd
-                        p.capital = p.capital * ratio
-                return usd
-    except (json.JSONDecodeError, TypeError, ValueError):
-        pass
+            try:
+                data = json.loads(raw)
+                usd = float(
+                    data.get("usd_cap") or data.get("portfolio_usd") or data.get("usd_capital") or 0
+                )
+            except (json.JSONDecodeError, TypeError, ValueError):
+                pass
+        if usd <= 0:
+            usd = PORTFOLIO_VALUE
+    if usd > 0:
+        PORTFOLIO_VALUE = usd
+        for sid in SHADOW_IDS:
+            p = trader.portfolios.get(sid)
+            if p and p.initial_capital != usd:
+                ratio = usd / p.initial_capital if p.initial_capital else 1.0
+                p.initial_capital = usd
+                p.capital = p.capital * ratio
+        return usd
     return PORTFOLIO_VALUE
 SHADOW_IDS = ["SHADOW_A", "SHADOW_B", "SHADOW_C"]
 # Tek sembol = tek paper pozisyon (dashboard mükerrer satır olmasın)
@@ -642,22 +653,28 @@ async def simulate_tick(redis: aioredis.Redis, symbol: str):
         max_pos_pct = lim.max_position_pct
         if max_pos_pct > 1:
             max_pos_pct = 0.05
-        leverage = min(lim.max_leverage, 3.0)
+        global_max_lev = float(lim.max_leverage)
     except Exception:
         max_pos_pct = 0.05
-        leverage = 3.0
+        global_max_lev = 3.0
 
     risk = signal.get("risk") or {}
+    leverage = float(signal.get("leverage") or risk.get("recommended_leverage") or 1)
+    leverage = max(1.0, min(leverage, global_max_lev))
+    lev_reasons = signal.get("leverage_reasons") or risk.get("leverage_reasons") or []
+
     if risk.get("position_size_pct"):
         max_pos_pct = min(max_pos_pct, float(risk["position_size_pct"]))
     open_n = await _shadow_open_count(redis, SHADOW_OPEN_IDS[0])
     slot_budget = PORTFOLIO_VALUE / max(SHADOW_MAX_OPEN, 1)
     base_usd = min(PORTFOLIO_VALUE * max_pos_pct, slot_budget * 0.92)
-    size_usd = base_usd * min(confidence, 0.85) * min(leverage / 3.0, 1.0)
+    margin_usd = base_usd * min(confidence, 0.85)
     if open_n >= SHADOW_MAX_OPEN * 0.8:
-        size_usd *= 0.85
-    if size_usd <= 0:
+        margin_usd *= 0.85
+    if margin_usd <= 0:
         return
+    port_pct = margin_usd / PORTFOLIO_VALUE if PORTFOLIO_VALUE > 0 else 0
+    notional_usd = margin_usd * leverage
     owner = await _shadow_owner(redis, symbol) if SHADOW_ONE_PER_SYMBOL else None
 
     for shadow_id in SHADOW_IDS:
@@ -707,20 +724,28 @@ async def simulate_tick(redis: aioredis.Redis, symbol: str):
             if not rotated or await _shadow_open_count(redis, shadow_id) >= SHADOW_MAX_OPEN:
                 continue
         open_side = "BUY" if direction == "long" else "SELL_SHORT"
-        result = trader.execute(shadow_id, symbol, open_side, price, size_usd)
+        result = trader.execute(shadow_id, symbol, open_side, price, margin_usd, leverage=leverage)
         if result:
             await redis.set(
                 pos_key,
                 json.dumps({
                     "direction": direction,
                     "price": price,
-                    "size_usd": size_usd,
+                    "size_usd": margin_usd,
+                    "margin_usd": margin_usd,
                     "time": time.time(),
                     "entry_signal": signal,
                     "ladder": {
                         "take_profit_pct": tp_pct,
                         "stop_loss_pct": sl_pct,
                         "entry_confidence": confidence,
+                        "leverage": leverage,
+                        "leverage_reasons": lev_reasons[:6],
+                        "position_size_pct": round(port_pct, 5),
+                        "slot_budget_usd": round(slot_budget, 2),
+                        "kelly_fraction": float(signal.get("kelly_fraction", 0) or 0),
+                        "risk_reasons": (risk.get("reasons") or [])[:4],
+                        "notional_usd": round(notional_usd, 2),
                     },
                 }),
                 ex=86400,
@@ -728,7 +753,9 @@ async def simulate_tick(redis: aioredis.Redis, symbol: str):
             await _publish_portfolio(redis)
             log.info(
                 f"[SHADOW OPEN] {shadow_id} {direction.upper()} {symbol} "
-                f"conf={confidence:.2f} size=${size_usd:.0f} sl={sl_pct}% tp={tp_pct}%"
+                f"conf={confidence:.2f} margin=${margin_usd:.0f} ({port_pct*100:.1f}%) "
+                f"lev={leverage:.0f}x notional=${notional_usd:.0f} "
+                f"sl={sl_pct}% tp={tp_pct}% reasons={','.join(lev_reasons[:3])}"
             )
             if SHADOW_ONE_PER_SYMBOL:
                 break
@@ -788,7 +815,7 @@ async def capital_refresh_loop(redis: aioredis.Redis):
             log.debug(f"shadow capital synced: ${cap:.2f}")
         except Exception as e:
             log.warning(f"shadow capital sync: {e}")
-        await asyncio.sleep(300)
+        await asyncio.sleep(30)
 
 
 async def heartbeat_loop(redis: aioredis.Redis) -> None:
@@ -867,6 +894,8 @@ async def _trading_loop(redis: aioredis.Redis):
             await _enforce_hard_stops(redis)
         except Exception as e:
             log.error(f"shadow hard_stop: {e}")
+
+        await _sync_shadow_capital(redis)
 
         ordered = await _ordered_symbols(redis, symbols)
         for symbol in ordered:

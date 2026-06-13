@@ -101,8 +101,9 @@ def apply_paper_overrides(lim: RiskLimits) -> RiskLimits:
     except ImportError:
         paper_conf = 0.58
         paper_open = 30
+    paper_lev_cap = float(os.getenv("PAPER_MAX_LEVERAGE", "20"))
     return RiskLimits(
-        max_leverage=min(max(lim.max_leverage, 3.0), 5.0),
+        max_leverage=min(max(lim.max_leverage, 3.0), paper_lev_cap),
         max_position_pct=min(max(lim.max_position_pct, 0.05), 0.08),
         max_daily_loss_pct=min(max(lim.max_daily_loss_pct, 0.03), 0.05),
         max_open_positions=max(lim.max_open_positions, paper_open),
