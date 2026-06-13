@@ -63,13 +63,22 @@ if not errorlevel 1 (
 )
 
 echo.
-if /i "%MODE%"=="skip" (
-    echo [DEPLOY] SKIP — build YOK, git pull + restart (~3 dk)
-) else if /i "%MODE%"=="full" (
-    echo [DEPLOY] FULL — 17 servis PARALEL build (~30-60 dk, timeout 4 saat)
-) else (
-    echo [DEPLOY] QUICK — 10 kritik servis PARALEL build (~15-45 dk, timeout 3 saat)
-)
+if /i "%MODE%"=="skip" goto deploy_skip
+if /i "%MODE%"=="full" goto deploy_full
+goto deploy_quick
+
+:deploy_skip
+echo [DEPLOY] SKIP - build YOK, git pull + restart, ~3 dk
+goto deploy_run
+
+:deploy_full
+echo [DEPLOY] FULL - 17 servis PARALEL build, ~30-60 dk, timeout 4 saat
+goto deploy_run
+
+:deploy_quick
+echo [DEPLOY] QUICK - 10 kritik servis PARALEL build, ~15-45 dk, timeout 3 saat
+
+:deploy_run
 echo.
 
 %PY% scripts\prometheus_full_deploy.py --mode %MODE%

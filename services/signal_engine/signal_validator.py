@@ -32,10 +32,20 @@ class SignalValidator:
     def validate(self, signal: dict, context: dict) -> tuple[bool, str]:
         paper = self._paper_mode()
         min_conf = self._min_confidence()
-        if signal.get("confidence", 0) < min_conf:
-            return False, (
-                f"confidence {signal['confidence']:.2f} below minimum {min_conf:.2f}"
-            )
+        conf = float(signal.get("confidence", 0) or 0)
+        try:
+            from profit_rules import conf_meets, is_blacklisted
+            if is_blacklisted(str(signal.get("symbol", ""))):
+                return False, "symbol blacklisted (churn/low quality)"
+            if not conf_meets(conf, min_conf):
+                return False, (
+                    f"confidence {conf:.2f} below minimum {min_conf:.2f}"
+                )
+        except ImportError:
+            if conf < min_conf:
+                return False, (
+                    f"confidence {conf:.2f} below minimum {min_conf:.2f}"
+                )
         if not paper and context.get("crisis_level", 0) >= 4:
             return False, "crisis level 4: no trading"
         if not paper and context.get("drift_status") == "SHOCK":

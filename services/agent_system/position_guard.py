@@ -151,7 +151,7 @@ def evaluate_position(
     except Exception:
         paper_mode = os.getenv("DRY_RUN", "true").lower() in ("1", "true", "yes")
 
-    entry_time = float(pos.get("entry_time", 0) or 0)
+    entry_time = float(pos.get("entry_time", 0) or pos.get("time", 0) or 0)
     hold_sec = time.time() - entry_time if entry_time > 0 else 9999.0
 
     checks: dict = {
@@ -160,7 +160,59 @@ def evaluate_position(
         "signal": sig_dir,
         "verdict": v_dir,
         "upnl_pct": round(upnl, 3),
+        "hold_sec": round(hold_sec, 0),
     }
+
+    try:
+        from profit_rules import (
+            MAX_POSITION_HOLD_SEC,
+            STALE_VERDICT_HOLD_SEC,
+            conf_meets,
+            is_blacklisted,
+        )
+    except ImportError:
+        MAX_POSITION_HOLD_SEC = 3600
+        STALE_VERDICT_HOLD_SEC = 1200
+        is_blacklisted = lambda _s: False  # noqa: E731
+        conf_meets = lambda c, m: c >= m  # noqa: E731
+
+    if is_blacklisted(symbol) and hold_sec >= 60:
+        return GuardDecision(
+            symbol, source, direction, "close", "high",
+            "Blacklist sembol — pozisyon kapatılıyor",
+            upnl, v_conf, trade_action, checks, time.time(),
+        )
+
+    if hold_sec >= MAX_POSITION_HOLD_SEC:
+        return GuardDecision(
+            symbol, source, direction, "close", "medium",
+            f"Max tutma {MAX_POSITION_HOLD_SEC // 60}dk — slot serbest (PnL {upnl:+.2f}%)",
+            upnl, v_conf, trade_action, checks, time.time(),
+        )
+
+    if hold_sec >= STALE_VERDICT_HOLD_SEC and v_conf < 0.05:
+        return GuardDecision(
+            symbol, source, direction, "close", "medium",
+            f"Agent verdict eski ({hold_sec:.0f}s) — pozisyon kapatılıyor",
+            upnl, v_conf, trade_action, checks, time.time(),
+        )
+
+    try:
+        from risk_limits import get_active_limits
+        reverse_conf = get_active_limits().min_signal_confidence
+    except Exception:
+        reverse_conf = 0.57
+    if (
+        sig_dir in ("long", "short")
+        and sig_dir != direction
+        and (signal or {}).get("is_valid")
+        and conf_meets(sig_conf, reverse_conf)
+    ):
+        return GuardDecision(
+            symbol, source, direction, "close", "high",
+            f"Sinyal ters yön ({sig_dir.upper()} {sig_conf:.0%}) — pozisyon kapat",
+            upnl, v_conf, trade_action, checks, time.time(),
+        )
 
     action = "hold"
     urgency = "low"

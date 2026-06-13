@@ -284,6 +284,13 @@ async def emergency_listener(redis: aioredis.Redis):
 async def process_signal(redis: aioredis.Redis, symbol: str):
     global _last_reset_day, _daily_pnl
 
+    try:
+        from profit_rules import is_blacklisted
+        if is_blacklisted(symbol):
+            return
+    except ImportError:
+        pass
+
     halted, _reason = await is_trading_halted(redis)
     if halted:
         return
@@ -406,7 +413,10 @@ async def process_signal(redis: aioredis.Redis, symbol: str):
                     await publish_portfolio_state(redis)
             return
         if pos.get("direction") != direction and price > 0:
-            await close_position(redis, symbol, pos, price)
+            await close_position(
+                redis, symbol, pos, price,
+                exit_meta={"reason": "signal_reverse", "action": "close"},
+            )
 
     confidence = float(signal.get("confidence", 0))
     kelly = float(signal.get("kelly_fraction", 0.01))

@@ -480,6 +480,12 @@ async def main():
 
             async def _gen(symbol: str):
                 try:
+                    try:
+                        from profit_rules import is_blacklisted
+                        if is_blacklisted(symbol):
+                            return
+                    except ImportError:
+                        pass
                     sig = await generate_signal(redis, symbol)
                     if sig is not None:
                         await redis.set(f"signal:latest:{symbol}", json.dumps(sig), ex=SIG_TTL)

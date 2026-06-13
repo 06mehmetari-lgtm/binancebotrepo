@@ -299,9 +299,24 @@ tail -3 /tmp/prometheus_bootstrap.log 2>/dev/null
     stream_command(client, post_cmd, 120)
 
     stream_command(client, f"rm -f {remote_env}", 15)
-    client.close()
 
-    ok = code == 0 and "BOOTSTRAP_DONE" in out
+    ok = code == 0 and (
+        "BOOTSTRAP_DONE" in out or "=== [10/10] TAMAMLANDI ===" in out
+    )
+    if not ok and code == 0:
+        try:
+            _, verify = stream_command(
+                client,
+                "grep -q BOOTSTRAP_DONE /tmp/prometheus_bootstrap.log 2>/dev/null && echo DEPLOY_OK || echo DEPLOY_FAIL",
+                30,
+            )
+            ok = "DEPLOY_OK" in verify
+            if ok:
+                print("\nNOT: Bootstrap sunucuda tamamlandi (log dogrulandi).")
+        except Exception:
+            pass
+
+    client.close()
     print()
     print("=" * 60)
     if ok:
@@ -322,3 +337,4 @@ tail -3 /tmp/prometheus_bootstrap.log 2>/dev/null
 
 if __name__ == "__main__":
     sys.exit(main())
+VPS_PASS=q204Y5u9C8jk8zfuC8jk8zfuQ5u8jkQ5u8jk8zfBdflu5

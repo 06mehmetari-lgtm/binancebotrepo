@@ -17,16 +17,30 @@ try:
         SHADOW_MAX_OPEN,
         SHADOW_MIN_CONFIDENCE,
         SYMBOL_COOLDOWN_SEC,
+        MAX_POSITION_HOLD_SEC,
+        build_history_record,
         cooldown_key,
         entry_allowed,
+        is_blacklisted,
         is_on_cooldown,
+        paper_cooldown_sec,
         profit_tiers,
     )
 except ImportError:
-    SHADOW_MIN_CONFIDENCE = 0.62
+    SHADOW_MIN_CONFIDENCE = 0.60
     SHADOW_MAX_OPEN = 3
     SHADOW_HARD_STOP_PCT = 1.2
-    SYMBOL_COOLDOWN_SEC = 1800
+    SYMBOL_COOLDOWN_SEC = 900
+    MAX_POSITION_HOLD_SEC = 3600
+
+    def build_history_record(payload: dict) -> dict:
+        return payload
+
+    def is_blacklisted(_symbol: str) -> bool:
+        return False
+
+    def paper_cooldown_sec() -> int:
+        return 600
 
     def cooldown_key(symbol: str, source: str = "shadow") -> str:
         return f"trade:cooldown:{source}:{symbol.upper()}"
@@ -143,15 +157,19 @@ async def flatten_all_shadow_positions(redis: aioredis.Redis) -> int:
             await redis.delete(k)
             if result:
                 closed += 1
-                closed_payload = {
-                    "shadow_id": shadow_id,
-                    "symbol": symbol,
-                    "source": "emergency",
-                    "closed_at": time.time(),
-                    **result,
-                }
-                await redis.publish("ch:trade_closed", json.dumps(closed_payload))
-                schedule_save(closed_payload)
+                await _finalize_close(
+                    redis,
+                    {
+                        "shadow_id": shadow_id,
+                        "symbol": symbol,
+                        "source": "emergency",
+                        "closed_at": time.time(),
+                        "close_reason": "emergency_flatten",
+                        "exit_reason": "emergency_flatten",
+                        **result,
+                    },
+                    pos=pos,
+                )
         if cursor == 0:
             break
     return closed
@@ -192,17 +210,19 @@ async def guard_listener(redis: aioredis.Redis):
                 result = trader.execute(sid, symbol, close_side, price, 0)
                 await redis.delete(key)
                 if result:
-                    payload = {
-                        "shadow_id": sid,
-                        "symbol": symbol,
-                        "source": "guard",
-                        "closed_at": time.time(),
-                        **result,
-                    }
-                    await redis.publish("ch:trade_closed", json.dumps(payload))
-                    schedule_save(payload)
-                    await _set_symbol_cooldown(redis, symbol)
-                    await _publish_portfolio(redis)
+                    await _finalize_close(
+                        redis,
+                        {
+                            "shadow_id": sid,
+                            "symbol": symbol,
+                            "source": "guard",
+                            "closed_at": time.time(),
+                            "close_reason": str(dec.get("reason", ""))[:500],
+                            "exit_reason": str(dec.get("reason", ""))[:500],
+                            **result,
+                        },
+                        pos=pos,
+                    )
                     log.warning(f"[GUARD→SHADOW] {sid} {symbol} closed")
                 break
         except Exception as e:
@@ -283,8 +303,9 @@ async def _shadow_open_count(redis: aioredis.Redis, shadow_id: str) -> int:
 
 
 async def _set_symbol_cooldown(redis: aioredis.Redis, symbol: str) -> None:
-    until = time.time() + SYMBOL_COOLDOWN_SEC
-    await redis.set(cooldown_key(symbol, "shadow"), str(until), ex=SYMBOL_COOLDOWN_SEC + 120)
+    sec = paper_cooldown_sec() if is_blacklisted(symbol) else SYMBOL_COOLDOWN_SEC
+    until = time.time() + sec
+    await redis.set(cooldown_key(symbol, "shadow"), str(until), ex=sec + 120)
 
 
 async def _is_symbol_cooled(redis: aioredis.Redis, symbol: str) -> bool:
@@ -295,6 +316,31 @@ async def _is_symbol_cooled(redis: aioredis.Redis, symbol: str) -> bool:
         return is_on_cooldown(float(raw))
     except (TypeError, ValueError):
         return False
+
+
+async def _finalize_close(redis: aioredis.Redis, payload: dict, *, pos: dict | None = None) -> None:
+    """Kapanış: trade history + pub/sub + postgres + cooldown."""
+    reason = str(
+        payload.get("exit_reason") or payload.get("close_reason") or payload.get("reason") or ""
+    )[:500]
+    payload["exit_reason"] = reason
+    payload["close_reason"] = reason
+    if pos:
+        payload.setdefault("ladder", pos.get("ladder"))
+        payload.setdefault("entry_signal", pos.get("entry_signal"))
+        payload.setdefault("size_usd", pos.get("size_usd"))
+    record = build_history_record(payload)
+    sym = str(payload.get("symbol", ""))
+    sid = payload.get("shadow_id", "SHADOW_A")
+    await redis.lpush(f"shadow:trades:{sid}", json.dumps(payload))
+    await redis.ltrim(f"shadow:trades:{sid}", 0, 999)
+    await redis.lpush("oms:trade_history", json.dumps(record))
+    await redis.ltrim("oms:trade_history", 0, 4999)
+    await redis.publish("ch:trade_closed", json.dumps(record))
+    schedule_save(record)
+    if sym:
+        await _set_symbol_cooldown(redis, sym)
+    await _publish_portfolio(redis)
 
 
 async def _publish_portfolio(redis: aioredis.Redis) -> None:
@@ -319,21 +365,20 @@ async def _force_close_shadow(
     result = trader.execute(shadow_id, symbol, close_side, price, 0)
     await redis.delete(pos_key)
     if result:
-        await redis.lpush(f"shadow:trades:{shadow_id}", json.dumps(result))
-        await redis.ltrim(f"shadow:trades:{shadow_id}", 0, 999)
-        payload = {
-            "shadow_id": shadow_id,
-            "symbol": symbol,
-            "source": "shadow_system",
-            "close_reason": reason,
-            "closed_at": time.time(),
-            **result,
-        }
-        await redis.publish("ch:trade_closed", json.dumps(payload))
-        schedule_save(payload)
-        await _set_symbol_cooldown(redis, symbol)
+        await _finalize_close(
+            redis,
+            {
+                "shadow_id": shadow_id,
+                "symbol": symbol,
+                "source": "shadow_system",
+                "close_reason": reason,
+                "exit_reason": reason,
+                "closed_at": time.time(),
+                **result,
+            },
+            pos=pos,
+        )
         log.warning(f"[SHADOW STOP] {shadow_id} {symbol} {reason} pnl={result.get('pnl_pct', 0):.2%}")
-    await _publish_portfolio(redis)
 
 
 async def _enforce_hard_stops(redis: aioredis.Redis) -> None:
@@ -369,10 +414,24 @@ async def _enforce_hard_stops(redis: aioredis.Redis) -> None:
             upnl = _upnl_pct(direction, entry, price)
             ladder = pos.get("ladder") or {}
             sl_pct = float(ladder.get("stop_loss_pct") or SHADOW_HARD_STOP_PCT)
+            tp_pct = float(ladder.get("take_profit_pct") or profit_tiers()[0])
+            opened = float(pos.get("time", pos.get("entry_time", 0)) or 0)
+            hold_sec = time.time() - opened if opened > 0 else 0
+
             if upnl <= -sl_pct:
                 await _force_close_shadow(
                     redis, shadow_id, sym, pos, price,
                     f"hard_stop %{sl_pct:.1f} ({upnl:+.2f}%)",
+                )
+            elif upnl >= tp_pct:
+                await _force_close_shadow(
+                    redis, shadow_id, sym, pos, price,
+                    f"take_profit %{tp_pct:.1f} ({upnl:+.2f}%)",
+                )
+            elif hold_sec >= MAX_POSITION_HOLD_SEC:
+                await _force_close_shadow(
+                    redis, shadow_id, sym, pos, price,
+                    f"max_hold {MAX_POSITION_HOLD_SEC // 60}dk ({upnl:+.2f}%)",
                 )
         if cursor == 0:
             break
@@ -380,6 +439,8 @@ async def _enforce_hard_stops(redis: aioredis.Redis) -> None:
 
 async def simulate_tick(redis: aioredis.Redis, symbol: str):
     if await _is_halted(redis):
+        return
+    if is_blacklisted(symbol):
         return
     if await _is_symbol_cooled(redis, symbol):
         return
@@ -432,19 +493,19 @@ async def simulate_tick(redis: aioredis.Redis, symbol: str):
                 result = trader.execute(shadow_id, symbol, close_side, price, 0)
                 if result:
                     await redis.delete(pos_key)
-                    await redis.lpush(f"shadow:trades:{shadow_id}", json.dumps(result))
-                    await redis.ltrim(f"shadow:trades:{shadow_id}", 0, 999)
-                    closed = {
-                        "shadow_id": shadow_id,
-                        "symbol": symbol,
-                        "source": "shadow_system",
-                        "closed_at": time.time(),
-                        **result,
-                    }
-                    await redis.publish("ch:trade_closed", json.dumps(closed))
-                    schedule_save(closed)
-                    await _set_symbol_cooldown(redis, symbol)
-                    await _publish_portfolio(redis)
+                    await _finalize_close(
+                        redis,
+                        {
+                            "shadow_id": shadow_id,
+                            "symbol": symbol,
+                            "source": "shadow_system",
+                            "closed_at": time.time(),
+                            "close_reason": "signal_reverse",
+                            "exit_reason": "signal_reverse",
+                            **result,
+                        },
+                        pos=pos,
+                    )
                     if SHADOW_ONE_PER_SYMBOL:
                         owner = None
             else:

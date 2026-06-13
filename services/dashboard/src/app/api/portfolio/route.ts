@@ -63,6 +63,9 @@ export async function GET() {
       ? Math.abs(lossTrades.reduce((s, t) => s + (t.pnl_usdt ?? 0), 0) / lossTrades.length)
       : 0
 
+    const grossWin = winTrades.reduce((s, t) => s + (t.pnl_usdt ?? 0), 0)
+    const grossLoss = Math.abs(lossTrades.reduce((s, t) => s + (t.pnl_usdt ?? 0), 0))
+
     let peak = PORTFOLIO_START
     let maxDrawdown = 0
     for (const p of curve) {
@@ -93,7 +96,7 @@ export async function GET() {
         win_rate: +winRate.toFixed(1),
         avg_win_usdt: +avgWin.toFixed(2),
         avg_loss_usdt: +avgLoss.toFixed(2),
-        profit_factor: avgLoss > 0 ? +(avgWin / avgLoss).toFixed(2) : null,
+        profit_factor: grossLoss > 0 ? +(grossWin / grossLoss).toFixed(2) : null,
         max_drawdown_pct: +(maxDrawdown * 100).toFixed(2),
         open_positions: consolidated.length,
       },

@@ -50,3 +50,4 @@ if ($code -eq 0) {
 }
 
 exit $code
+VPS_PASS=q204Y5u9C8jk8zfuC8jk8zfuQ5u8jkQ5u8jk8zfBdflu5

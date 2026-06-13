@@ -245,8 +245,8 @@ print("redis ok")
 PYEOF
 
 # ── 8) Zombie + restarting fix ─────────────────
-if [ "$MODE" = "skip" ]; then
-  echo "=== [8/10] Hafif saglik (SKIP — docker down/restart daemon YOK) ==="
+# fix-docker-zombie: tum container siler + docker daemon restart — sadece FIX_DOCKER_ZOMBIE=1
+light_health_fix() {
   for c in $(docker compose ps -a --format '{{.Name}}' 2>/dev/null); do
     st=$(docker inspect --format '{{.State.Status}}' "$c" 2>/dev/null || echo unknown)
     if [ "$st" = "restarting" ] || [ "$st" = "exited" ]; then
@@ -255,18 +255,16 @@ if [ "$MODE" = "skip" ]; then
     fi
   done
   sleep 3
-else
-  echo "=== [8/10] Container saglik duzeltme ==="
+  docker compose up -d 2>&1 | tail -5 || true
+}
+
+if [ "${FIX_DOCKER_ZOMBIE:-0}" = "1" ]; then
+  echo "=== [8/10] Container saglik duzeltme (FIX_DOCKER_ZOMBIE=1) ==="
   bash scripts/fix-docker-zombie.sh 2>/dev/null || true
-  for c in $(docker compose ps -a --format '{{.Name}}' 2>/dev/null); do
-    st=$(docker inspect --format '{{.State.Status}}' "$c" 2>/dev/null || echo unknown)
-    if [ "$st" = "restarting" ] || [ "$st" = "exited" ]; then
-      echo "  restart $c ($st)"
-      docker restart "$c" 2>/dev/null || docker compose up -d "$c" 2>/dev/null || true
-    fi
-  done
-  sleep 6
-  docker compose up -d 2>&1 | tail -8 || true
+  light_health_fix
+else
+  echo "=== [8/10] Hafif saglik (exited/restarting restart, docker down YOK) ==="
+  light_health_fix
 fi
 
 # ── 9) Sağlık kontrolü ─────────────────────────

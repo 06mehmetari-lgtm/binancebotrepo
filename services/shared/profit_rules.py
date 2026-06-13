@@ -11,9 +11,9 @@ import os
 import time
 
 # Giriş
-SHADOW_MIN_CONFIDENCE = float(os.getenv("SHADOW_MIN_CONFIDENCE", "0.62"))
-OMS_MIN_CONFIDENCE = float(os.getenv("OMS_MIN_CONFIDENCE", "0.60"))
-PAPER_MIN_SIGNAL_CONFIDENCE = float(os.getenv("PAPER_MIN_SIGNAL_CONFIDENCE", "0.58"))
+SHADOW_MIN_CONFIDENCE = float(os.getenv("SHADOW_MIN_CONFIDENCE", "0.60"))
+OMS_MIN_CONFIDENCE = float(os.getenv("OMS_MIN_CONFIDENCE", "0.58"))
+PAPER_MIN_SIGNAL_CONFIDENCE = float(os.getenv("PAPER_MIN_SIGNAL_CONFIDENCE", "0.57"))
 
 # Risk/ödül — stop 1.2%, ilk TP en az 1.5% (R:R ≥ 1.25)
 DEFAULT_STOP_LOSS_PCT = float(os.getenv("DEFAULT_STOP_LOSS_PCT", "1.2"))
@@ -25,11 +25,27 @@ GUARD_TAKE_PROFIT_PCT = float(os.getenv("GUARD_TAKE_PROFIT_PCT", "1.2"))
 GUARD_MAX_LOSS_PCT = float(os.getenv("GUARD_MAX_LOSS_PCT", "1.0"))
 GUARD_EMERGENCY_LOSS_PCT = float(os.getenv("GUARD_EMERGENCY_LOSS_PCT", "1.8"))
 
-# Churn önleme — kapatınca aynı sembole 30dk girme
-SYMBOL_COOLDOWN_SEC = int(os.getenv("SYMBOL_COOLDOWN_SEC", "1800"))
+# Churn önleme
+SYMBOL_COOLDOWN_SEC = int(os.getenv("SYMBOL_COOLDOWN_SEC", "900"))
+PAPER_SYMBOL_COOLDOWN_SEC = int(os.getenv("PAPER_SYMBOL_COOLDOWN_SEC", "600"))
 SHADOW_MAX_OPEN = int(os.getenv("SHADOW_MAX_OPEN", "3"))
 SHADOW_HARD_STOP_PCT = float(os.getenv("SHADOW_HARD_STOP_PCT", "1.2"))
 
+# Uzun tutulan pozisyon slot kilidi — paper'da 1 saat sonra zorla kapat
+MAX_POSITION_HOLD_SEC = int(os.getenv("MAX_POSITION_HOLD_SEC", "3600"))
+STALE_VERDICT_HOLD_SEC = int(os.getenv("STALE_VERDICT_HOLD_SEC", "1200"))
+
+# Churn / düşük kalite coinler (autopsy + teşhis)
+_DEFAULT_BLACKLIST = (
+    "ESPORTSUSDT,GTCUSDT,DEXEUSDT,AIOUSDT,BRUSDT,BEATUSDT,NAORISUSDT"
+)
+SYMBOL_BLACKLIST: frozenset[str] = frozenset(
+    s.strip().upper()
+    for s in os.getenv("SYMBOL_BLACKLIST", _DEFAULT_BLACKLIST).split(",")
+    if s.strip()
+)
+
+CONF_EPSILON = 1e-6
 COOLDOWN_KEY_PREFIX = "trade:cooldown:"
 
 
@@ -48,6 +64,19 @@ def is_on_cooldown(cooldown_until: float | None) -> bool:
     return time.time() < float(cooldown_until)
 
 
+def conf_meets(confidence: float, minimum: float) -> bool:
+    """0.58 vs 0.58 float hatasını önler."""
+    return float(confidence) + CONF_EPSILON >= float(minimum)
+
+
+def is_blacklisted(symbol: str) -> bool:
+    return symbol.upper() in SYMBOL_BLACKLIST
+
+
+def paper_cooldown_sec() -> int:
+    return PAPER_SYMBOL_COOLDOWN_SEC
+
+
 def rr_ok(stop_pct: float, tp_pct: float) -> bool:
     if stop_pct <= 0 or tp_pct <= 0:
         return False
@@ -62,8 +91,46 @@ def entry_allowed(
     min_conf: float | None = None,
 ) -> tuple[bool, str]:
     mc = min_conf if min_conf is not None else SHADOW_MIN_CONFIDENCE
-    if confidence < mc:
+    if not conf_meets(confidence, mc):
         return False, f"confidence {confidence:.2f} < {mc:.2f}"
     if stop_pct > 0 and tp_pct > 0 and not rr_ok(stop_pct, tp_pct):
         return False, f"R:R {tp_pct/stop_pct:.2f} < {MIN_RR_RATIO}"
     return True, "ok"
+
+
+def build_history_record(payload: dict) -> dict:
+    """Shadow/OMS kapanışını oms:trade_history formatına çevirir."""
+    closed_at = float(payload.get("closed_at", time.time()))
+    hold = float(payload.get("hold_seconds", 0) or 0)
+    reason = str(
+        payload.get("exit_reason")
+        or payload.get("close_reason")
+        or payload.get("reason")
+        or ""
+    )[:500]
+    ladder = payload.get("ladder") or {}
+    if isinstance(payload.get("entry_signal"), dict):
+        es = payload["entry_signal"]
+        ladder = ladder or {
+            "entry_confidence": es.get("confidence"),
+            "stop_loss_pct": es.get("stop_loss_pct"),
+            "take_profit_pct": (es.get("take_profit_tiers") or [None])[0],
+        }
+    return {
+        "symbol": payload.get("symbol", ""),
+        "direction": payload.get("direction", "long"),
+        "action": "close",
+        "entry_price": payload.get("entry_price"),
+        "exit_price": payload.get("exit_price"),
+        "pnl_pct": payload.get("pnl_pct", 0),
+        "pnl_usdt": payload.get("pnl_usdt", 0),
+        "size_usd": payload.get("size_usd") or ladder.get("size_usd"),
+        "source": payload.get("source", "shadow_system"),
+        "shadow_id": payload.get("shadow_id"),
+        "timestamp": int(closed_at * 1000),
+        "closed_at": closed_at,
+        "hold_seconds": hold,
+        "ladder": ladder,
+        "exit_reason": reason,
+        "close_reason": reason,
+    }
