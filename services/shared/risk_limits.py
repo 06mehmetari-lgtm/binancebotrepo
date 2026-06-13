@@ -20,7 +20,7 @@ DEFAULTS: dict[str, float | int] = {
     "max_leverage": 3.0,
     "max_position_pct": 0.05,
     "max_daily_loss_pct": 0.02,
-    "max_open_positions": 3,
+    "max_open_positions": 30,
     "min_signal_confidence": 0.60,
     "min_immunity_confidence": 0.52,
     "max_trades_per_day": 50,
@@ -32,7 +32,7 @@ class RiskLimits:
     max_leverage: float = 3.0
     max_position_pct: float = 0.05
     max_daily_loss_pct: float = 0.02
-    max_open_positions: int = 3
+    max_open_positions: int = 30
     min_signal_confidence: float = 0.60
     min_immunity_confidence: float = 0.52
     max_trades_per_day: int = 50
@@ -97,15 +97,15 @@ def apply_paper_overrides(lim: RiskLimits) -> RiskLimits:
     try:
         from profit_rules import PAPER_MIN_SIGNAL_CONFIDENCE, SHADOW_MAX_OPEN
         paper_conf = max(PAPER_MIN_SIGNAL_CONFIDENCE, 0.60)
-        paper_open = min(SHADOW_MAX_OPEN, 5)
+        paper_open = SHADOW_MAX_OPEN
     except ImportError:
         paper_conf = 0.58
-        paper_open = 3
+        paper_open = 30
     return RiskLimits(
         max_leverage=min(max(lim.max_leverage, 3.0), 5.0),
         max_position_pct=min(max(lim.max_position_pct, 0.05), 0.08),
         max_daily_loss_pct=min(max(lim.max_daily_loss_pct, 0.03), 0.05),
-        max_open_positions=min(max(lim.max_open_positions, paper_open), paper_open),
+        max_open_positions=max(lim.max_open_positions, paper_open),
         min_signal_confidence=max(paper_conf, min(lim.min_signal_confidence, 0.58)),
         min_immunity_confidence=max(0.52, min(lim.min_immunity_confidence, 0.52)),
         max_trades_per_day=min(max(lim.max_trades_per_day, 80), 120),

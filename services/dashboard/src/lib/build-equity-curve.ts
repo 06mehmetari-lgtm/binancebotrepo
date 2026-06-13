@@ -62,7 +62,7 @@ export function buildEquityCurve(input: {
 
   const liveEquity = +(realized + input.unrealizedUsdt).toFixed(2)
   const last = points[points.length - 1]
-  if (!last || last.kind !== 'live' || Math.abs(last.equity - liveEquity) > 0.01 || now - last.ts > 3) {
+  if (!last || last.kind !== 'live' || Math.abs(last.equity - liveEquity) > 0.01 || now - last.ts > 1) {
     if (last?.kind === 'live') points.pop()
     points.push({ ts: now, equity: liveEquity, kind: 'live' })
   } else if (last.kind === 'live') {

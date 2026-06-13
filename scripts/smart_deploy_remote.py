@@ -37,9 +37,10 @@ PATH_RULES: list[tuple[str, str, str, str]] = [
     ("services/rl_agent/", "rl_agent", "prometheus_rl", "live"),
     ("services/scenario_engine/", "scenario_engine", "prometheus_scenarios", "live"),
     ("services/backtest/", "backtest", "prometheus_backtest", "live"),
+    ("infrastructure/postgres/migrations/", "shadow_system", "prometheus_shadow", "live"),
+    ("infrastructure/postgres/", "shadow_system", "prometheus_shadow", "live"),
     ("services/dashboard/", "dashboard", "prometheus_dashboard", "build"),
 ]
-
 CONTAINER_BY_SERVICE: dict[str, str] = {
     "data_ingestion": "prometheus_data",
     "sentiment": "prometheus_sentiment",
@@ -169,7 +170,10 @@ def filter_deploy_only_files(files: list[str]) -> list[str]:
         n = f.replace("\\", "/")
         if any(n.startswith(p) or n == p for p in DEPLOY_IGNORE_PREFIXES):
             continue
-        if n.startswith("scripts/") and "smart_deploy" not in n:
+        if n.startswith("scripts/") and "smart_deploy" not in n and "run_postgres_migrations" not in n:
+            continue
+        if n.startswith("infrastructure/postgres/migrations/"):
+            out.append(f)
             continue
         out.append(f)
     return out
@@ -722,6 +726,26 @@ def main() -> int:
         ok_list.extend([{**h, "action": h.get("action", "heal_up")} for h in healed])
     if heal_failed:
         fail_list.extend([{**h, "action": "heal_up"} for h in heal_failed])
+
+    # ── 1b) Postgres migrations (max_open vb.) ──
+    log("\n[1b] POSTGRES MIGRATIONS")
+    mig_code, mig_out = run(["python3", "scripts/run_postgres_migrations.py"], timeout=180)
+    for line in mig_out.splitlines():
+        if line.strip():
+            log(f"  {line}")
+    if mig_code != 0:
+        fail_list.append({"service": "postgres", "action": "migrate", "error": mig_out[-300:]})
+    elif "MIGRATIONS_APPLIED:" in mig_out:
+        applied_part = mig_out.split("MIGRATIONS_APPLIED:")[-1].splitlines()[0].strip()
+        ok_list.append({"service": "postgres", "action": "migrate", "why": [applied_part]})
+        for svc in ("shadow_system", "immunity_system", "signal_engine", "oms"):
+            if svc not in affected_set:
+                affected_set.add(svc)
+                services.setdefault(svc, {
+                    "container": CONTAINER_BY_SERVICE[svc],
+                    "mode": "live",
+                    "reasons": ["postgres_migration"],
+                })
 
     # ── 2) Ayakta + kod degismedi → ATLA ──
     skipped: list[str] = []

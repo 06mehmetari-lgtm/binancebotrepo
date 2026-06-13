@@ -1,8 +1,10 @@
 'use client'
-import { useEffect, useState, Fragment, useCallback } from 'react'
+import { useEffect, useState, Fragment, useCallback, useMemo } from 'react'
 import { PositionDecisionPanel } from '@/components/PositionDecisionPanel'
 import RiskLimitsEditor from '@/components/RiskLimitsEditor'
 import { LiveEquityChart, type CurvePoint } from '@/components/LiveEquityChart'
+import { PositionBubbleChart, buildBubblePoints } from '@/components/PositionBubbleChart'
+import { useLiveEquity } from '@/hooks/useLiveEquity'
 import { useStreamInvalidate } from '@/hooks/useStream'
 import type { PositionDecision } from '@/lib/positions'
 
@@ -84,7 +86,7 @@ function EmptyState() {
       </p>
       <div className="flex flex-wrap justify-center gap-2 mt-4 text-xs text-gray-600">
         <span className="bg-gray-800 px-2 py-1 rounded">Min confidence: 60%</span>
-        <span className="bg-gray-800 px-2 py-1 rounded">Max 3 concurrent positions</span>
+        <span className="bg-gray-800 px-2 py-1 rounded">Max 30 concurrent positions</span>
         <span className="bg-gray-800 px-2 py-1 rounded">10.000 TL cap · %0,10 komisyon/yön</span>
       </div>
     </div>
@@ -99,7 +101,7 @@ export default function PositionsPage() {
   const [emergencyBusy, setEmergencyBusy] = useState(false)
   const [emergencyMsg, setEmergencyMsg] = useState('')
   const [expandedSymbol, setExpandedSymbol] = useState<string | null>(null)
-  const [maxOpenLimit, setMaxOpenLimit] = useState(3)
+  const [maxOpenLimit, setMaxOpenLimit] = useState(30)
   const [portfolioValue, setPortfolioValue] = useState(10000)
   const [maxPositionPct, setMaxPositionPct] = useState(0.05)
   const [streamLive, setStreamLive] = useState(false)
@@ -156,7 +158,7 @@ export default function PositionsPage() {
         if (d.limits?.portfolio_value_usd) setPortfolioValue(d.limits.portfolio_value_usd)
       })
       .catch(() => {})
-    const t = setInterval(fetchData, 5000)
+    const t = setInterval(fetchData, 2000)
     return () => clearInterval(t)
   }, [fetchData])
 
@@ -219,6 +221,19 @@ export default function PositionsPage() {
     }
   }
 
+  const positions = data?.positions ?? []
+  const daily_pnl = data?.daily_pnl ?? 0
+  const trade_history = data?.trade_history ?? []
+  const trading_halted = data?.trading_halted ?? false
+  const halt_reason = data?.halt_reason
+  const stats = portfolio?.stats
+  const curve = portfolio?.curve ?? []
+  const liveCurve = useLiveEquity(curve, stats?.current_equity, 2000)
+  const bubblePoints = useMemo(
+    () => buildBubblePoints(positions, trade_history),
+    [positions, trade_history],
+  )
+
   if (loading && !data && !loadError) return (
     <div className="flex items-center justify-center mt-32 gap-3 text-gray-500">
       <span className="animate-spin text-orange-400">⚡</span>
@@ -245,13 +260,10 @@ export default function PositionsPage() {
     </div>
   )
 
-  const { positions = [], daily_pnl = 0, trade_history = [], trading_halted = false, halt_reason } = data ?? {}
   const totalUnrealized = positions.reduce((s, p) => s + (p.unrealized_usdt ?? 0), 0)
   const totalExposed = positions.reduce((s, p) => s + p.size_usd, 0)
   const winTrades = trade_history.filter(t => t.pnl_pct > 0).length
   const winRate = trade_history.length > 0 ? (winTrades / trade_history.length * 100) : 0
-  const stats = portfolio?.stats
-  const curve = portfolio?.curve ?? []
 
   return (
     <div className="space-y-5">
@@ -293,7 +305,7 @@ export default function PositionsPage() {
           </button>
           <span className="text-xs text-gray-600 flex items-center gap-1.5">
             <span className={`inline-block w-1.5 h-1.5 rounded-full ${streamLive ? 'bg-green-400 animate-pulse' : 'bg-gray-600'}`} />
-            {lastUpdate} · {streamLive ? 'canlı' : '5s'}
+            {lastUpdate} · {streamLive ? 'canlı 2s' : '2s'}
           </span>
         </div>
       </div>
@@ -340,69 +352,89 @@ export default function PositionsPage() {
         </div>
       </div>
 
-      {/* Portfolio equity curve */}
-      <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
-        <div className="px-4 py-3 border-b border-gray-800 flex items-center justify-between flex-wrap gap-2">
-          <h2 className="text-blue-400 font-semibold text-sm uppercase tracking-wider">📈 Equity Curve (canlı)</h2>
-          {stats && (
-            <div className="flex items-center gap-4 text-xs flex-wrap">
-              {stats.portfolio_try != null && (
-                <span className="text-violet-400/90">
-                  {stats.portfolio_try.toLocaleString('tr-TR')} TL
-                  {stats.usd_try_rate ? ` · kur ${stats.usd_try_rate.toFixed(2)}` : ''}
-                  {stats.fee_per_side_pct != null
-                    ? ` · komisyon %${(stats.fee_per_side_pct * 100).toFixed(2)}/yön`
-                    : ''}
-                </span>
-              )}
-              <span className="text-gray-500">
-                Başlangıç: <span className="text-gray-300 font-mono">${stats.start_equity.toLocaleString()}</span>
-              </span>
-              <span className="text-gray-500">
-                Şimdi: <span className="text-white font-bold font-mono">${stats.current_equity.toLocaleString('en-US', { maximumFractionDigits: 2 })}</span>
-              </span>
-              {stats.unrealized_usdt != null && (
+      {/* Equity + pozisyon balonları — yan yana canlı */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
+          <div className="px-4 py-3 border-b border-gray-800 flex items-center justify-between flex-wrap gap-2">
+            <h2 className="text-blue-400 font-semibold text-sm uppercase tracking-wider">📈 Equity Curve (canlı)</h2>
+            <span className="text-[10px] text-green-500/80 flex items-center gap-1">
+              <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />
+              2sn güncelleme
+            </span>
+          </div>
+          <div className="p-4">
+            {stats && (
+              <div className="flex items-center gap-3 text-xs flex-wrap mb-3">
                 <span className="text-gray-500">
-                  Gerçekleşmemiş:{' '}
-                  <span className={stats.unrealized_usdt >= 0 ? 'text-green-400' : 'text-red-400'}>
-                    {stats.unrealized_usdt >= 0 ? '+' : ''}${stats.unrealized_usdt.toFixed(2)}
-                  </span>
+                  Başlangıç: <span className="text-gray-300 font-mono">${stats.start_equity.toLocaleString()}</span>
                 </span>
-              )}
-              <span className={stats.total_pnl >= 0 ? 'text-green-400 font-bold' : 'text-red-400 font-bold'}>
-                {stats.total_pnl >= 0 ? '+' : ''}${stats.total_pnl.toFixed(2)} ({stats.total_pnl_pct >= 0 ? '+' : ''}{stats.total_pnl_pct.toFixed(2)}%)
+                <span className="text-gray-500">
+                  Şimdi: <span className="text-white font-bold font-mono">${stats.current_equity.toLocaleString('en-US', { maximumFractionDigits: 2 })}</span>
+                </span>
+                <span className={stats.total_pnl >= 0 ? 'text-green-400 font-bold' : 'text-red-400 font-bold'}>
+                  {stats.total_pnl >= 0 ? '+' : ''}${stats.total_pnl.toFixed(2)} ({stats.total_pnl_pct >= 0 ? '+' : ''}{stats.total_pnl_pct.toFixed(2)}%)
+                </span>
+              </div>
+            )}
+            <LiveEquityChart curve={liveCurve} startEquity={stats?.start_equity ?? 10000} height={200} />
+          </div>
+          {stats && stats.total_trades > 0 && (
+            <div className="px-4 pb-4 grid grid-cols-2 gap-2">
+              <div className="bg-gray-800/50 rounded-lg p-2 text-center">
+                <p className="text-gray-500 text-[10px]">Win Rate</p>
+                <p className={`font-bold text-sm ${stats.win_rate >= 52 ? 'text-green-400' : 'text-yellow-400'}`}>{stats.win_rate.toFixed(1)}%</p>
+              </div>
+              <div className="bg-gray-800/50 rounded-lg p-2 text-center">
+                <p className="text-gray-500 text-[10px]">Max DD</p>
+                <p className={`font-bold text-sm font-mono ${stats.max_drawdown_pct < 10 ? 'text-green-400' : 'text-red-400'}`}>{stats.max_drawdown_pct.toFixed(2)}%</p>
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
+          <div className="px-4 py-3 border-b border-gray-800 flex items-center justify-between flex-wrap gap-2">
+            <h2 className="text-violet-400 font-semibold text-sm uppercase tracking-wider">🫧 Pozisyon Balonları (canlı)</h2>
+            <span className="text-[10px] text-gray-500">
+              {positions.length} açık · {trade_history.length} kapanış
+            </span>
+          </div>
+          <div className="p-4">
+            <PositionBubbleChart points={bubblePoints} height={200} />
+          </div>
+          {stats?.unrealized_usdt != null && (
+            <div className="px-4 pb-4 text-xs text-gray-500">
+              Gerçekleşmemiş:{' '}
+              <span className={stats.unrealized_usdt >= 0 ? 'text-green-400 font-bold' : 'text-red-400 font-bold'}>
+                {stats.unrealized_usdt >= 0 ? '+' : ''}${stats.unrealized_usdt.toFixed(2)}
               </span>
             </div>
           )}
         </div>
-        <div className="p-4">
-          <LiveEquityChart curve={curve} startEquity={stats?.start_equity ?? 10000} />
-        </div>
-        {stats && stats.total_trades > 0 && (
-          <div className="px-4 pb-4 grid grid-cols-2 sm:grid-cols-4 gap-3">
-            <div className="bg-gray-800/50 rounded-lg p-2.5 text-center">
-              <p className="text-gray-500 text-xs">Total Trades</p>
-              <p className="text-white font-bold">{stats.total_trades}</p>
-            </div>
-            <div className="bg-gray-800/50 rounded-lg p-2.5 text-center">
-              <p className="text-gray-500 text-xs">Win Rate</p>
-              <p className={`font-bold ${stats.win_rate >= 52 ? 'text-green-400' : 'text-yellow-400'}`}>{stats.win_rate.toFixed(1)}%</p>
-            </div>
-            <div className="bg-gray-800/50 rounded-lg p-2.5 text-center">
-              <p className="text-gray-500 text-xs">Profit Factor</p>
-              <p className={`font-bold font-mono ${stats.profit_factor != null && stats.profit_factor >= 1.5 ? 'text-green-400' : 'text-yellow-400'}`}>
-                {stats.profit_factor != null ? stats.profit_factor.toFixed(2) : '—'}
-              </p>
-            </div>
-            <div className="bg-gray-800/50 rounded-lg p-2.5 text-center">
-              <p className="text-gray-500 text-xs">Max Drawdown</p>
-              <p className={`font-bold font-mono ${stats.max_drawdown_pct < 5 ? 'text-green-400' : stats.max_drawdown_pct < 10 ? 'text-yellow-400' : 'text-red-400'}`}>
-                {stats.max_drawdown_pct.toFixed(2)}%
-              </p>
-            </div>
-          </div>
-        )}
       </div>
+
+      {stats && stats.total_trades > 0 && (
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          <div className="bg-gray-900 border border-gray-800 rounded-xl p-3 text-center">
+            <p className="text-gray-500 text-xs">Total Trades</p>
+            <p className="text-white font-bold">{stats.total_trades}</p>
+          </div>
+          <div className="bg-gray-900 border border-gray-800 rounded-xl p-3 text-center">
+            <p className="text-gray-500 text-xs">Profit Factor</p>
+            <p className={`font-bold font-mono ${stats.profit_factor != null && stats.profit_factor >= 1.5 ? 'text-green-400' : 'text-yellow-400'}`}>
+              {stats.profit_factor != null ? stats.profit_factor.toFixed(2) : '—'}
+            </p>
+          </div>
+          <div className="bg-gray-900 border border-gray-800 rounded-xl p-3 text-center">
+            <p className="text-gray-500 text-xs">Avg Win</p>
+            <p className="text-green-400 font-bold font-mono">${stats.avg_win_usdt.toFixed(2)}</p>
+          </div>
+          <div className="bg-gray-900 border border-gray-800 rounded-xl p-3 text-center">
+            <p className="text-gray-500 text-xs">Avg Loss</p>
+            <p className="text-red-400 font-bold font-mono">${stats.avg_loss_usdt.toFixed(2)}</p>
+          </div>
+        </div>
+      )}
 
       {/* Exposure bar */}
       {totalExposed > 0 && (

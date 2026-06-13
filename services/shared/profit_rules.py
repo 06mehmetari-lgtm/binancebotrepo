@@ -35,7 +35,7 @@ LOSS_COOLDOWN_SEC = int(os.getenv("LOSS_COOLDOWN_SEC", "1800"))
 # Breakeven — küçük kârı koru, geri dönüşte erken çık
 BREAKEVEN_ACTIVATE_PCT = float(os.getenv("BREAKEVEN_ACTIVATE_PCT", "0.35"))
 BREAKEVEN_FLOOR_PCT = float(os.getenv("BREAKEVEN_FLOOR_PCT", "0.08"))
-SHADOW_MAX_OPEN = int(os.getenv("SHADOW_MAX_OPEN", "3"))
+SHADOW_MAX_OPEN = int(os.getenv("SHADOW_MAX_OPEN", "30"))
 SHADOW_HARD_STOP_PCT = float(os.getenv("SHADOW_HARD_STOP_PCT", "1.2"))
 
 # Uzun tutulan pozisyon slot kilidi — paper'da 1 saat sonra zorla kapat

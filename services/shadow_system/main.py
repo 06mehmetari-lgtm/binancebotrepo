@@ -637,7 +637,12 @@ async def simulate_tick(redis: aioredis.Redis, symbol: str):
     risk = signal.get("risk") or {}
     if risk.get("position_size_pct"):
         max_pos_pct = min(max_pos_pct, float(risk["position_size_pct"]))
-    size_usd = PORTFOLIO_VALUE * max_pos_pct * min(confidence, 0.85) * min(leverage / 3.0, 1.0)
+    open_n = await _shadow_open_count(redis, SHADOW_OPEN_IDS[0])
+    slot_budget = PORTFOLIO_VALUE / max(SHADOW_MAX_OPEN, 1)
+    base_usd = min(PORTFOLIO_VALUE * max_pos_pct, slot_budget * 0.92)
+    size_usd = base_usd * min(confidence, 0.85) * min(leverage / 3.0, 1.0)
+    if open_n >= SHADOW_MAX_OPEN * 0.8:
+        size_usd *= 0.85
     if size_usd <= 0:
         return
     owner = await _shadow_owner(redis, symbol) if SHADOW_ONE_PER_SYMBOL else None

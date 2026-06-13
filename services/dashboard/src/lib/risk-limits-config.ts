@@ -14,7 +14,7 @@ export const RISK_LIMITS_DEFAULTS: RiskLimitsConfig = {
   max_leverage: 3,
   max_position_pct: 0.05,
   max_daily_loss_pct: 0.02,
-  max_open_positions: 3,
+  max_open_positions: 30,
   min_signal_confidence: 0.6,
   min_immunity_confidence: 0.52,
   max_trades_per_day: 50,
