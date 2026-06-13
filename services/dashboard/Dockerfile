@@ -3,6 +3,8 @@ WORKDIR /app
 # Low-RAM VPS: avoid OOM during next build
 ENV NODE_OPTIONS=--max-old-space-size=4096
 ENV NEXT_TELEMETRY_DISABLED=1
+ARG CACHEBUST=1
+RUN echo "build cache bust: ${CACHEBUST}"
 COPY package.json package-lock.json ./
 RUN npm ci
 COPY . .

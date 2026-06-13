@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -481,12 +482,84 @@ def live_update(svc: str, container: str, reasons: list[str]) -> tuple[bool, str
     return True, "docker cp OK"
 
 
+def verify_dashboard_bundle() -> tuple[bool, str]:
+    """Yeni UI gercekten yuklendi mi — cache build yakalamak icin."""
+    time.sleep(12)
+    checks = (
+        ("/api/status", "200"),
+        ("/api/deploy-version", "200"),
+        ("/", "200"),
+    )
+    for path, want in checks:
+        code, out = run(
+            f"curl -sS -m 30 -o /dev/null -w '%{{http_code}}' http://127.0.0.1:3000{path}",
+            timeout=40,
+        )
+        got = out.strip()
+        if got != want:
+            return False, f"{path} HTTP {got} (beklenen {want}) — eski image/cache olabilir"
+    return True, "dashboard API + ana sayfa OK"
+
+
 def build_service(svc: str) -> tuple[bool, str]:
-    code, out = run(f"docker compose build {svc} 2>&1 | tail -15", timeout=1800)
+    log(f"BUILD_START: {svc}")
+    _, sha_out = run(["git", "rev-parse", "HEAD"])
+    cachebust = sha_out.splitlines()[-1][:12] if sha_out else str(int(time.time()))
+    # Dashboard: cache eski UI birakir — her zaman temiz build
+    no_cache = "--no-cache" if svc == "dashboard" else ""
+    build_cmd = (
+        f"docker compose build {no_cache} --build-arg CACHEBUST={cachebust} {svc}"
+    ).strip()
+    log(f"BUILD_CMD: {build_cmd}")
+    proc = subprocess.Popen(
+        build_cmd,
+        shell=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        cwd=PROM_DIR,
+        bufsize=1,
+    )
+    lines: list[str] = []
+    try:
+        assert proc.stdout is not None
+        for raw in proc.stdout:
+            line = raw.rstrip()
+            if not line:
+                continue
+            lines.append(line)
+            step = re.search(r"Step (\d+)/(\d+)", line)
+            if step:
+                cur, tot = int(step.group(1)), int(step.group(2))
+                pct = int(cur / max(tot, 1) * 100)
+                log(f"BUILD_PROGRESS: {svc} step {cur}/{tot} %{pct}")
+            elif re.search(r"npm (ci|install|run build)", line, re.I):
+                log(f"BUILD_PROGRESS: {svc} npm %{55}")
+            elif "next build" in line.lower() or "Compiling" in line:
+                log(f"BUILD_PROGRESS: {svc} next %{72}")
+            elif "exporting to image" in line.lower() or "naming to" in line.lower():
+                log(f"BUILD_PROGRESS: {svc} export %{90}")
+            elif "Built" in line or "DONE" in line:
+                log(f"BUILD_PROGRESS: {svc} done %{98}")
+    except Exception as exc:
+        proc.kill()
+        return False, str(exc)[:300]
+    code = proc.wait(timeout=2400)
+    tail = "\n".join(lines[-20:])
     if code != 0:
-        return False, out[:300]
+        log(f"BUILD_FAIL: {svc}")
+        return False, tail[:400]
+    log(f"BUILD_DONE: {svc}")
     code2, out2 = run(f"docker compose up -d {svc} 2>&1", timeout=120)
-    return code2 == 0, (out + "\n" + out2)[:300]
+    if code2 != 0:
+        return False, out2[:300]
+    if svc == "dashboard":
+        ok, msg = verify_dashboard_bundle()
+        if not ok:
+            log(f"BUILD_VERIFY_FAIL: {msg}")
+            return False, msg
+        log(f"BUILD_VERIFY_OK: {msg}")
+    return True, (tail + "\n" + out2)[:400]
 
 
 def apply_running_updates(

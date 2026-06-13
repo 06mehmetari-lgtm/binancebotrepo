@@ -108,49 +108,175 @@ def record_timing(plan: dict, total_elapsed: float) -> None:
     save_timing_history(history)
 
 
-class DeployTimer:
-    """Kendini ayarlayan geri sayim — erken 0:00 gostermez."""
+class DeployProgressTimer:
+    """Faz bazli ilerleme — yuzde ve kalan sure gercek asamaya gore."""
 
-    def __init__(self, estimate_sec: int) -> None:
+    def __init__(self, plan: dict, history: dict) -> None:
         self.start = time.time()
-        self.estimate = max(estimate_sec, 60)
+        self.history = history
+        self.plan = plan
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
-        self._calibrated = False
+        self.phase_done: set[str] = set()
+        self.current_phase = "prep"
+        self.phase_started = time.time()
+        self.build_frac = 0.0
+        self.build_label = ""
+        self._budgets = self._calc_budgets(plan)
+        self._floor_pct = 0
+
+    def _calc_budgets(self, plan: dict) -> dict[str, int]:
+        budgets: dict[str, int] = {
+            "prep": PHASE_GIT_S + PHASE_SSH_S + PHASE_PULL_S,
+            "fleet": 55,
+            "finish": 20,
+        }
+        for svc in plan.get("update_live", []):
+            default = DEFAULT_LIVE_CRITICAL_S if svc in CRITICAL_SERVICES else DEFAULT_LIVE_NORMAL_S
+            budgets[f"live:{svc}"] = _history_seconds(self.history, f"live:{svc}", default)
+        for svc in plan.get("update_build", []):
+            budgets["build"] = _history_seconds(self.history, f"build:{svc}", DEFAULT_BUILD_DASHBOARD_S)
+        heal = int(plan.get("heal_down", 0) or 0)
+        if heal:
+            budgets["heal"] = heal * _history_seconds(self.history, "heal_down", DEFAULT_HEAL_DOWN_S)
+        if not plan.get("update_live") and not plan.get("update_build"):
+            budgets["idle"] = _history_seconds(self.history, "heal_only", DEFAULT_HEAL_ONLY_S)
+        if plan.get("first_deploy"):
+            budgets["build"] = max(budgets.get("build", 0), DEFAULT_FIRST_DEPLOY_S)
+        return budgets
 
     @property
-    def total_est(self) -> int:
-        return self.estimate
+    def total_budget(self) -> int:
+        raw = sum(self._budgets.values())
+        return max(60, int(raw * SAFETY_MARGIN))
 
-    def calibrate(self, total_from_start: int, source: str = "") -> None:
-        elapsed = time.time() - self.start
-        needed = max(total_from_start, int(elapsed + MIN_REMAINING_S + 45))
-        if needed > self.estimate:
-            self.estimate = needed
-            self._calibrated = True
-            if source:
-                print(
-                    f"\n  ⏱ Tahmin guncellendi: ~{fmt_duration(needed)} "
-                    f"({source}, gecen {fmt_duration(elapsed)})"
-                )
+    def set_plan(self, plan: dict, source: str = "") -> None:
+        self._floor_pct = self.progress_pct()
+        self.plan = plan
+        self._budgets = self._calc_budgets(plan)
+        if source:
+            elapsed = time.time() - self.start
+            print(
+                f"\n  ⏱ Plan: ~{fmt_duration(self.total_budget)} toplam "
+                f"({source}, gecen {fmt_duration(elapsed)})"
+            )
 
-    def _auto_extend(self, elapsed: float) -> None:
-        if elapsed + MIN_REMAINING_S >= self.estimate:
-            extra = max(AUTO_EXTEND_STEP_S, int((elapsed - self.estimate) * 0.35) + AUTO_EXTEND_STEP_S)
-            self.estimate += extra
+    def mark_done(self, phase: str, next_phase: str | None = None) -> None:
+        self.phase_done.add(phase)
+        if next_phase:
+            self.current_phase = next_phase
+            self.phase_started = time.time()
+
+    def on_output(self, chunk: str) -> None:
+        if "[0] SUNUCU DURUMU" in chunk:
+            self.mark_done("prep", "fleet")
+        if "DEPLOY_PLAN:" in chunk:
+            parsed = parse_deploy_plan(chunk)
+            if parsed:
+                self.set_plan(parsed, "VPS plani")
+                self.mark_done("fleet", "work")
+        if "BUILD_START:" in chunk:
+            self.current_phase = "build"
+            self.phase_started = time.time()
+            self.build_frac = 0.02
+            self.build_label = "basliyor"
+        m = re.search(r"BUILD_PROGRESS: (\w+) step (\d+)/(\d+) %(\d+)", chunk)
+        if m:
+            self.current_phase = "build"
+            cur, tot, pct = int(m.group(2)), int(m.group(3)), int(m.group(4))
+            self.build_frac = max(self.build_frac, pct / 100.0)
+            self.build_label = f"adim {cur}/{tot}"
+        if "BUILD_PROGRESS:" in chunk and "npm" in chunk:
+            self.build_frac = max(self.build_frac, 0.55)
+            self.build_label = "npm install/build"
+        if "BUILD_PROGRESS:" in chunk and "next" in chunk:
+            self.build_frac = max(self.build_frac, 0.72)
+            self.build_label = "next.js build"
+        if "BUILD_PROGRESS:" in chunk and "export" in chunk:
+            self.build_frac = max(self.build_frac, 0.90)
+            self.build_label = "image export"
+        if "BUILD_DONE:" in chunk:
+            self.build_frac = 1.0
+            self.build_label = "tamam"
+            self.phase_done.add("build")
+        if "↻" in chunk or "cp+restart" in chunk:
+            self.current_phase = "live"
+            self.phase_started = time.time()
+        if "SMART_DEPLOY_DONE" in chunk or "SMART_DEPLOY_PARTIAL" in chunk:
+            self.mark_done("finish", "done")
+            self._floor_pct = 100
+
+    def _phase_progress_sec(self) -> float:
+        completed = 0.0
+        order = ["prep", "fleet", "heal", "idle", "build", "finish"]
+        live_keys = [k for k in self._budgets if k.startswith("live:")]
+
+        for key in order:
+            budget = self._budgets.get(key, 0)
+            if not budget:
+                continue
+            if key in self.phase_done:
+                completed += budget
+            elif key == self.current_phase:
+                if key == "build":
+                    completed += budget * max(0.05, self.build_frac)
+                else:
+                    elapsed = time.time() - self.phase_started
+                    completed += min(budget * 0.88, elapsed)
+
+        for key in live_keys:
+            budget = self._budgets[key]
+            if key in self.phase_done:
+                completed += budget
+            elif self.current_phase in ("live", "work"):
+                elapsed = time.time() - self.phase_started
+                live_n = max(1, len(live_keys))
+                completed += min(budget * 0.85, elapsed / live_n)
+
+        if self.current_phase == "work" and "build" not in self._budgets and not live_keys:
+            idle = self._budgets.get("idle", 0)
+            if idle:
+                elapsed = time.time() - self.phase_started
+                completed += min(idle * 0.9, elapsed)
+
+        return completed
+
+    def progress_pct(self) -> int:
+        total = self.total_budget
+        if total <= 0:
+            return 1
+        pct = int(self._phase_progress_sec() / total * 100)
+        pct = max(self._floor_pct, min(99, pct))
+        self._floor_pct = pct
+        return pct
+
+    def remaining_sec(self) -> int:
+        total = self.total_budget
+        done = self._phase_progress_sec()
+        return max(MIN_REMAINING_S, int(total - done))
+
+    def phase_display(self) -> str:
+        labels = {
+            "prep": "git+SSH",
+            "fleet": "VPS tarama",
+            "fleet_scan": "VPS tarama",
+            "work": "deploy",
+            "build": f"dashboard build {self.build_label}".strip(),
+            "live": "servis restart",
+            "finish": "bitiyor",
+            "done": "bitti",
+        }
+        return labels.get(self.current_phase, self.current_phase)
 
     def _tick(self) -> None:
         while not self._stop.wait(1.0):
             elapsed = time.time() - self.start
-            self._auto_extend(elapsed)
-            remaining = max(MIN_REMAINING_S, self.estimate - elapsed)
-            pct = min(97, int(elapsed / self.estimate * 100)) if self.estimate else 0
-            overdue = elapsed > self.estimate * 0.95 and remaining <= MIN_REMAINING_S + 5
-            remain_txt = "uzuyor…" if overdue else f"~{fmt_duration(remaining)}"
+            pct = self.progress_pct()
+            remaining = self.remaining_sec()
+            phase = self.phase_display()
             line = (
-                f"\r  ⏱ {fmt_duration(elapsed)} geçti"
-                f" | kalan {remain_txt}"
-                f" | %{pct}   "
+                f"\r  ⏱ {fmt_duration(elapsed)} | kalan ~{fmt_duration(remaining)} "
+                f"| %{pct} | {phase}   "
             )
             sys.stdout.write(line)
             sys.stdout.flush()
@@ -164,9 +290,30 @@ class DeployTimer:
         if self._thread:
             self._thread.join(timeout=2)
         elapsed = time.time() - self.start
-        sys.stdout.write("\r" + " " * 80 + "\r")
+        sys.stdout.write("\r" + " " * 90 + "\r")
         sys.stdout.flush()
         return elapsed
+
+    @property
+    def total_est(self) -> int:
+        return self.total_budget
+
+
+def commit_files_plan() -> tuple[list[str], dict]:
+    _, out = run_local(["git", "show", "--name-only", "--pretty=format:", "HEAD"])
+    files = [ln.strip() for ln in out.splitlines() if ln.strip()]
+    try:
+        sys.path.insert(0, str(REPO / "scripts"))
+        from smart_deploy_remote import filter_deploy_only_files, resolve_services  # noqa: WPS433
+
+        filtered = filter_deploy_only_files(files)
+        return filtered, resolve_services(filtered)
+    except Exception:
+        return files, {}
+
+
+# Eski isim uyumlulugu
+DeployTimer = DeployProgressTimer
 
 
 def pending_change_files() -> tuple[list[str], dict]:
@@ -334,20 +481,17 @@ def main() -> int:
     pending_files, affected = pending_change_files()
     local_plan = plan_from_local(affected, history)
     est_sec, est_detail = estimate_total_seconds(local_plan, history)
-    print(f"  Tahmini sure: ~{fmt_duration(est_sec)} ({est_detail})")
-    print("  (VPS plani gelince tahmin otomatik duzeltilir)")
+    print(f"  On tahmin: ~{fmt_duration(est_sec)} ({est_detail})")
     if pending_files:
-        print(f"  Degisen dosya: {len(pending_files)}")
+        print(f"  Degisen dosya (commit oncesi): {len(pending_files)}")
     if history.get("totals"):
         avg = int(sum(history["totals"][-5:]) / len(history["totals"][-5:]))
         print(f"  Son deploy ort.: ~{fmt_duration(avg)}")
     print()
 
-    total_timer = DeployTimer(est_sec)
+    total_timer = DeployProgressTimer(local_plan, history)
     total_timer.start_tick()
     deploy_plan: dict | None = None
-    plan_applied = False
-    expected_sha = short_sha
 
     print("[1/4] Git push...")
     t0 = time.time()
@@ -357,7 +501,14 @@ def main() -> int:
         print(f"  HATA git: {git_out[:300]}")
         return 1
     expected_sha = git_head_short(12) or short_sha
-    print(f"  OK — commit {expected_sha} ({fmt_duration(time.time() - t0)})")
+    commit_files, commit_affected = commit_files_plan()
+    commit_plan = plan_from_local(commit_affected, history)
+    if commit_plan.get("update_build") or commit_plan.get("update_live"):
+        total_timer.set_plan(commit_plan, "commit dosyalari")
+        est_sec, est_detail = estimate_total_seconds(commit_plan, history)
+        print(f"  OK — {expected_sha} | plan: ~{fmt_duration(est_sec)} ({est_detail})")
+    else:
+        print(f"  OK — commit {expected_sha} ({fmt_duration(time.time() - t0)})")
 
     print("\n[2/4] VPS baglanti...")
     t0 = time.time()
@@ -397,10 +548,11 @@ def main() -> int:
         print("  Cozum: VPS'te manuel: cd /root/prometheus && git fetch && git reset --hard origin/master")
         return 1
     print(f"  OK — VPS {vps_sha} = PC {expected_sha} ({fmt_duration(time.time() - t0)})")
+    total_timer.mark_done("prep", "fleet")
 
-    pc_esc = json.dumps(pending_files, ensure_ascii=False).replace("'", "'\\''")
-    vps_only, _ = estimate_from_plan(local_plan, history)
-    print(f"\n[4/4] Akilli deploy (on tahmin ~{fmt_duration(vps_only)})...")
+    pc_esc = json.dumps(commit_files or pending_files, ensure_ascii=False).replace("'", "'\\''")
+    vps_est = total_timer.total_budget - (PHASE_GIT_S + PHASE_SSH_S + PHASE_PULL_S)
+    print(f"\n[4/4] Akilli deploy (tahmini ~{fmt_duration(max(60, vps_est))})...")
     print("-" * 68)
 
     transport = c.get_transport()
@@ -409,7 +561,7 @@ def main() -> int:
         total_timer.stop()
         print("HATA: SSH channel")
         return 1
-    channel.settimeout(3600)
+    channel.settimeout(7200)
     channel.exec_command(
         f"cd {prom_dir} && "
         f"DEPLOY_EXPECTED_SHA={expected_sha} "
@@ -417,22 +569,15 @@ def main() -> int:
         f"python3 -u scripts/smart_deploy_remote.py"
     )
     buf: list[str] = []
-    deadline = time.time() + 3600
+    deadline = time.time() + 7200
     while True:
         if channel.recv_ready():
             chunk = channel.recv(8192).decode("utf-8", errors="replace")
             if chunk:
                 buf.append(chunk)
-                if not plan_applied:
-                    parsed = parse_deploy_plan("".join(buf))
-                    if parsed:
-                        deploy_plan = parsed
-                        vps_est, vps_detail = estimate_total_seconds(parsed, history)
-                        if not parsed.get("update_live") and not parsed.get("update_build"):
-                            vps_est = PHASE_GIT_S + PHASE_SSH_S + PHASE_PULL_S + 90
-                            vps_detail = "kod degismedi"
-                        total_timer.calibrate(vps_est, f"VPS: {vps_detail}")
-                        plan_applied = True
+                total_timer.on_output(chunk)
+                if "DEPLOY_PLAN:" in chunk and not deploy_plan:
+                    deploy_plan = parse_deploy_plan(chunk)
                 sys.stdout.write(chunk)
                 sys.stdout.flush()
         if channel.exit_status_ready():
@@ -445,7 +590,7 @@ def main() -> int:
             break
         if time.time() > deadline:
             total_timer.stop()
-            print("\nHATA: Zaman asimi (60dk)")
+            print("\nHATA: Zaman asimi (120dk)")
             c.close()
             return 1
         time.sleep(0.05)
@@ -455,7 +600,7 @@ def main() -> int:
     c.close()
 
     total_elapsed = total_timer.stop()
-    final_plan = deploy_plan or local_plan
+    final_plan = deploy_plan or commit_plan or local_plan
     if "SMART_DEPLOY_DONE" in out or "SMART_DEPLOY_PARTIAL" in out:
         record_timing(final_plan, total_elapsed)
 
