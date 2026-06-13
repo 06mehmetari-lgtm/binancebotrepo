@@ -29,7 +29,17 @@ const NAV_LINKS = [
 ]
 
 interface TickerEntry { price: number | null; direction: string; live: boolean; confidence?: number }
-type TickerPayload = Record<string, TickerEntry | { total?: number; active?: number; top_nav?: string[] }>
+type TickerPayload = Record<string, TickerEntry | { total?: number; active?: number; top_nav?: string[]; deploy?: DeployInfo | null }>
+
+interface DeployInfo {
+  version?: string
+  commit_short?: string
+  deployed_at_iso?: string
+  status?: string
+  services_ok?: string[]
+  services_failed?: string[]
+  files_changed?: string[]
+}
 
 interface Notification { id: string; type: string; title: string; body: string; level: string; ts: number; symbol?: string }
 
@@ -59,6 +69,37 @@ function TickerChip({ sym, entry }: { sym: string; entry: TickerEntry }) {
       <span className={`text-xs leading-none ${arrowColor}`}>{arrow}</span>
       {!entry.live && <span className="text-gray-700 text-[10px]">○</span>}
     </a>
+  )
+}
+
+function DeployVersionBadge({ deploy }: { deploy: DeployInfo | null | undefined }) {
+  if (!deploy?.version) return null
+  const ok = deploy.status === 'ok'
+  const partial = deploy.status === 'partial'
+  const color = ok
+    ? 'text-green-400 border-green-700/50 bg-green-950/40'
+    : partial
+      ? 'text-yellow-400 border-yellow-700/50 bg-yellow-950/40'
+      : 'text-gray-400 border-gray-700/50 bg-gray-900/40'
+  const services = (deploy.services_ok ?? []).slice(0, 4).join(', ')
+  const failed = (deploy.services_failed ?? []).length
+  const title = [
+    `v${deploy.version}`,
+    deploy.commit_short ? `sha ${deploy.commit_short}` : '',
+    deploy.deployed_at_iso ?? '',
+    deploy.services_ok?.length ? `OK: ${deploy.services_ok.join(', ')}` : '',
+    failed ? `HATA: ${(deploy.services_failed ?? []).join(', ')}` : '',
+    deploy.files_changed?.length ? `${deploy.files_changed.length} dosya` : '',
+  ].filter(Boolean).join(' | ')
+  return (
+    <span
+      title={title}
+      className={`hidden md:inline text-[10px] font-mono px-2 py-0.5 rounded border ${color} max-w-[200px] truncate`}
+    >
+      v{deploy.version}
+      {services ? ` · ${services}` : ''}
+      {failed > 0 ? ` · !${failed}` : ''}
+    </span>
   )
 }
 
@@ -182,7 +223,7 @@ function Nav() {
     setNotifOpen(v => !v)
   }
 
-  const meta = ticker._meta as { total?: number; active?: number; top_nav?: string[] } | undefined
+  const meta = ticker._meta as { total?: number; active?: number; top_nav?: string[]; deploy?: DeployInfo | null } | undefined
   const isEntry = (e: unknown): e is TickerEntry =>
     !!e && typeof e === 'object' && 'live' in e
   const tickerSyms = meta?.top_nav?.length
@@ -202,6 +243,7 @@ function Nav() {
         <div className="px-4 md:px-6 py-3 flex items-center gap-2">
           <a href="/" className="flex items-center gap-2 mr-2 shrink-0">
             <span className="text-orange-400 font-black text-base tracking-tight">⚡ PROMETHEUS</span>
+            <DeployVersionBadge deploy={meta?.deploy} />
           </a>
 
           {/* Desktop nav */}

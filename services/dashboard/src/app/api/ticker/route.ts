@@ -73,7 +73,20 @@ export async function GET() {
       .sort((a, b) => Math.abs(b.confidence) - Math.abs(a.confidence))
       .slice(0, 15)
 
-    const result: Record<string, unknown> = { _meta: { total: entries.length, active, top_nav: topNav.map(e => e.symbol) } }
+    const deployRaw = await redis.get('system:deploy:version')
+    let deploy: Record<string, unknown> | null = null
+    if (deployRaw) {
+      try { deploy = JSON.parse(deployRaw) } catch { deploy = null }
+    }
+
+    const result: Record<string, unknown> = {
+      _meta: {
+        total: entries.length,
+        active,
+        top_nav: topNav.map(e => e.symbol),
+        deploy,
+      },
+    }
     for (const e of entries) {
       result[e.symbol] = {
         price: e.price,
