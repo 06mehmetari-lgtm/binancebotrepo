@@ -122,7 +122,7 @@ async def main():
     # Split into batches for multiple WS connections if > WS_BATCH_SIZE
     batches = [symbols[i:i + WS_BATCH_SIZE] for i in range(0, len(symbols), WS_BATCH_SIZE)]
     ws_tasks = [
-        BinanceWebSocketManager(REDIS_URL, batch, on_message=handle_ws_message).connect()
+        BinanceWebSocketManager(REDIS_URL, batch, on_message=handle_ws_message, total_symbols=len(symbols)).connect()
         for batch in batches
     ]
     log.info(f"Starting {len(batches)} WebSocket connection(s) for {len(symbols)} symbols")

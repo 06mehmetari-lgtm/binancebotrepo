@@ -26,12 +26,16 @@ try:
         GUARD_EMERGENCY_LOSS_PCT as _PR_EMERGENCY,
         GUARD_MAX_LOSS_PCT as _PR_MAX_LOSS,
         GUARD_TAKE_PROFIT_PCT as _PR_TP,
+        BREAKEVEN_ACTIVATE_PCT as _PR_BE_ACT,
+        BREAKEVEN_FLOOR_PCT as _PR_BE_FLOOR,
         profit_tiers as _profit_tiers_from_rules,
     )
 except ImportError:
     _PR_MAX_LOSS = 1.0
     _PR_EMERGENCY = 1.8
     _PR_TP = 1.2
+    _PR_BE_ACT = 0.35
+    _PR_BE_FLOOR = 0.08
     _profit_tiers_from_rules = None
 
 # Eşikler — autopsy: %0.5 TP çok erken, -%8 zarar guard dışı kaldı
@@ -46,6 +50,8 @@ PROFIT_PROTECT_PCT = float(os.getenv("GUARD_PROFIT_PROTECT_PCT", "0.8"))
 TRAIL_MIN_PEAK_PCT = float(os.getenv("GUARD_TRAIL_MIN_PEAK", "2.0"))
 TRAIL_GIVEBACK_PCT = float(os.getenv("GUARD_TRAIL_GIVEBACK_PCT", "0.5"))
 SYMBOL_COOLDOWN_SEC = int(os.getenv("SYMBOL_COOLDOWN_SEC", "1800"))
+BREAKEVEN_ACTIVATE_PCT = float(os.getenv("BREAKEVEN_ACTIVATE_PCT", str(_PR_BE_ACT)))
+BREAKEVEN_FLOOR_PCT = float(os.getenv("BREAKEVEN_FLOOR_PCT", str(_PR_BE_FLOOR)))
 
 
 def _profit_tiers() -> list[float]:
@@ -197,6 +203,17 @@ def evaluate_position(
             upnl, v_conf, trade_action, checks, time.time(),
         )
 
+    if hold_sec >= STALE_VERDICT_HOLD_SEC and (
+        sig_dir == "flat"
+        or (sig_dir != direction and not (signal or {}).get("is_valid"))
+        or (v_dir == "flat" and v_conf >= 0.15)
+    ):
+        return GuardDecision(
+            symbol, source, direction, "close", "medium",
+            f"stale_flat_verdict — sinyal/ajan düştü ({hold_sec:.0f}s, PnL {upnl:+.2f}%)",
+            upnl, v_conf, trade_action, checks, time.time(),
+        )
+
     try:
         from risk_limits import get_active_limits
         reverse_conf = get_active_limits().min_signal_confidence
@@ -237,6 +254,17 @@ def evaluate_position(
     if upnl > peak_upnl:
         peak_upnl = upnl
         checks["peak_upnl_pct"] = round(peak_upnl, 3)
+
+    breakeven_armed = bool(ladder.get("breakeven_armed"))
+    if peak_upnl >= BREAKEVEN_ACTIVATE_PCT:
+        breakeven_armed = True
+        checks["breakeven_armed"] = True
+    if breakeven_armed and upnl <= BREAKEVEN_FLOOR_PCT and hold_sec >= 120:
+        return GuardDecision(
+            symbol, source, direction, "close", "high",
+            f"Breakeven stop — zirve {peak_upnl:+.2f}% → {upnl:+.2f}%",
+            upnl, v_conf, trade_action, checks, time.time(),
+        )
 
     tp_pct = float(ladder.get("take_profit_pct") or TAKE_PROFIT_PCT)
     if upnl >= tp_pct:
@@ -654,6 +682,12 @@ async def run_guard_cycle(
                 mid = _mid_from_ticker(res[5])
                 if mid > 0:
                     features["close"] = mid
+            if float(features.get("close") or 0) <= 0:
+                try:
+                    from price_resolver import price_from_features_raw
+                    features["close"] = price_from_features_raw(res[0])
+                except ImportError:
+                    pass
         except json.JSONDecodeError:
             continue
 
@@ -704,15 +738,26 @@ async def run_guard_cycle(
 
         ladder = pos.get("ladder") or {}
         peak = float(ladder.get("peak_upnl_pct") or 0)
-        if dec.unrealized_pct > peak and pos.get("source") == "oms":
+        if dec.unrealized_pct > peak:
             ladder["peak_upnl_pct"] = round(dec.unrealized_pct, 4)
+            if dec.unrealized_pct >= BREAKEVEN_ACTIVATE_PCT:
+                ladder["breakeven_armed"] = True
             pos["ladder"] = ladder
             try:
-                await redis.set(
-                    f"oms:position:{symbol}",
-                    json.dumps(pos),
-                    ex=86400,
-                )
+                if pos.get("source") == "oms":
+                    await redis.set(
+                        f"oms:position:{symbol}",
+                        json.dumps(pos),
+                        ex=86400,
+                    )
+                elif pos.get("source") == "shadow" and pos.get("shadow_id"):
+                    sid = pos["shadow_id"]
+                    pos_key = f"shadow:positions:{sid}:{symbol}"
+                    raw = await redis.get(pos_key)
+                    if raw:
+                        sp = json.loads(raw)
+                        sp["ladder"] = ladder
+                        await redis.set(pos_key, json.dumps(sp), ex=86400)
             except Exception as e:
                 log.debug("peak_upnl persist %s: %s", symbol, e)
         if pos.get("source") == "shadow":

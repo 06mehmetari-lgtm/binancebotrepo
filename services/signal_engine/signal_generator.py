@@ -48,7 +48,7 @@ class SignalGenerator:
             source = "agent_system"
             if (direction == "flat" or best == "flat") and features and paper:
                 tech = self._technical_signal(symbol, features, kelly_fraction)
-                if tech and tech.direction != "flat":
+                if tech and tech.direction != "flat" and tech.confidence >= 0.55:
                     direction = tech.direction
                     confidence = max(confidence, tech.confidence)
                     source = "agent+technical_paper"
@@ -130,17 +130,13 @@ class SignalGenerator:
             except Exception:
                 min_conf = 0.60
                 paper = False
-            if paper:
-                min_conf = min(min_conf, 0.32)
-            if long_score >= min_conf and long_score > short_score:
+            tech_min = max(min_conf, 0.55)
+            if long_score >= tech_min and long_score > short_score:
                 direction = "long"
                 confidence = min(0.95, long_score)
-            elif short_score >= min_conf and short_score > long_score:
+            elif short_score >= tech_min and short_score > long_score:
                 direction = "short"
                 confidence = min(0.95, short_score)
-            elif paper and max(long_score, short_score) >= 0.28:
-                direction = "long" if long_score > short_score else "short"
-                confidence = min(0.85, max(long_score, short_score))
             else:
                 direction = "flat"
                 confidence = max(long_score, short_score)

@@ -16,9 +16,10 @@ logger = logging.getLogger(__name__)
 BASE_FUTURES_URL = "wss://fstream.binance.com/stream"
 
 class BinanceWebSocketManager:
-    def __init__(self, redis_url: str, symbols: list[str], on_message=None):
+    def __init__(self, redis_url: str, symbols: list[str], on_message=None, total_symbols: int | None = None):
         self.redis_url = redis_url
         self.symbols = [s.lower() for s in symbols]
+        self.total_symbols = total_symbols or len(symbols)
         self.on_message = on_message
         self.redis: aioredis.Redis | None = None
         self._running = False
@@ -112,7 +113,8 @@ class BinanceWebSocketManager:
                 "status": status,
                 "time": time.time(),
                 "reconnect_delay": reconnect_delay,
-                "symbols": len(self.symbols),
+                "symbols": self.total_symbols,
+                "batch_symbols": len(self.symbols),
             }), ex=ttl)
 
     async def stop(self):

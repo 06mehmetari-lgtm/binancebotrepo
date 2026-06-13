@@ -10,10 +10,12 @@ from __future__ import annotations
 import os
 import time
 
-# Giriş
-SHADOW_MIN_CONFIDENCE = float(os.getenv("SHADOW_MIN_CONFIDENCE", "0.60"))
-OMS_MIN_CONFIDENCE = float(os.getenv("OMS_MIN_CONFIDENCE", "0.58"))
-PAPER_MIN_SIGNAL_CONFIDENCE = float(os.getenv("PAPER_MIN_SIGNAL_CONFIDENCE", "0.57"))
+# Giriş — kâr odaklı: düşük conf gürültü girişi üretiyordu (WR %23, churn <2dk)
+SHADOW_MIN_CONFIDENCE = float(os.getenv("SHADOW_MIN_CONFIDENCE", "0.62"))
+OMS_MIN_CONFIDENCE = float(os.getenv("OMS_MIN_CONFIDENCE", "0.60"))
+PAPER_MIN_SIGNAL_CONFIDENCE = float(os.getenv("PAPER_MIN_SIGNAL_CONFIDENCE", "0.60"))
+MIN_AGENT_ALIGN_CONF = float(os.getenv("MIN_AGENT_ALIGN_CONF", "0.38"))
+SLOT_ROTATE_MIN_CONF = float(os.getenv("SLOT_ROTATE_MIN_CONF", "0.68"))
 
 # Risk/ödül — stop 1.2%, ilk TP en az 1.5% (R:R ≥ 1.25)
 DEFAULT_STOP_LOSS_PCT = float(os.getenv("DEFAULT_STOP_LOSS_PCT", "1.2"))
@@ -28,6 +30,11 @@ GUARD_EMERGENCY_LOSS_PCT = float(os.getenv("GUARD_EMERGENCY_LOSS_PCT", "1.8"))
 # Churn önleme
 SYMBOL_COOLDOWN_SEC = int(os.getenv("SYMBOL_COOLDOWN_SEC", "900"))
 PAPER_SYMBOL_COOLDOWN_SEC = int(os.getenv("PAPER_SYMBOL_COOLDOWN_SEC", "600"))
+LOSS_COOLDOWN_SEC = int(os.getenv("LOSS_COOLDOWN_SEC", "1800"))
+
+# Breakeven — küçük kârı koru, geri dönüşte erken çık
+BREAKEVEN_ACTIVATE_PCT = float(os.getenv("BREAKEVEN_ACTIVATE_PCT", "0.35"))
+BREAKEVEN_FLOOR_PCT = float(os.getenv("BREAKEVEN_FLOOR_PCT", "0.08"))
 SHADOW_MAX_OPEN = int(os.getenv("SHADOW_MAX_OPEN", "3"))
 SHADOW_HARD_STOP_PCT = float(os.getenv("SHADOW_HARD_STOP_PCT", "1.2"))
 
@@ -96,6 +103,32 @@ def entry_allowed(
     if stop_pct > 0 and tp_pct > 0 and not rr_ok(stop_pct, tp_pct):
         return False, f"R:R {tp_pct/stop_pct:.2f} < {MIN_RR_RATIO}"
     return True, "ok"
+
+
+def agent_entry_ok(direction: str, verdict: dict | None) -> tuple[bool, str]:
+    """Ajan FLAT + düşük güven ile giriş yapma — teşhisteki 13–28% FLAT girişleri."""
+    if not verdict:
+        return True, "no_verdict"
+    v_dir = str(verdict.get("direction", "flat"))
+    v_conf = float(verdict.get("confidence", 0) or 0)
+    if v_dir in ("long", "short") and v_dir != direction and v_conf >= MIN_AGENT_ALIGN_CONF:
+        return False, f"agent_opposes_{v_dir}_{v_conf:.0%}"
+    if v_dir == "flat" and v_conf < MIN_AGENT_ALIGN_CONF:
+        return True, "agent_neutral"
+    if v_dir == "flat" and v_conf >= MIN_AGENT_ALIGN_CONF:
+        return False, f"agent_flat_{v_conf:.0%}"
+    if v_dir == direction and v_conf >= MIN_AGENT_ALIGN_CONF:
+        return True, "agent_aligned"
+    return True, "ok"
+
+
+def cooldown_after_close(pnl_pct: float, *, blacklisted: bool = False) -> int:
+    """Zarar sonrası uzun bekleme — churn önleme."""
+    if pnl_pct < 0:
+        return LOSS_COOLDOWN_SEC if not blacklisted else LOSS_COOLDOWN_SEC * 2
+    if blacklisted:
+        return paper_cooldown_sec()
+    return SYMBOL_COOLDOWN_SEC
 
 
 def build_history_record(payload: dict) -> dict:

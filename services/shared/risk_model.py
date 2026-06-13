@@ -71,6 +71,12 @@ def evaluate_risk(
     if crisis >= 3:
         risk_score += 0.25
         reasons.append("crisis_elevated")
+    if crisis >= 2 and paper:
+        risk_score += 0.30
+        base_size_note = True
+        reasons.append("crisis_reduce_size")
+    else:
+        base_size_note = False
     if drift == "DRIFTING":
         risk_score += 0.15
         reasons.append("drifting")
@@ -109,6 +115,8 @@ def evaluate_risk(
     base_size = min(kelly_fraction * confidence, max_pos, kelly_cap)
     if paper:
         base_size = max(base_size, 0.003)
+    if base_size_note:
+        base_size *= 0.45
 
     if learn_raw:
         try:
@@ -155,6 +163,9 @@ def evaluate_risk(
         min_conf = 0.58 if paper else 0.52
 
     approved = risk_score < 0.72 and confidence >= min_conf
+    if crisis >= 2 and paper and confidence < 0.65:
+        approved = False
+        reasons.append("crisis_low_conf")
     if not approved:
         reasons.append("risk_score_high" if risk_score >= 0.72 else "low_confidence")
 

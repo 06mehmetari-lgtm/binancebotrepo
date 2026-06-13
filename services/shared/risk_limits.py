@@ -96,7 +96,7 @@ def apply_paper_overrides(lim: RiskLimits) -> RiskLimits:
         return lim
     try:
         from profit_rules import PAPER_MIN_SIGNAL_CONFIDENCE, SHADOW_MAX_OPEN
-        paper_conf = max(PAPER_MIN_SIGNAL_CONFIDENCE, 0.58)
+        paper_conf = max(PAPER_MIN_SIGNAL_CONFIDENCE, 0.60)
         paper_open = min(SHADOW_MAX_OPEN, 5)
     except ImportError:
         paper_conf = 0.58
