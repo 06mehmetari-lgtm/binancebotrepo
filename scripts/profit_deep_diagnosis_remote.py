@@ -191,7 +191,11 @@ def parse_risk_limits(risk: dict) -> dict:
     }
 
 
-def portfolio_value_usd(portfolio: dict) -> float:
+def portfolio_value_usd(portfolio: dict, cap_raw: dict | None = None) -> float:
+    if cap_raw:
+        v = float(cap_raw.get("usd_cap") or cap_raw.get("portfolio_usd") or cap_raw.get("usd_capital") or 0)
+        if v > 0:
+            return v
     for key in ("equity", "current_equity", "portfolio_value"):
         v = float(portfolio.get(key, 0) or 0)
         if v > 0:
@@ -203,6 +207,38 @@ def portfolio_value_usd(portfolio: dict) -> float:
             except ValueError:
                 break
     return 10_000.0
+
+
+def infer_shadow_equity(
+    portfolio: dict,
+    meta_raw: dict,
+    max_open: int,
+    cap_raw: dict | None = None,
+) -> tuple[float, float, str]:
+    """(configured_cap, live_equity, kaynak) — boyutlandirma canli equity ile yapilir."""
+    configured = portfolio_value_usd(portfolio, cap_raw)
+    live_raw = jparse(meta_raw.get("portfolio:live_equity:v1"))
+    if live_raw:
+        live = float(live_raw.get("equity_usd") or live_raw.get("equity") or 0)
+        if live > 0:
+            return configured, live, "redis:live_equity"
+
+    slot_inferred: list[float] = []
+    for pos in portfolio.get("positions") or []:
+        if str(pos.get("source", "")).lower() != "shadow":
+            continue
+        ladder = pos.get("ladder") or {}
+        sb = float(ladder.get("slot_budget_usd", 0) or 0)
+        if sb > 0 and max_open > 0:
+            slot_inferred.append(sb * max_open)
+    if slot_inferred:
+        live = sum(slot_inferred) / len(slot_inferred)
+        return configured, live, "ladder:slot_budget"
+
+    eq = float(portfolio.get("equity", portfolio.get("current_equity", 0)) or 0)
+    if eq > 0:
+        return configured, eq, "portfolio:state"
+    return configured, configured, "configured_default"
 
 
 def expected_shadow_size(
@@ -635,6 +671,9 @@ def main() -> None:
     log("\n[0c] Meta veriler...")
     meta_keys = [
         "portfolio:state:v1",
+        "portfolio:capital:v1",
+        "portfolio:try:v1",
+        "portfolio:live_equity:v1",
         "snapshot:universe:v1",
         "system:risk_limits:v1",
         "system:promotion:status",
@@ -657,7 +696,9 @@ def main() -> None:
     ws_status = jparse(meta_raw.get("ws:status")) or {}
 
     risk_lim = parse_risk_limits(risk)
-    pv = portfolio_value_usd(portfolio)
+    cap_raw = jparse(meta_raw.get("portfolio:capital:v1")) or jparse(meta_raw.get("portfolio:try:v1"))
+    configured_cap, live_eq, eq_source = infer_shadow_equity(portfolio, meta_raw, max_open, cap_raw)
+    pv = configured_cap
 
     uni_counts = universe.get("counts") or {}
     symbols: list[str] = list(universe.get("symbols") or [])
@@ -693,8 +734,12 @@ def main() -> None:
     if cap_raw:
         log(f"  Kasa (Redis):      usd_cap=${float(cap_raw.get('usd_cap', cap_raw.get('portfolio_usd', 0)) or 0):,.0f} "
             f"try={cap_raw.get('try_amount', '?')} kur={cap_raw.get('usd_try_rate', '?')}")
-    log(f"  Portfoy baz:       ${pv:,.0f}")
-    log(f"  Slot butcesi:      ${pv / max(max_open, 1):,.0f} (portfoy/{max_open})")
+    log(f"  Portfoy baz:       ${configured_cap:,.0f} (dashboard/env)")
+    log(f"  Canli equity:      ${live_eq:,.0f} ({eq_source})")
+    if live_eq < configured_cap * 0.5:
+        log(f"  !! UYARI: Canli equity yapilandirilan kasanin %{live_eq/configured_cap*100:.0f}'i — "
+            f"islem boyutu ${live_eq/max(max_open,1):.0f}/slot (beklenen ${configured_cap/max(max_open,1):.0f})")
+    log(f"  Slot butcesi:      ${live_eq / max(max_open, 1):,.0f} (canli/{max_open})")
     log(f"  DRY_RUN:           {env_flags.get('DRY_RUN', '?')}")
     log(f"  Shadow IDs:        {env_flags.get('SHADOW_OPEN_IDS', 'SHADOW_A')}")
     log(f"  One per symbol:    {env_flags.get('SHADOW_ONE_PER_SYMBOL', 'true')}")
@@ -914,7 +959,7 @@ def main() -> None:
         owner = shadow_owner_from_keys(pos_keys_early, sym)
         steps = trace_shadow_entry(
             sym, sig, verdict, ctx, price, cooled, halted_flag, rules,
-            open_positions, shadow_counts_early, owner, pv, risk_lim,
+            open_positions, shadow_counts_early, owner, live_eq, risk_lim,
         )
         log(f"  {sym} ({d} conf={c:.0%}):")
         for st in steps:
@@ -1342,11 +1387,26 @@ def main() -> None:
             f"Acik: {', '.join(open_syms)}. Kapanis veya max_hold beklenmeli."
         )
     if len(alim_uygun_list) > 0 and open_n < max_open:
-        actions.append(
-            f"KRITIK: {len(alim_uygun_list)} ALIM_UYGUN ama sadece {open_n}/{max_open} acik — "
-            f"sinyal VAR, shadow acmiyor (WS/fiyat veya kod hatasi). "
-            f"En iyi: {alim_uygun_list[0][0]} {alim_uygun_list[0][2]:.0%}"
-        )
+        cooled_alim = []
+        for sym, d, c in alim_uygun_list:
+            cd_raw = cd_map.get(f"trade:cooldown:shadow:{sym.upper()}")
+            if cd_raw and time.time() < float(cd_raw or 0):
+                cooled_alim.append(sym)
+        if cooled_alim:
+            actions.append(
+                f"{len(alim_uygun_list)} ALIM_UYGUN — {len(cooled_alim)} sembol cooldown'da "
+                f"({', '.join(cooled_alim[:5])}) — shadow tick beklenir, kod hatasi degil"
+            )
+        elif live_eq < configured_cap * 0.25:
+            actions.append(
+                f"KRITIK: Canli equity ${live_eq:,.0f} << kasa ${configured_cap:,.0f} — "
+                f"islem boyutu ~${live_eq/max(max_open,1):.0f}/slot. Dashboard'dan kasayi kaydedin veya DEPLOY."
+            )
+        else:
+            actions.append(
+                f"{len(alim_uygun_list)} ALIM_UYGUN, {open_n}/{max_open} acik — "
+                f"shadow tick (3s) ile acilmasi beklenir. En iyi: {alim_uygun_list[0][0]} {alim_uygun_list[0][2]:.0%}"
+            )
     elif len(alim_uygun_list) > 0 and open_n >= max_open:
         actions.append(
             f"{len(alim_uygun_list)} ALIM_UYGUN sinyal var ama slot yok — "
@@ -1384,7 +1444,9 @@ def main() -> None:
         "ts": int(time.time()),
         "deploy": deploy,
         "rules": {k: rules.get(k) for k in rules if k != "error"},
-        "portfolio_usd": pv,
+        "portfolio_usd": configured_cap,
+        "live_equity_usd": live_eq,
+        "equity_source": eq_source,
         "open_n": open_n,
         "max_open": max_open,
         "pipeline": {

@@ -99,15 +99,28 @@ async def discover_symbols(redis: aioredis.Redis) -> list[str]:
 
 
 trader = PaperTrader(initial_capital=PORTFOLIO_VALUE)
+_last_cap_updated_at = 0.0
+
+
+def _locked_margin(p) -> float:
+    return sum(
+        float(pos.get("margin_usd", pos.get("entry_capital", 0)) or 0)
+        for pos in p.positions.values()
+    )
 
 
 async def _sync_shadow_capital(redis: aioredis.Redis) -> float:
     """Dashboard/Redis bakiyesi → shadow paper sermayesi."""
-    global PORTFOLIO_VALUE, trader
+    global PORTFOLIO_VALUE, trader, _last_cap_updated_at
+    cap_updated_at = 0.0
     try:
         from portfolio_cap import load_cap_usd
 
         usd = await load_cap_usd(redis)
+        cap_raw = await redis.get("portfolio:capital:v1")
+        if cap_raw:
+            data = json.loads(cap_raw.decode() if isinstance(cap_raw, bytes) else cap_raw)
+            cap_updated_at = float(data.get("updated_at", 0) or 0)
     except ImportError:
         raw = await redis.get("portfolio:try:v1")
         usd = 0.0
@@ -117,22 +130,41 @@ async def _sync_shadow_capital(redis: aioredis.Redis) -> float:
                 usd = float(
                     data.get("usd_cap") or data.get("portfolio_usd") or data.get("usd_capital") or 0
                 )
+                cap_updated_at = float(data.get("updated_at", 0) or 0)
             except (json.JSONDecodeError, TypeError, ValueError):
                 pass
         if usd <= 0:
             usd = PORTFOLIO_VALUE
     if usd > 0:
         PORTFOLIO_VALUE = usd
+        force_reset = cap_updated_at > _last_cap_updated_at and cap_updated_at > 0
+        if force_reset:
+            _last_cap_updated_at = cap_updated_at
+        leader = SHADOW_OPEN_IDS[0] if SHADOW_OPEN_IDS else "SHADOW_A"
         for sid in SHADOW_IDS:
             p = trader.portfolios.get(sid)
             if not p:
                 continue
-            if p.initial_capital != usd:
+            locked = _locked_margin(p)
+            live = float(p.capital) + locked
+            if force_reset and sid == leader:
+                p.initial_capital = usd
+                p.capital = max(0.0, usd - locked)
+                log.info(
+                    f"[CAPITAL RESET] {sid} dashboard=${usd:.0f} "
+                    f"was_equity=${live:.0f} free=${p.capital:.0f} locked=${locked:.0f}"
+                )
+            elif p.initial_capital != usd:
                 ratio = usd / p.initial_capital if p.initial_capital else 1.0
                 p.initial_capital = usd
                 p.capital = p.capital * ratio
             elif p.capital <= 0 and not p.positions:
                 p.capital = usd
+            elif live < usd * 0.15 and sid == leader and not p.positions:
+                p.capital = usd
+                log.warning(
+                    f"[CAPITAL REFILL] {sid} equity=${live:.0f} << dashboard=${usd:.0f} — free cash reset"
+                )
         await _publish_live_equity(redis)
         return usd
     return PORTFOLIO_VALUE
@@ -143,11 +175,7 @@ def _shadow_equity_usd(shadow_id: str) -> float:
     p = trader.portfolios.get(shadow_id)
     if not p:
         return max(PORTFOLIO_VALUE, 100.0)
-    locked = sum(
-        float(pos.get("margin_usd", pos.get("entry_capital", 0)) or 0)
-        for pos in p.positions.values()
-    )
-    return max(100.0, float(p.capital) + locked)
+    return max(100.0, float(p.capital) + _locked_margin(p))
 
 
 async def _publish_live_equity(redis: aioredis.Redis) -> None:
