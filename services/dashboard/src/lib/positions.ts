@@ -101,7 +101,7 @@ async function fetchBinanceMarkPrices(symbols: string[]): Promise<Record<string,
   const out: Record<string, number> = {}
   if (!symbols.length) return out
   await Promise.all(
-    symbols.slice(0, 40).map(async sym => {
+    symbols.slice(0, 80).map(async sym => {
       try {
         const res = await fetch(
           `https://fapi.binance.com/fapi/v1/ticker/price?symbol=${sym}`,
@@ -397,6 +397,16 @@ export async function fetchOpenPositions(redis: Redis): Promise<{
           notionalUsd,
         }).usdt
       }
+    }
+
+    if (
+      raws[i].symbol &&
+      currentPrice > 0 &&
+      entryPrice > 0 &&
+      Math.abs(currentPrice - entryPrice) / entryPrice < 1e-8 &&
+      unrealizedPct === 0
+    ) {
+      needRestPrice.push(raws[i].symbol)
     }
 
     const qtyEstimate =

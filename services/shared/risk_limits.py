@@ -147,7 +147,6 @@ def parse_redis_raw(raw: str | bytes | None) -> RiskLimits | None:
 
 
 def _row_to_limits(row: tuple) -> RiskLimits:
-def _row_to_limits(row: tuple) -> RiskLimits:
     return RiskLimits(
         max_leverage=float(row[0]),
         min_leverage=float(row[1]),

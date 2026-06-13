@@ -16,6 +16,15 @@ SECRETS = Path(__file__).resolve().parent / ".deploy.secrets"
 # (repo dosyasi, [(container, hedef yol), ...])
 PATCH_MAP: list[tuple[str, list[tuple[str, str]]]] = [
     (
+        "services/shared/risk_limits.py",
+        [
+            ("prometheus_signal", "/app/risk_limits.py"),
+            ("prometheus_immunity", "/app/risk_limits.py"),
+            ("prometheus_oms", "/app/risk_limits.py"),
+            ("prometheus_shadow", "/app/risk_limits.py"),
+        ],
+    ),
+    (
         "services/shared/profit_rules.py",
         [
             ("prometheus_shadow", "/app/profit_rules.py"),
@@ -89,6 +98,13 @@ def main() -> int:
             continue
         remote_file = f"{remote_tmp}/{local.name}"
         sftp.put(str(local), remote_file)
+        # VPS git working tree — sonraki deploy cp+restart dogru dosyayi kullansin
+        repo_dest = f"{prom_dir}/{rel.replace(chr(92), '/')}"
+        try:
+            sftp.put(str(local), repo_dest)
+            print(f"  OK  {rel} -> repo")
+        except OSError as exc:
+            print(f"  UYARI repo yazilamadi ({repo_dest}): {exc}")
         for container, dest in targets:
             cmd = f"docker cp {remote_file} {container}:{dest}"
             _, o, e = c.exec_command(cmd, timeout=60)
@@ -112,6 +128,15 @@ def main() -> int:
         timeout=180,
     )
     print(o.read().decode("utf-8", errors="replace") or e.read().decode("utf-8", errors="replace"))
+
+    print("\n=== syntax dogrulama ===")
+    for container in ("prometheus_signal", "prometheus_immunity"):
+        _, o, e = c.exec_command(
+            f"docker exec {container} python -m py_compile /app/risk_limits.py 2>&1",
+            timeout=30,
+        )
+        out = (o.read() + e.read()).decode("utf-8", errors="replace").strip()
+        print(f"  {container}: {'OK' if not out else out[:120]}")
 
     print("\n=== heartbeat (25 sn bekleniyor) ===")
     time.sleep(25)
