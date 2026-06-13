@@ -24,15 +24,30 @@ function parseUsdCap(raw: string | null): number {
 export async function GET() {
   const redis = createRedis()
   try {
-    const [capRaw, tryRaw, limitsRes] = await Promise.all([
+    const [capRaw, tryRaw, limitsRes, liveRaw] = await Promise.all([
       redis.get(CAPITAL_KEY),
       redis.get(TRY_KEY),
       resolveRiskLimits({ syncRedisIfMissing: false }),
+      redis.get('portfolio:live_equity:v1'),
     ])
     const usd_cap = parseUsdCap(capRaw) || parseUsdCap(tryRaw) || 10_000
+    let live_equity = usd_cap
+    let realized_pnl = 0
+    if (liveRaw) {
+      try {
+        const live = JSON.parse(liveRaw) as { live_equity_usd?: number; realized_pnl_usd?: number }
+        if (live.live_equity_usd && live.live_equity_usd > 0) {
+          live_equity = live.live_equity_usd
+          realized_pnl = Number(live.realized_pnl_usd ?? live.live_equity_usd - usd_cap)
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+    const sizing_base = Math.max(usd_cap, live_equity)
     const limits = limitsRes.limits
-    const slot = usd_cap / Math.max(limits.max_open_positions, 1)
-    const maxMargin = usd_cap * limits.max_position_pct
+    const slot = sizing_base / Math.max(limits.max_open_positions, 1)
+    const maxMargin = sizing_base * limits.max_position_pct
     let meta: Record<string, unknown> = {}
     if (capRaw) {
       try {
@@ -43,6 +58,9 @@ export async function GET() {
     }
     return NextResponse.json({
       usd_cap,
+      live_equity_usd: +live_equity.toFixed(2),
+      realized_pnl_usd: +realized_pnl.toFixed(2),
+      sizing_base_usd: +sizing_base.toFixed(2),
       updated_at: meta.updated_at ?? null,
       updated_by: meta.updated_by ?? null,
       source: meta.source ?? (capRaw ? 'redis' : 'default'),

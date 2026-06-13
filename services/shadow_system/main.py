@@ -125,12 +125,51 @@ async def _sync_shadow_capital(redis: aioredis.Redis) -> float:
         PORTFOLIO_VALUE = usd
         for sid in SHADOW_IDS:
             p = trader.portfolios.get(sid)
-            if p and p.initial_capital != usd:
+            if not p:
+                continue
+            if p.initial_capital != usd:
                 ratio = usd / p.initial_capital if p.initial_capital else 1.0
                 p.initial_capital = usd
                 p.capital = p.capital * ratio
+            elif p.capital <= 0 and not p.positions:
+                p.capital = usd
+        await _publish_live_equity(redis)
         return usd
     return PORTFOLIO_VALUE
+
+
+def _shadow_equity_usd(shadow_id: str) -> float:
+    """Serbest nakit + kilitli margin = canlı equity (kâr/zarar dahil)."""
+    p = trader.portfolios.get(shadow_id)
+    if not p:
+        return max(PORTFOLIO_VALUE, 100.0)
+    locked = sum(
+        float(pos.get("margin_usd", pos.get("entry_capital", 0)) or 0)
+        for pos in p.positions.values()
+    )
+    return max(100.0, float(p.capital) + locked)
+
+
+async def _publish_live_equity(redis: aioredis.Redis) -> None:
+    leader = SHADOW_OPEN_IDS[0] if SHADOW_OPEN_IDS else "SHADOW_A"
+    p = trader.portfolios.get(leader)
+    if not p:
+        return
+    locked = sum(
+        float(pos.get("margin_usd", pos.get("entry_capital", 0)) or 0)
+        for pos in p.positions.values()
+    )
+    equity = float(p.capital) + locked
+    payload = {
+        "shadow_id": leader,
+        "base_cap_usd": PORTFOLIO_VALUE,
+        "live_equity_usd": round(equity, 2),
+        "free_cash_usd": round(float(p.capital), 2),
+        "locked_margin_usd": round(locked, 2),
+        "realized_pnl_usd": round(equity - PORTFOLIO_VALUE, 2),
+        "updated_at": time.time(),
+    }
+    await redis.set("portfolio:live_equity:v1", json.dumps(payload), ex=120)
 SHADOW_IDS = ["SHADOW_A", "SHADOW_B", "SHADOW_C"]
 # Tek sembol = tek paper pozisyon (dashboard mükerrer satır olmasın)
 SHADOW_OPEN_IDS = [
@@ -368,6 +407,7 @@ async def _finalize_close(redis: aioredis.Redis, payload: dict, *, pos: dict | N
     if sym:
         pnl = float(payload.get("pnl_pct", 0) or 0)
         await _set_symbol_cooldown(redis, sym, pnl_pct=pnl)
+    await _publish_live_equity(redis)
     await _publish_portfolio(redis)
 
 
@@ -687,14 +727,16 @@ async def simulate_tick(redis: aioredis.Redis, symbol: str):
     if risk.get("position_size_pct"):
         max_pos_pct = min(max_pos_pct, float(risk["position_size_pct"]))
     open_n = await _shadow_open_count(redis, SHADOW_OPEN_IDS[0])
-    slot_budget = PORTFOLIO_VALUE / max(SHADOW_MAX_OPEN, 1)
-    base_usd = min(PORTFOLIO_VALUE * max_pos_pct, slot_budget * 0.92)
+    leader = SHADOW_OPEN_IDS[0] if SHADOW_OPEN_IDS else "SHADOW_A"
+    sizing_cap = _shadow_equity_usd(leader)
+    slot_budget = sizing_cap / max(SHADOW_MAX_OPEN, 1)
+    base_usd = min(sizing_cap * max_pos_pct, slot_budget * 0.92)
     margin_usd = base_usd * min(confidence, 0.85) * size_mult
     if open_n >= SHADOW_MAX_OPEN * 0.8:
         margin_usd *= 0.85
     if margin_usd <= 0:
         return
-    port_pct = margin_usd / PORTFOLIO_VALUE if PORTFOLIO_VALUE > 0 else 0
+    port_pct = margin_usd / sizing_cap if sizing_cap > 0 else 0
     notional_usd = margin_usd * leverage
     owner = await _shadow_owner(redis, symbol) if SHADOW_ONE_PER_SYMBOL else None
 
@@ -777,10 +819,12 @@ async def simulate_tick(redis: aioredis.Redis, symbol: str):
             log.info(
                 f"[SHADOW OPEN] {shadow_id} {direction.upper()} {symbol} "
                 f"conf={confidence:.2f} margin=${margin_usd:.0f} ({port_pct*100:.1f}%) "
+                f"equity=${sizing_cap:.0f} base=${PORTFOLIO_VALUE:.0f} "
                 f"lev={leverage:.0f}x notional=${notional_usd:.0f} "
                 f"sl={sl_pct}% tp={tp_pct}% learn={learn_note or '-'} "
                 f"reasons={','.join(lev_reasons[:3])}"
             )
+            await _publish_live_equity(redis)
             if SHADOW_ONE_PER_SYMBOL:
                 break
 

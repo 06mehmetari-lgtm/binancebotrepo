@@ -4,6 +4,9 @@ import { useCallback, useEffect, useState } from 'react'
 
 type CapitalData = {
   usd_cap: number
+  live_equity_usd?: number
+  realized_pnl_usd?: number
+  sizing_base_usd?: number
   updated_at?: number | null
   source?: string
   sizing?: {
@@ -76,6 +79,9 @@ export default function PortfolioCapitalEditor({
 
   const presets = [5000, 10000, 25000, 50000, 100000]
   const cap = data?.usd_cap ?? (parseFloat(input) || 10000)
+  const liveEq = data?.live_equity_usd ?? cap
+  const sizingBase = data?.sizing_base_usd ?? Math.max(cap, liveEq)
+  const realized = data?.realized_pnl_usd ?? liveEq - cap
   const sizing = data?.sizing
 
   return (
@@ -84,7 +90,8 @@ export default function PortfolioCapitalEditor({
         <div>
           <h2 className="text-blue-300 font-black text-base tracking-wide">💰 KASA TUTARI (USD)</h2>
           <p className="text-gray-400 text-sm mt-1">
-            Buraya yazdığınız bakiye = botun kullanacağı sermaye. 5.000 · 10.000 · 100.000 — istediğinizi girin, <strong className="text-white">Uygula</strong> deyin.
+            Ayarladığınız kasa = taban sermaye. Kâr satışlarda ana paraya eklenir; yeni alımlar{' '}
+            <strong className="text-white">canlı equity</strong> üzerinden boyutlanır.
           </p>
         </div>
         <span className="text-xs text-gray-500">
@@ -136,14 +143,14 @@ export default function PortfolioCapitalEditor({
           <div className="bg-gray-950 rounded-lg p-2 border border-gray-800">
             <p className="text-gray-500">Slot bütçesi</p>
             <p className="text-white font-mono font-bold">${sizing.slot_budget_usd.toLocaleString()}</p>
-            <p className="text-gray-600 text-[10px]">${cap.toLocaleString()} / {sizing.max_open_positions}</p>
+            <p className="text-gray-600 text-[10px]">${sizingBase.toLocaleString()} / {sizing.max_open_positions}</p>
           </div>
           <div className="bg-gray-950 rounded-lg p-2 border border-gray-800">
             <p className="text-gray-500">Max margin / pozisyon</p>
             <p className="text-white font-mono font-bold">${sizing.max_margin_per_position_usd.toLocaleString()}</p>
           </div>
           <div className="bg-gray-950 rounded-lg p-2 border border-gray-800">
-            <p className="text-gray-500">Örnek (conf 65%, 3x)</p>
+            <p className="text-gray-500">Örnek alım (conf 65%, 3x)</p>
             <p className="text-white font-mono">
               ${sizing.example_65conf_3x?.margin_usd?.toLocaleString() ?? '—'} margin
             </p>
@@ -151,16 +158,29 @@ export default function PortfolioCapitalEditor({
               ≈ ${sizing.example_65conf_3x?.notional_usd?.toLocaleString() ?? '—'} notional
             </p>
           </div>
-          <div className="bg-gray-950 rounded-lg p-2 border border-gray-800">
-            <p className="text-gray-500">Aktif bakiye</p>
-            <p className="text-green-400 font-mono font-bold">${cap.toLocaleString()}</p>
-            {data?.updated_at && (
-              <p className="text-gray-600 text-[10px]">
-                {new Date(data.updated_at * 1000).toLocaleString('tr-TR')}
-              </p>
-            )}
+          <div className="bg-gray-950 rounded-lg p-2 border border-emerald-900/50">
+            <p className="text-gray-500">Canlı equity (kâr+zarar)</p>
+            <p className="text-emerald-400 font-mono font-bold">${liveEq.toLocaleString()}</p>
+            <p className={`text-[10px] font-mono ${realized >= 0 ? 'text-green-500' : 'text-red-400'}`}>
+              {realized >= 0 ? '+' : ''}${realized.toFixed(2)} vs kasa
+            </p>
+          </div>
+          <div className="bg-gray-950 rounded-lg p-2 border border-gray-800 col-span-2 md:col-span-4">
+            <p className="text-gray-500 text-[10px]">
+              Ayarlanan kasa: <span className="text-blue-300 font-mono">${cap.toLocaleString()}</span>
+              {' · '}Boyutlandırma tabanı: <span className="text-white font-mono">${sizingBase.toLocaleString()}</span>
+              {liveEq < cap * 0.5 && (
+                <span className="text-orange-400"> — equity düşük, alımlar küçük (ör. ~$4). Kasayı yükseltin veya kâr biriktirin.</span>
+              )}
+            </p>
           </div>
         </div>
+      )}
+
+      {data?.updated_at && (
+        <p className="text-gray-600 text-[10px]">
+          Son kasa güncelleme: {new Date(data.updated_at * 1000).toLocaleString('tr-TR')}
+        </p>
       )}
 
       {msg && (
