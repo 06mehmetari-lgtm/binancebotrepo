@@ -505,7 +505,6 @@ def build_service(svc: str) -> tuple[bool, str]:
     log(f"BUILD_START: {svc}")
     _, sha_out = run(["git", "rev-parse", "HEAD"])
     cachebust = sha_out.splitlines()[-1][:12] if sha_out else str(int(time.time()))
-    # Dashboard: cache eski UI birakir — her zaman temiz build
     no_cache = "--no-cache" if svc == "dashboard" else ""
     build_cmd = (
         f"docker compose build {no_cache} --build-arg CACHEBUST={cachebust} {svc}"
@@ -521,30 +520,49 @@ def build_service(svc: str) -> tuple[bool, str]:
         bufsize=1,
     )
     lines: list[str] = []
+    build_start = time.time()
+    last_hb = build_start
     try:
         assert proc.stdout is not None
-        for raw in proc.stdout:
-            line = raw.rstrip()
-            if not line:
-                continue
-            lines.append(line)
-            step = re.search(r"Step (\d+)/(\d+)", line)
-            if step:
-                cur, tot = int(step.group(1)), int(step.group(2))
-                pct = int(cur / max(tot, 1) * 100)
-                log(f"BUILD_PROGRESS: {svc} step {cur}/{tot} %{pct}")
-            elif re.search(r"npm (ci|install|run build)", line, re.I):
-                log(f"BUILD_PROGRESS: {svc} npm %{55}")
-            elif "next build" in line.lower() or "Compiling" in line:
-                log(f"BUILD_PROGRESS: {svc} next %{72}")
-            elif "exporting to image" in line.lower() or "naming to" in line.lower():
-                log(f"BUILD_PROGRESS: {svc} export %{90}")
-            elif "Built" in line or "DONE" in line:
-                log(f"BUILD_PROGRESS: {svc} done %{98}")
+        while True:
+            line = proc.stdout.readline()
+            if line:
+                line = line.rstrip()
+                if not line:
+                    continue
+                lines.append(line)
+                step = re.search(r"Step (\d+)/(\d+)", line)
+                if step:
+                    cur, tot = int(step.group(1)), int(step.group(2))
+                    pct = int(cur / max(tot, 1) * 100)
+                    log(f"BUILD_PROGRESS: {svc} step {cur}/{tot} %{pct}")
+                elif re.search(r"npm (ci|install)", line, re.I):
+                    log(f"BUILD_PROGRESS: {svc} npm %{45}")
+                elif re.search(r"npm run build", line, re.I):
+                    log(f"BUILD_PROGRESS: {svc} npm %{55}")
+                elif "Creating an optimized production build" in line:
+                    log(f"BUILD_PROGRESS: {svc} next_start %{60}")
+                elif "Compiled successfully" in line:
+                    log(f"BUILD_PROGRESS: {svc} compiled %{78}")
+                elif "Collecting page data" in line or "Generating static pages" in line:
+                    log(f"BUILD_PROGRESS: {svc} pages %{85}")
+                elif "Collecting build traces" in line or "Finalizing page optimization" in line:
+                    log(f"BUILD_PROGRESS: {svc} traces %{92}")
+                elif "exporting to image" in line.lower():
+                    log(f"BUILD_PROGRESS: {svc} export %{90}")
+                elif "Successfully built" in line or re.search(r"naming to .+dashboard", line, re.I):
+                    log(f"BUILD_PROGRESS: {svc} image %{96}")
+                last_hb = time.time()
+            elif proc.poll() is not None:
+                break
+            elif time.time() - last_hb >= 45:
+                elapsed = int(time.time() - build_start)
+                log(f"BUILD_HEARTBEAT: {svc} elapsed {elapsed}s still_running")
+                last_hb = time.time()
     except Exception as exc:
         proc.kill()
         return False, str(exc)[:300]
-    code = proc.wait(timeout=2400)
+    code = proc.wait(timeout=3600)
     tail = "\n".join(lines[-20:])
     if code != 0:
         log(f"BUILD_FAIL: {svc}")

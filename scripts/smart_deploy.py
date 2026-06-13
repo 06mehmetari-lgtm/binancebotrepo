@@ -190,11 +190,28 @@ class DeployProgressTimer:
             self.build_frac = max(self.build_frac, 0.55)
             self.build_label = "npm install/build"
         if "BUILD_PROGRESS:" in chunk and "next" in chunk:
-            self.build_frac = max(self.build_frac, 0.72)
+            self.build_frac = max(self.build_frac, 0.60)
             self.build_label = "next.js build"
+        if "BUILD_PROGRESS:" in chunk and "compiled" in chunk:
+            self.build_frac = max(self.build_frac, 0.78)
+            self.build_label = "derlendi"
+        if "BUILD_PROGRESS:" in chunk and "pages" in chunk:
+            self.build_frac = max(self.build_frac, 0.85)
+            self.build_label = "sayfalar"
+        if "BUILD_PROGRESS:" in chunk and "traces" in chunk:
+            self.build_frac = max(self.build_frac, 0.92)
+            self.build_label = "paketleniyor"
+        if "BUILD_PROGRESS:" in chunk and "image" in chunk:
+            self.build_frac = max(self.build_frac, 0.96)
+            self.build_label = "image"
         if "BUILD_PROGRESS:" in chunk and "export" in chunk:
             self.build_frac = max(self.build_frac, 0.90)
             self.build_label = "image export"
+        hb = re.search(r"BUILD_HEARTBEAT: \w+ elapsed (\d+)s", chunk)
+        if hb:
+            self._apply_build_time_progress(int(hb.group(1)))
+        if "BUILD_FAIL:" in chunk:
+            self.build_label = "HATA"
         if "BUILD_DONE:" in chunk:
             self.build_frac = 1.0
             self.build_label = "tamam"
@@ -206,7 +223,24 @@ class DeployProgressTimer:
             self.mark_done("finish", "done")
             self._floor_pct = 100
 
+    def _apply_build_time_progress(self, build_elapsed: int) -> None:
+        budget = self._budgets.get("build", DEFAULT_BUILD_DASHBOARD_S)
+        # Log satiri gelmese bile sureye gore yavas ilerle (max %94, BUILD_DONE'a kadar)
+        time_frac = min(0.94, 0.55 + (build_elapsed / max(budget, 300)) * 0.40)
+        self.build_frac = max(self.build_frac, time_frac)
+        mins = build_elapsed // 60
+        secs = build_elapsed % 60
+        if self.build_frac >= 0.60:
+            self.build_label = f"next.js ({mins}dk {secs:02d}sn)"
+
+    def _tick_build_creep(self) -> None:
+        if self.current_phase != "build" or "build" in self.phase_done:
+            return
+        elapsed = int(time.time() - self.phase_started)
+        self._apply_build_time_progress(elapsed)
+
     def _phase_progress_sec(self) -> float:
+        self._tick_build_creep()
         completed = 0.0
         order = ["prep", "fleet", "heal", "idle", "build", "finish"]
         live_keys = [k for k in self._budgets if k.startswith("live:")]
