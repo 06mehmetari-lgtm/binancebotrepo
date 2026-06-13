@@ -254,6 +254,22 @@ def parse_deploy_plan(text: str) -> dict | None:
     return None
 
 
+def git_head_short(length: int = 12) -> str:
+    _, out = run_local(["git", "rev-parse", f"--short={length}", "HEAD"])
+    return out.splitlines()[-1].strip().lower() if out else ""
+
+
+def shas_match(a: str, b: str) -> bool:
+    """Kisa/uzun SHA ayni commit mi (prefix eslesmesi)."""
+    x, y = a.strip().lower(), b.strip().lower()
+    if not x or not y:
+        return False
+    if x == y:
+        return True
+    short, long = (x, y) if len(x) <= len(y) else (y, x)
+    return long.startswith(short)
+
+
 def git_push(version: str, short_sha: str) -> tuple[bool, str]:
     run_local(["git", "add", "-A"])
     _, status = run_local(["git", "status", "--porcelain"])
@@ -331,6 +347,7 @@ def main() -> int:
     total_timer.start_tick()
     deploy_plan: dict | None = None
     plan_applied = False
+    expected_sha = short_sha
 
     print("[1/4] Git push...")
     t0 = time.time()
@@ -339,7 +356,8 @@ def main() -> int:
         total_timer.stop()
         print(f"  HATA git: {git_out[:300]}")
         return 1
-    print(f"  OK — {short_sha} ({fmt_duration(time.time() - t0)})")
+    expected_sha = git_head_short(12) or short_sha
+    print(f"  OK — commit {expected_sha} ({fmt_duration(time.time() - t0)})")
 
     print("\n[2/4] VPS baglanti...")
     t0 = time.time()
@@ -368,17 +386,17 @@ def main() -> int:
     vps_sha = lines[-1] if lines else ""
     print(sync_out[-600:] if len(sync_out) > 600 else sync_out)
 
-    if not vps_sha or len(vps_sha) > 20 or not all(c in "0123456789abcdef" for c in vps_sha.lower()):
+    if not vps_sha or not all(c in "0123456789abcdef" for c in vps_sha.lower()):
         total_timer.stop()
         print("  HATA: VPS git sync basarisiz")
         return 1
 
-    if vps_sha[:7] != short_sha[:7]:
+    if not shas_match(vps_sha, expected_sha):
         total_timer.stop()
-        print(f"  HATA: VPS SHA ({vps_sha}) != PC ({short_sha}) — kod yansimadi")
+        print(f"  HATA: VPS SHA ({vps_sha}) != PC ({expected_sha}) — kod yansimadi")
         print("  Cozum: VPS'te manuel: cd /root/prometheus && git fetch && git reset --hard origin/master")
         return 1
-    print(f"  OK — VPS {vps_sha} ({fmt_duration(time.time() - t0)})")
+    print(f"  OK — VPS {vps_sha} = PC {expected_sha} ({fmt_duration(time.time() - t0)})")
 
     pc_esc = json.dumps(pending_files, ensure_ascii=False).replace("'", "'\\''")
     vps_only, _ = estimate_from_plan(local_plan, history)
@@ -394,7 +412,7 @@ def main() -> int:
     channel.settimeout(3600)
     channel.exec_command(
         f"cd {prom_dir} && "
-        f"DEPLOY_EXPECTED_SHA={short_sha} "
+        f"DEPLOY_EXPECTED_SHA={expected_sha} "
         f"DEPLOY_PC_FILES='{pc_esc}' "
         f"python3 -u scripts/smart_deploy_remote.py"
     )

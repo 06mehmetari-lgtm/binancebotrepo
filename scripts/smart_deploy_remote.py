@@ -336,6 +336,16 @@ def redis_pw() -> str:
     return ""
 
 
+def shas_match(a: str, b: str) -> bool:
+    x, y = a.strip().lower(), b.strip().lower()
+    if not x or not y:
+        return False
+    if x == y:
+        return True
+    short, long = (x, y) if len(x) <= len(y) else (y, x)
+    return long.startswith(short)
+
+
 def deploy_env() -> tuple[str, list[str]]:
     expected = os.environ.get("DEPLOY_EXPECTED_SHA", "").strip()
     raw = os.environ.get("DEPLOY_PC_FILES", "[]").strip()
@@ -361,7 +371,7 @@ def build_deploy_record(
     healed: list[dict] | None = None,
 ) -> dict:
     expected, pc_files = deploy_env()
-    git_sync_ok = (not expected) or new_sha.startswith(expected[:12]) or expected.startswith(new_sha[:12])
+    git_sync_ok = shas_match(new_sha, expected) if expected else True
     applied = [
         x["service"] for x in ok_list
         if x.get("action") in ("live_cp+restart", "build+up")
