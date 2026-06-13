@@ -31,6 +31,7 @@ try:
         is_on_cooldown,
         paper_cooldown_sec,
         profit_tiers,
+        stale_flat_should_exit,
     )
     from price_resolver import resolve_market_price
 except ImportError:
@@ -47,8 +48,11 @@ except ImportError:
     async def resolve_market_price(redis, symbol: str) -> float:
         return 0.0
 
-    def agent_entry_ok(direction: str, verdict: dict | None) -> tuple[bool, str]:
+    def agent_entry_ok(direction: str, verdict: dict | None, signal_conf: float = 0) -> tuple[bool, str]:
         return True, "ok"
+
+    def stale_flat_should_exit(**_kwargs) -> tuple[bool, str]:
+        return False, ""
 
     def cooldown_after_close(pnl_pct: float, *, blacklisted: bool = False) -> int:
         return SYMBOL_COOLDOWN_SEC
@@ -561,6 +565,31 @@ async def _force_close_shadow(
         log.warning(f"[SHADOW STOP] {shadow_id} {symbol} {reason} pnl={result.get('pnl_pct', 0):.2%}")
 
 
+async def _persist_shadow_live_quote(
+    redis: aioredis.Redis,
+    shadow_id: str,
+    sym: str,
+    pos: dict,
+    price: float,
+    upnl: float,
+) -> None:
+    """Dashboard anlık kar/zarar — Redis pozisyonuna canlı fiyat yazar."""
+    if price <= 0:
+        return
+    margin = float(pos.get("margin_usd", pos.get("size_usd", 0)) or 0)
+    ladder = pos.get("ladder") or {}
+    lev = float(ladder.get("leverage", 1) or 1)
+    notional = float(ladder.get("notional_usd", margin * lev) or margin * lev)
+    exposure = notional if notional > 0 else margin * lev
+    upnl_usdt = exposure * (upnl / 100.0) if exposure > 0 else 0.0
+    pos["mark_price"] = round(price, 8)
+    pos["upnl_pct"] = round(upnl, 4)
+    pos["upnl_usdt"] = round(upnl_usdt, 4)
+    pos["quote_ts"] = time.time()
+    pos_key = f"shadow:positions:{shadow_id}:{sym}"
+    await redis.set(pos_key, json.dumps(pos), ex=86400)
+
+
 async def _persist_shadow_ladder(redis: aioredis.Redis, shadow_id: str, sym: str, ladder: dict) -> None:
     pos_key = f"shadow:positions:{shadow_id}:{sym}"
     raw = await redis.get(pos_key)
@@ -700,6 +729,9 @@ async def _enforce_hard_stops(redis: aioredis.Redis) -> None:
             sl_pct = float(ladder.get("stop_loss_pct") or SHADOW_HARD_STOP_PCT)
             tp_pct = float(ladder.get("take_profit_pct") or profit_tiers()[0])
 
+            if price > 0 and entry > 0:
+                await _persist_shadow_live_quote(redis, shadow_id, sym, pos, price, upnl)
+
             peak = float(ladder.get("peak_upnl_pct") or upnl)
             if upnl > peak:
                 ladder["peak_upnl_pct"] = round(upnl, 4)
@@ -722,15 +754,35 @@ async def _enforce_hard_stops(redis: aioredis.Redis) -> None:
             if hold_sec >= STALE_VERDICT_HOLD_SEC:
                 sig_raw = await redis.get(f"signal:latest:{sym}")
                 sig_dir = "flat"
+                v_dir = "flat"
+                v_conf = 0.0
                 if sig_raw:
                     try:
                         sig_dir = json.loads(sig_raw).get("direction", "flat")
                     except json.JSONDecodeError:
                         pass
-                if sig_dir == "flat" or sig_dir != direction:
+                verdict_raw = await redis.get(f"agents:verdict:{sym}")
+                if verdict_raw:
+                    try:
+                        v = json.loads(verdict_raw)
+                        v_dir = str(v.get("direction", "flat"))
+                        v_conf = float(v.get("confidence", 0) or 0)
+                    except json.JSONDecodeError:
+                        pass
+                peak = float(ladder.get("peak_upnl_pct") or upnl)
+                should_stale, stale_why = stale_flat_should_exit(
+                    hold_sec=hold_sec,
+                    upnl=upnl,
+                    peak_upnl=peak,
+                    sig_dir=sig_dir,
+                    direction=direction,
+                    v_dir=v_dir,
+                    v_conf=v_conf,
+                )
+                if should_stale:
                     await _force_close_shadow(
                         redis, shadow_id, sym, pos, close_price,
-                        f"stale_flat_verdict ({hold_sec:.0f}s, {upnl:+.2f}%)",
+                        f"stale_flat_verdict — {stale_why}",
                     )
                     continue
 
@@ -774,8 +826,9 @@ async def simulate_tick(redis: aioredis.Redis, symbol: str):
 
     verdict_raw = await redis.get(f"agents:verdict:{symbol}")
     verdict = json.loads(verdict_raw) if verdict_raw else None
-    ok_agent, agent_why = agent_entry_ok(direction, verdict)
+    ok_agent, agent_why = agent_entry_ok(direction, verdict, confidence)
     if not ok_agent:
+        log.debug(f"[SHADOW SKIP] {symbol} agent_gate: {agent_why}")
         return
 
     ctx_raw = await redis.get(f"context:latest:{symbol}")

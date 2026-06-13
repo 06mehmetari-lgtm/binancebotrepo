@@ -1,6 +1,8 @@
 import type { Redis } from 'ioredis'
 import { scanKeys } from '@/lib/universe'
 import { computeExitEstimate } from '@/lib/exit-estimate'
+import { resolveMarkPrice } from '@/lib/mark-price'
+import { computeUnrealizedPnL } from '@/lib/pnl'
 
 function safeJson(raw: string | null): unknown {
   if (!raw) return null
@@ -95,14 +97,26 @@ export type PositionDecision = {
   }
 }
 
-function priceFromFeatures(raw: string | null): number {
-  if (!raw) return 0
-  try {
-    const f = JSON.parse(raw) as { close?: number; last_price?: number }
-    return Number(f.close ?? f.last_price ?? 0)
-  } catch {
-    return 0
-  }
+async function fetchBinanceMarkPrices(symbols: string[]): Promise<Record<string, number>> {
+  const out: Record<string, number> = {}
+  if (!symbols.length) return out
+  await Promise.all(
+    symbols.slice(0, 40).map(async sym => {
+      try {
+        const res = await fetch(
+          `https://fapi.binance.com/fapi/v1/ticker/price?symbol=${sym}`,
+          { cache: 'no-store', signal: AbortSignal.timeout(4000) },
+        )
+        if (!res.ok) return
+        const j = (await res.json()) as { price?: string }
+        const p = parseFloat(String(j.price ?? 0))
+        if (p > 0) out[sym] = p
+      } catch {
+        /* REST yedek — sessiz */
+      }
+    }),
+  )
+  return out
 }
 
 /** Aynı sembol+yön: OMS öncelikli, shadow kopyaları tek satırda birleştirilir. */
@@ -122,6 +136,7 @@ export function consolidatePositions(rows: PositionDecision[]): PositionDecision
         sources_label: cur.shadow_accounts ? 'oms+shadow' : 'oms',
         notional_usd: (p.notional_usd ?? 0) + (cur.notional_usd ?? 0),
         margin_usd: (p.margin_usd ?? p.size_usd) + (cur.margin_usd ?? cur.size_usd),
+        unrealized_usdt: (p.unrealized_usdt ?? 0) + (cur.unrealized_usdt ?? 0),
         entry_leverage: p.entry_leverage ?? cur.entry_leverage,
         leverage: p.entry_leverage ?? p.leverage ?? cur.entry_leverage ?? cur.leverage,
       })
@@ -135,6 +150,7 @@ export function consolidatePositions(rows: PositionDecision[]): PositionDecision
         notional_usd: (cur.notional_usd ?? 0) + (p.notional_usd ?? 0),
         shadow_accounts: (cur.shadow_accounts ?? 0) + 1,
         sources_label: 'oms+shadow',
+        unrealized_usdt: (cur.unrealized_usdt ?? 0) + (p.unrealized_usdt ?? 0),
         leverage: cur.entry_leverage ?? cur.leverage ?? p.entry_leverage ?? p.leverage,
         entry_leverage: cur.entry_leverage ?? p.entry_leverage,
       })
@@ -147,6 +163,7 @@ export function consolidatePositions(rows: PositionDecision[]): PositionDecision
       notional_usd: (cur.notional_usd ?? 0) + (p.notional_usd ?? 0),
       shadow_accounts: (cur.shadow_accounts ?? 1) + 1,
       sources_label: `shadow×${(cur.shadow_accounts ?? 1) + 1}`,
+      unrealized_usdt: (cur.unrealized_usdt ?? 0) + (p.unrealized_usdt ?? 0),
       entry_leverage: cur.entry_leverage ?? p.entry_leverage,
       leverage: cur.entry_leverage ?? cur.leverage ?? p.entry_leverage ?? p.leverage,
     })
@@ -162,19 +179,6 @@ function fmtEntryTime(ts: number): string {
     hour: '2-digit',
     minute: '2-digit',
   })
-}
-
-function tickerMid(raw: string | null): number {
-  if (!raw) return 0
-  try {
-    const t = JSON.parse(raw) as { data?: { b?: string; a?: string } }
-    const d = t.data ?? t
-    const bid = parseFloat(String((d as { b?: string }).b ?? 0))
-    const ask = parseFloat(String((d as { a?: string }).a ?? bid))
-    return bid > 0 && ask > 0 ? (bid + ask) / 2 : bid || ask
-  } catch {
-    return 0
-  }
 }
 
 function buildExitPlan(
@@ -256,6 +260,8 @@ export async function fetchOpenPositions(redis: Redis): Promise<{
   for (const r of raws) pipeline.get(r.key)
   for (const r of raws) pipeline.get(`binance:ticker:${r.symbol.toLowerCase()}`)
   for (const r of raws) pipeline.get(`features:latest:${r.symbol}`)
+  for (const r of raws) pipeline.lindex(`binance:kline:${r.symbol.toLowerCase()}`, 0)
+  for (const r of raws) pipeline.get(`klines:1h:${r.symbol}`)
   for (const r of raws) pipeline.get(`context:latest:${r.symbol}`)
   for (const r of raws) pipeline.get(`signal:latest:${r.symbol}`)
   for (const r of raws) pipeline.get(`agents:verdict:${r.symbol}`)
@@ -267,11 +273,18 @@ export async function fetchOpenPositions(redis: Redis): Promise<{
   const n = raws.length
   const exec = await pipeline.exec()
 
-  const GUARD_OFF = 7 * n
-  const LEARN_OFF = 8 * n
-  const LESSON_OFF = 9 * n
+  const KLINE_OFF = 2 * n
+  const KLINES1H_OFF = 3 * n
+  const CTX_OFF = 4 * n
+  const SIG_OFF = 5 * n
+  const VERDICT_OFF = 6 * n
+  const VOTES_OFF = 7 * n
+  const GUARD_OFF = 8 * n
+  const LEARN_OFF = 9 * n
+  const LESSON_OFF = 10 * n
 
   const positions: PositionDecision[] = []
+  const needRestPrice: string[] = []
 
   for (let i = 0; i < n; i++) {
     const posRaw = exec?.[i]?.[1] as string | null
@@ -280,18 +293,26 @@ export async function fetchOpenPositions(redis: Redis): Promise<{
 
     const tickerRaw = exec?.[n + i]?.[1] as string | null
     const featRaw = exec?.[2 * n + i]?.[1] as string | null
-    const ctxRaw = exec?.[3 * n + i]?.[1] as string | null
-    const sigRaw = exec?.[4 * n + i]?.[1] as string | null
-    const verdictRaw = exec?.[5 * n + i]?.[1] as string | null
-    const votesRaw = exec?.[6 * n + i]?.[1] as string | null
+    const klineRaw = exec?.[KLINE_OFF + i]?.[1] as string | null
+    const klines1hRaw = exec?.[KLINES1H_OFF + i]?.[1] as string | null
+    const ctxRaw = exec?.[CTX_OFF + i]?.[1] as string | null
+    const sigRaw = exec?.[SIG_OFF + i]?.[1] as string | null
+    const verdictRaw = exec?.[VERDICT_OFF + i]?.[1] as string | null
+    const votesRaw = exec?.[VOTES_OFF + i]?.[1] as string | null
     const guardRaw = exec?.[GUARD_OFF + i]?.[1] as string | null
     const learnRaw = exec?.[LEARN_OFF + i]?.[1] as string | null
     const lessonRaw = exec?.[LESSON_OFF + i]?.[1] as string | null
     const guardParsed = safeJson(guardRaw) as Record<string, unknown> | null
     const learnParsed = safeJson(learnRaw) as Record<string, unknown> | null
 
-    let currentPrice = tickerMid(tickerRaw)
-    if (currentPrice <= 0) currentPrice = priceFromFeatures(featRaw)
+    let currentPrice = resolveMarkPrice({
+      tickerRaw,
+      featRaw,
+      klineRaw,
+      klines1hRaw,
+      storedMark: Number(posObj.mark_price ?? 0),
+      storedQuoteTs: Number(posObj.quote_ts ?? 0),
+    })
     const ctxParsed = safeJson(ctxRaw) as { regime?: string } | null
     const regime =
       String(ctxParsed?.regime ?? '') ||
@@ -324,14 +345,58 @@ export async function fetchOpenPositions(redis: Redis): Promise<{
       ladder?.notional_usd ?? marginUsd * leverage,
     )
 
+    if (currentPrice <= 0 && raws[i].symbol) {
+      needRestPrice.push(raws[i].symbol)
+    }
+
+    const storedUpnlPct = Number(posObj.upnl_pct ?? 0)
+    const storedUpnlUsdt = Number(posObj.upnl_usdt ?? 0)
+    const quoteFresh =
+      Number(posObj.quote_ts ?? 0) > 0 &&
+      Date.now() / 1000 - Number(posObj.quote_ts) <= 20
+
     let unrealizedPct = 0
     let unrealizedUsdt = 0
-    if (currentPrice > 0 && entryPrice > 0 && marginUsd > 0) {
-      unrealizedPct =
-        direction === 'long'
-          ? ((currentPrice - entryPrice) / entryPrice) * 100
-          : ((entryPrice - currentPrice) / entryPrice) * 100
-      unrealizedUsdt = marginUsd * leverage * (unrealizedPct / 100)
+    if (currentPrice > 0 && entryPrice > 0) {
+      const live = computeUnrealizedPnL({
+        direction,
+        entryPrice,
+        currentPrice,
+        marginUsd,
+        leverage,
+        notionalUsd,
+      })
+      unrealizedPct = live.pct
+      unrealizedUsdt = live.usdt
+    } else if (quoteFresh && storedUpnlPct !== 0) {
+      unrealizedPct = storedUpnlPct
+      unrealizedUsdt = storedUpnlUsdt
+      if (currentPrice <= 0 && entryPrice > 0 && unrealizedPct !== 0) {
+        const factor = 1 + (direction === 'long' ? unrealizedPct : -unrealizedPct) / 100
+        currentPrice = entryPrice * factor
+      }
+    } else if (guardParsed?.unrealized_pct != null) {
+      unrealizedPct = Number(guardParsed.unrealized_pct)
+      unrealizedUsdt = computeUnrealizedPnL({
+        direction,
+        entryPrice,
+        currentPrice: entryPrice,
+        marginUsd,
+        leverage,
+        notionalUsd,
+      }).usdt
+      if (unrealizedPct !== 0 && entryPrice > 0) {
+        const factor = 1 + (direction === 'long' ? unrealizedPct : -unrealizedPct) / 100
+        currentPrice = entryPrice * factor
+        unrealizedUsdt = computeUnrealizedPnL({
+          direction,
+          entryPrice,
+          currentPrice,
+          marginUsd,
+          leverage,
+          notionalUsd,
+        }).usdt
+      }
     }
 
     const qtyEstimate =
@@ -438,6 +503,25 @@ export async function fetchOpenPositions(redis: Redis): Promise<{
       ai_confidence_pct: aiConf > 0 ? Math.round(aiConf * 100) : undefined,
       guard: guardBlock,
     })
+  }
+
+  if (needRestPrice.length) {
+    const restPrices = await fetchBinanceMarkPrices(Array.from(new Set(needRestPrice)))
+    for (const p of positions) {
+      const mark = restPrices[p.symbol]
+      if (!mark || mark <= 0 || !p.entry_price) continue
+      const live = computeUnrealizedPnL({
+        direction: p.direction,
+        entryPrice: p.entry_price,
+        currentPrice: mark,
+        marginUsd: p.margin_usd ?? p.size_usd,
+        leverage: p.leverage,
+        notionalUsd: p.notional_usd,
+      })
+      p.current_price = mark
+      p.unrealized_pct = +live.pct.toFixed(3)
+      p.unrealized_usdt = +live.usdt.toFixed(4)
+    }
   }
 
   const consolidated = consolidatePositions(positions)

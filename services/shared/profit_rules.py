@@ -15,6 +15,8 @@ SHADOW_MIN_CONFIDENCE = float(os.getenv("SHADOW_MIN_CONFIDENCE", "0.62"))
 OMS_MIN_CONFIDENCE = float(os.getenv("OMS_MIN_CONFIDENCE", "0.60"))
 PAPER_MIN_SIGNAL_CONFIDENCE = float(os.getenv("PAPER_MIN_SIGNAL_CONFIDENCE", "0.60"))
 MIN_AGENT_ALIGN_CONF = float(os.getenv("MIN_AGENT_ALIGN_CONF", "0.38"))
+"""Ajan FLAT iken giriş — teşhis: sinyal %67–76, ajan %12–28 FLAT → kötü WR."""
+MIN_SIGNAL_WITHOUT_AGENT = float(os.getenv("MIN_SIGNAL_WITHOUT_AGENT", "0.72"))
 SLOT_ROTATE_MIN_CONF = float(os.getenv("SLOT_ROTATE_MIN_CONF", "0.68"))
 
 # Risk/ödül — stop 1.2%, ilk TP en az 1.5% (R:R ≥ 1.25)
@@ -40,11 +42,16 @@ SHADOW_HARD_STOP_PCT = float(os.getenv("SHADOW_HARD_STOP_PCT", "1.2"))
 
 # Uzun tutulan pozisyon slot kilidi — paper'da 1 saat sonra zorla kapat
 MAX_POSITION_HOLD_SEC = int(os.getenv("MAX_POSITION_HOLD_SEC", "3600"))
-STALE_VERDICT_HOLD_SEC = int(os.getenv("STALE_VERDICT_HOLD_SEC", "1200"))
+STALE_VERDICT_HOLD_SEC = int(os.getenv("STALE_VERDICT_HOLD_SEC", "1800"))
+STALE_EXIT_MIN_LOSS_PCT = float(os.getenv("STALE_EXIT_MIN_LOSS_PCT", "-0.25"))
+STALE_EXIT_GRACE_SEC = int(os.getenv("STALE_EXIT_GRACE_SEC", "900"))
+RECOVERY_HOLD_UPNL_MIN = float(os.getenv("RECOVERY_HOLD_UPNL_MIN", "-0.55"))
+RECOVERY_HOLD_UPNL_MAX = float(os.getenv("RECOVERY_HOLD_UPNL_MAX", "0.35"))
 
 # Churn / düşük kalite coinler (autopsy + teşhis)
 _DEFAULT_BLACKLIST = (
-    "ESPORTSUSDT,GTCUSDT,DEXEUSDT,AIOUSDT,BRUSDT,BEATUSDT,NAORISUSDT"
+    "ESPORTSUSDT,GTCUSDT,DEXEUSDT,AIOUSDT,BRUSDT,BEATUSDT,NAORISUSDT,"
+    "STGUSDT,INXUSDT,KATUSDT"
 )
 SYMBOL_BLACKLIST: frozenset[str] = frozenset(
     s.strip().upper()
@@ -105,21 +112,93 @@ def entry_allowed(
     return True, "ok"
 
 
-def agent_entry_ok(direction: str, verdict: dict | None) -> tuple[bool, str]:
-    """Ajan FLAT + düşük güven ile giriş yapma — teşhisteki 13–28% FLAT girişleri."""
+def agent_entry_ok(
+    direction: str,
+    verdict: dict | None,
+    signal_conf: float = 0,
+) -> tuple[bool, str]:
+    """
+    Giriş kapısı — sinyal güçlü olsa bile ajan FLAT/düşük ise blokla.
+    Teşhis: LONG %76 + ajan FLAT %12 → agent_neutral ile açılıyordu → WR %18.
+    """
+    sig = float(signal_conf or 0)
     if not verdict:
-        return True, "no_verdict"
+        if sig >= MIN_SIGNAL_WITHOUT_AGENT:
+            return True, "no_verdict_high_signal"
+        return False, f"no_verdict_need_{MIN_SIGNAL_WITHOUT_AGENT:.0%}_got_{sig:.0%}"
+
     v_dir = str(verdict.get("direction", "flat"))
     v_conf = float(verdict.get("confidence", 0) or 0)
+
     if v_dir in ("long", "short") and v_dir != direction and v_conf >= MIN_AGENT_ALIGN_CONF:
         return False, f"agent_opposes_{v_dir}_{v_conf:.0%}"
-    if v_dir == "flat" and v_conf < MIN_AGENT_ALIGN_CONF:
-        return True, "agent_neutral"
-    if v_dir == "flat" and v_conf >= MIN_AGENT_ALIGN_CONF:
-        return False, f"agent_flat_{v_conf:.0%}"
+
     if v_dir == direction and v_conf >= MIN_AGENT_ALIGN_CONF:
-        return True, "agent_aligned"
-    return True, "ok"
+        return True, f"agent_aligned_{v_conf:.0%}"
+
+    if v_dir == "flat" and v_conf >= MIN_AGENT_ALIGN_CONF:
+        return False, f"agent_flat_high_{v_conf:.0%}"
+
+    if v_dir == "flat":
+        if sig >= MIN_SIGNAL_WITHOUT_AGENT:
+            return True, f"signal_strong_{sig:.0%}_agent_flat_{v_conf:.0%}"
+        if sig >= 0.65 and v_conf >= 0.22:
+            return True, f"moderate_consensus_sig_{sig:.0%}_agent_{v_conf:.0%}"
+        return False, f"agent_flat_{v_conf:.0%}_signal_{sig:.0%}_weak"
+
+    if v_dir == direction and v_conf < MIN_AGENT_ALIGN_CONF:
+        if sig >= MIN_SIGNAL_WITHOUT_AGENT:
+            return True, f"weak_agent_same_dir_sig_{sig:.0%}"
+        return False, f"agent_weak_{v_conf:.0%}_signal_{sig:.0%}"
+
+    return False, f"agent_gate_{v_dir}_{v_conf:.0%}"
+
+
+def stale_flat_should_exit(
+    *,
+    hold_sec: float,
+    upnl: float,
+    peak_upnl: float,
+    sig_dir: str,
+    direction: str,
+    v_dir: str = "flat",
+    v_conf: float = 0,
+) -> tuple[bool, str]:
+    """
+    stale_flat_verdict — fee churn önleme: +0% civarı hemen kapatma, zarara recovery süresi.
+    """
+    if hold_sec < STALE_VERDICT_HOLD_SEC:
+        return False, ""
+
+    stale = (
+        sig_dir == "flat"
+        or (sig_dir in ("long", "short") and sig_dir != direction)
+        or (v_dir == "flat" and v_conf >= 0.15)
+    )
+    if not stale:
+        return False, ""
+
+    grace_end = STALE_VERDICT_HOLD_SEC + STALE_EXIT_GRACE_SEC
+
+    if upnl >= GUARD_TAKE_PROFIT_PCT * 0.75:
+        return True, f"stale_take_profit ({upnl:+.2f}%)"
+
+    if peak_upnl >= BREAKEVEN_ACTIVATE_PCT and upnl >= BREAKEVEN_FLOOR_PCT:
+        return False, "breakeven_hold"
+
+    if RECOVERY_HOLD_UPNL_MIN <= upnl <= RECOVERY_HOLD_UPNL_MAX and hold_sec < grace_end:
+        return False, "recovery_grace"
+
+    if upnl > STALE_EXIT_MIN_LOSS_PCT and upnl < 0.12 and hold_sec < grace_end:
+        return False, "near_breakeven_grace"
+
+    if upnl <= STALE_EXIT_MIN_LOSS_PCT:
+        return True, f"stale_flat_loss ({upnl:+.2f}%)"
+
+    if hold_sec >= grace_end:
+        return True, f"stale_flat_timeout ({upnl:+.2f}%)"
+
+    return False, ""
 
 
 def cooldown_after_close(pnl_pct: float, *, blacklisted: bool = False) -> int:
@@ -143,6 +222,10 @@ def build_history_record(payload: dict) -> dict:
         or payload.get("reason")
         or ""
     )[:500]
+    if not reason:
+        src = str(payload.get("source", "unknown"))
+        action = str(payload.get("action", "close"))
+        reason = f"{src}:{action}"
     ladder = payload.get("ladder") or {}
     if isinstance(payload.get("entry_signal"), dict):
         es = payload["entry_signal"]

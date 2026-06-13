@@ -175,6 +175,7 @@ def evaluate_position(
             STALE_VERDICT_HOLD_SEC,
             conf_meets,
             is_blacklisted,
+            stale_flat_should_exit,
         )
     except ImportError:
         MAX_POSITION_HOLD_SEC = 3600
@@ -196,6 +197,9 @@ def evaluate_position(
             upnl, v_conf, trade_action, checks, time.time(),
         )
 
+    ladder = pos.get("ladder") or {}
+    peak_upnl = float(ladder.get("peak_upnl_pct") or upnl)
+
     if hold_sec >= STALE_VERDICT_HOLD_SEC and v_conf < 0.05:
         return GuardDecision(
             symbol, source, direction, "close", "medium",
@@ -203,14 +207,19 @@ def evaluate_position(
             upnl, v_conf, trade_action, checks, time.time(),
         )
 
-    if hold_sec >= STALE_VERDICT_HOLD_SEC and (
-        sig_dir == "flat"
-        or (sig_dir != direction and not (signal or {}).get("is_valid"))
-        or (v_dir == "flat" and v_conf >= 0.15)
-    ):
+    should_stale, stale_why = stale_flat_should_exit(
+        hold_sec=hold_sec,
+        upnl=upnl,
+        peak_upnl=peak_upnl,
+        sig_dir=sig_dir,
+        direction=direction,
+        v_dir=v_dir,
+        v_conf=v_conf,
+    )
+    if should_stale:
         return GuardDecision(
             symbol, source, direction, "close", "medium",
-            f"stale_flat_verdict — sinyal/ajan düştü ({hold_sec:.0f}s, PnL {upnl:+.2f}%)",
+            f"stale_flat_verdict — {stale_why} ({hold_sec:.0f}s)",
             upnl, v_conf, trade_action, checks, time.time(),
         )
 
@@ -249,8 +258,6 @@ def evaluate_position(
             upnl, v_conf, trade_action, checks, time.time(),
         )
 
-    ladder = pos.get("ladder") or {}
-    peak_upnl = float(ladder.get("peak_upnl_pct") or upnl)
     if upnl > peak_upnl:
         peak_upnl = upnl
         checks["peak_upnl_pct"] = round(peak_upnl, 3)

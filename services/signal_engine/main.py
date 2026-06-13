@@ -254,7 +254,7 @@ async def generate_signal(redis: aioredis.Redis, symbol: str) -> dict | None:
         "bb_position": round(float(features.get("bb_position", 0.5) or 0.5), 3),
     }
 
-    is_valid, reason = validator.validate(signal_dict, context)
+    is_valid, reason = validator.validate(signal_dict, context, verdict)
 
     try:
         from risk_model import evaluate_risk
@@ -359,6 +359,19 @@ async def generate_signal(redis: aioredis.Redis, symbol: str) -> dict | None:
     signal_dict["is_valid"] = is_valid
     signal_dict["reject_reason"] = "" if is_valid else reason
     signal_dict["trade_action"] = "none"
+
+    # Yeni giriş — ajan FLAT + zayıf sinyal kombinasyonunu blokla (WR teşhisi)
+    if is_valid and final_dir in ("long", "short") and not pos_raw:
+        try:
+            from profit_rules import agent_entry_ok
+            ok_agent, agent_why = agent_entry_ok(final_dir, verdict, final_conf)
+            if not ok_agent:
+                is_valid = False
+                reason = f"agent_gate:{agent_why}"
+                signal_dict["is_valid"] = False
+                signal_dict["reject_reason"] = reason
+        except ImportError:
+            pass
 
     open_pos = json.loads(pos_raw) if pos_raw else None
     v_dir = str(verdict.get("direction", "flat") if verdict else "flat")

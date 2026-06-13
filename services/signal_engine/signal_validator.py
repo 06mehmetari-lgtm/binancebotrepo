@@ -29,7 +29,7 @@ class SignalValidator:
         except Exception:
             return os.getenv("DRY_RUN", "true").lower() in ("1", "true", "yes")
 
-    def validate(self, signal: dict, context: dict) -> tuple[bool, str]:
+    def validate(self, signal: dict, context: dict, verdict: dict | None = None) -> tuple[bool, str]:
         paper = self._paper_mode()
         min_conf = self._min_confidence()
         conf = float(signal.get("confidence", 0) or 0)
@@ -52,6 +52,17 @@ class SignalValidator:
             return False, "SHOCK drift: no trading"
         if signal.get("direction") == "flat":
             return False, "flat signal"
+
+        if verdict is not None:
+            try:
+                from profit_rules import agent_entry_ok
+                direction = str(signal.get("direction", "flat"))
+                conf = float(signal.get("confidence", 0) or 0)
+                ok, why = agent_entry_ok(direction, verdict, conf)
+                if not ok:
+                    return False, f"agent_gate:{why}"
+            except ImportError:
+                pass
 
         regime = str(context.get("regime") or signal.get("regime") or "")
         if regime == "manipulation" and not paper:

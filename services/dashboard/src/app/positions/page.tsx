@@ -8,7 +8,9 @@ import { LeverageBadge } from '@/components/LeverageBadge'
 import { MotorEngineBar, LearnStageBadge, LessonSnippet } from '@/components/MotorEngineBar'
 import { LiveEquityChart, type CurvePoint } from '@/components/LiveEquityChart'
 import { PositionBubbleChart, buildBubblePoints } from '@/components/PositionBubbleChart'
+import { LivePnLBanner } from '@/components/LivePnLBanner'
 import { useLiveEquity } from '@/hooks/useLiveEquity'
+import { useLivePositionPnL } from '@/hooks/useLivePositionPnL'
 import { useStreamInvalidate } from '@/hooks/useStream'
 import type { PositionDecision } from '@/lib/positions'
 
@@ -91,13 +93,14 @@ function PnLBar({ pct }: { pct: number }) {
   const abs = Math.min(Math.abs(pct), 10)
   const width = (abs / 10) * 100
   const color = pct >= 0 ? 'bg-green-500' : 'bg-red-500'
+  const decimals = Math.abs(pct) < 1 ? 3 : 2
   return (
     <div className="flex items-center gap-2">
-      <div className="w-16 h-1.5 bg-gray-700 rounded-full overflow-hidden">
-        <div className={`h-full rounded-full ${color}`} style={{ width: `${width}%` }} />
+      <div className="w-20 h-2 bg-gray-700 rounded-full overflow-hidden">
+        <div className={`h-full rounded-full ${color} transition-all duration-300`} style={{ width: `${width}%` }} />
       </div>
-      <span className={`text-xs font-mono tabular-nums font-bold ${pct >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-        {pct >= 0 ? '+' : ''}{pct.toFixed(2)}%
+      <span className={`text-sm font-mono tabular-nums font-black ${pct >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+        {pct >= 0 ? '+' : ''}{pct.toFixed(decimals)}%
       </span>
     </div>
   )
@@ -256,13 +259,19 @@ export default function PositionsPage() {
     }
   }
 
-  const positions = data?.positions ?? []
+  const basePositions = data?.positions ?? []
   const daily_pnl = data?.daily_pnl ?? 0
   const trade_history = data?.trade_history ?? []
   const trading_halted = data?.trading_halted ?? false
   const halt_reason = data?.halt_reason
   const stats = portfolio?.stats
   const curve = portfolio?.curve ?? []
+  const {
+    positions,
+    totalUnrealized,
+    liveAt,
+    isLive: pnlLive,
+  } = useLivePositionPnL(basePositions, basePositions.length > 0)
   const liveCurve = useLiveEquity(curve, stats?.current_equity, 2000)
   const bubblePoints = useMemo(
     () => buildBubblePoints(positions, trade_history),
@@ -331,7 +340,7 @@ export default function PositionsPage() {
     </div>
   )
 
-  const totalUnrealized = positions.reduce((s, p) => s + (p.unrealized_usdt ?? 0), 0)
+
   const totalExposed = positions.reduce((s, p) => s + (p.margin_usd ?? p.size_usd), 0)
   const totalNotional = positions.reduce((s, p) => s + (p.notional_usd ?? p.size_usd), 0)
   const winTrades = trade_history.filter(t => t.pnl_pct > 0).length
@@ -349,6 +358,16 @@ export default function PositionsPage() {
         pollingActive
         tradingHalted={trading_halted}
       />
+
+      {positions.length > 0 && (
+        <LivePnLBanner
+          totalUsdt={totalUnrealized}
+          dailyPnl={daily_pnl}
+          positionCount={positions.length}
+          liveAt={liveAt}
+          isLive={pnlLive}
+        />
+      )}
 
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div>
@@ -388,7 +407,7 @@ export default function PositionsPage() {
           </button>
           <span className="text-xs text-gray-600 flex items-center gap-1.5">
             <span className={`inline-block w-1.5 h-1.5 rounded-full ${streamLive ? 'bg-green-400 animate-pulse' : 'bg-gray-600'}`} />
-            {lastUpdate} · {streamLive ? 'canlı 2s' : '2s'}
+            {lastUpdate} · {pnlLive ? 'PnL 1sn' : streamLive ? 'canlı 2s' : '2s'}
           </span>
         </div>
       </div>
@@ -665,7 +684,7 @@ export default function PositionsPage() {
                     <td className="px-4 py-3 text-xs text-violet-300 font-mono">${(pos.notional_usd ?? pos.size_usd).toFixed(0)}</td>
                     <td className="px-4 py-3 text-xs text-gray-500 font-mono">{pos.qty_estimate?.toFixed(4) ?? '—'}</td>
                     <td className="px-4 py-3"><PnLBar pct={pos.unrealized_pct ?? 0} /></td>
-                    <td className={`px-4 py-3 font-mono text-xs font-bold ${(pos.unrealized_usdt ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                    <td className={`px-4 py-3 font-mono text-sm font-black ${(pos.unrealized_usdt ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                       {(pos.unrealized_usdt ?? 0) >= 0 ? '+' : ''}${(pos.unrealized_usdt ?? 0).toFixed(2)}
                     </td>
                     <td className="px-4 py-3 text-[10px] text-gray-500 max-w-[140px]" title={pos.exit_plan}>

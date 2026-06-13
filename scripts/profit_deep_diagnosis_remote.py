@@ -375,7 +375,7 @@ def trace_shadow_entry(
         return steps
     steps.append(f"4.PASS signal {d} conf={conf:.0%} valid=True")
 
-    ok_agent, agent_why = agent_entry_ok(d, verdict)
+    ok_agent, agent_why = agent_entry_ok(d, verdict, conf)
     v_dir = str((verdict or {}).get("direction", "?"))
     v_conf = float((verdict or {}).get("confidence", 0))
     if not ok_agent:

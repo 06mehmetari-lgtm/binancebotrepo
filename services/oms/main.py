@@ -340,9 +340,15 @@ async def process_signal(redis: aioredis.Redis, symbol: str):
         return
 
     try:
-        from profit_rules import OMS_MIN_CONFIDENCE, cooldown_key, is_on_cooldown
+        from profit_rules import OMS_MIN_CONFIDENCE, agent_entry_ok, cooldown_key, is_on_cooldown
         conf = float(signal.get("confidence", 0))
         if conf < OMS_MIN_CONFIDENCE:
+            return
+        verdict_raw = await redis.get(f"agents:verdict:{symbol}")
+        verdict = json.loads(verdict_raw) if verdict_raw else None
+        ok_agent, agent_why = agent_entry_ok(direction, verdict, conf)
+        if not ok_agent:
+            log.debug(f"[OMS SKIP] {symbol} agent_gate: {agent_why}")
             return
         cd_raw = await redis.get(cooldown_key(symbol, "oms"))
         if cd_raw:
